@@ -11,7 +11,8 @@ from .adapter import (
     QwenAdapter,
     HunyuanAdapter,
     GeminiAdapter,
-    OpenAIAdapter
+    OpenAIAdapter,
+    OllamaAdapter,
 )
 from ..config import get_settings
 
@@ -23,6 +24,7 @@ ADAPTER_REGISTRY: Dict[LLMProvider, Type[LLMAdapter]] = {
     LLMProvider.HUNYUAN: HunyuanAdapter,
     LLMProvider.GEMINI: GeminiAdapter,
     LLMProvider.OPENAI: OpenAIAdapter,
+    LLMProvider.OLLAMA: OllamaAdapter,
 }
 
 # 提供商到默认模型的映射
@@ -32,6 +34,7 @@ DEFAULT_MODELS: Dict[LLMProvider, str] = {
     LLMProvider.HUNYUAN: "hunyuan-lite",
     LLMProvider.GEMINI: "gemini-1.5-flash",
     LLMProvider.OPENAI: "gpt-4o-mini",
+    LLMProvider.OLLAMA: "qwen3:32b",
 }
 
 
@@ -117,6 +120,7 @@ def _get_api_key_from_settings(provider: LLMProvider, settings) -> Optional[str]
         LLMProvider.HUNYUAN: settings.hunyuan_api_key,
         LLMProvider.GEMINI: settings.google_api_key,
         LLMProvider.OPENAI: settings.openai_api_key,
+        LLMProvider.OLLAMA: "ollama",  # Ollama本地运行，不需要API密钥
     }
     return key_mapping.get(provider)
 
@@ -129,6 +133,7 @@ def _get_api_base_from_settings(provider: LLMProvider, settings) -> Optional[str
         LLMProvider.HUNYUAN: None,  # 混元使用默认
         LLMProvider.GEMINI: None,   # Gemini使用默认
         LLMProvider.OPENAI: None,   # OpenAI使用默认
+        LLMProvider.OLLAMA: None,   # Ollama使用默认本地地址
     }
     return base_mapping.get(provider)
 
@@ -148,6 +153,7 @@ def get_available_providers() -> Dict[str, bool]:
         "hunyuan": settings.hunyuan_api_key is not None,
         "gemini": settings.google_api_key is not None,
         "openai": settings.openai_api_key is not None,
+        "ollama": True,  # Ollama本地运行，默认可用
     }
 
 

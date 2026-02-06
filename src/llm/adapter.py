@@ -20,6 +20,7 @@ class LLMProvider(Enum):
     HUNYUAN = "hunyuan"
     GEMINI = "gemini"
     OPENAI = "openai"
+    OLLAMA = "ollama"
 
 
 @dataclass
@@ -273,3 +274,19 @@ class OpenAIAdapter(LLMAdapter):
     
     def _get_litellm_model_name(self) -> str:
         return self._get_model()
+
+
+class OllamaAdapter(LLMAdapter):
+    """Ollama本地模型适配器"""
+    
+    @property
+    def provider(self) -> LLMProvider:
+        return LLMProvider.OLLAMA
+    
+    @property
+    def default_model(self) -> str:
+        return "qwen3:32b"
+    
+    def _get_litellm_model_name(self) -> str:
+        model = self._get_model()
+        return f"ollama/{model}"

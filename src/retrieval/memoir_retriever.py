@@ -94,25 +94,40 @@ class MemoirRetriever:
         """加载索引数据"""
         output_dir = self.index_dir / "output"
         
+        # GraphRAG 2.x 使用新的文件名格式
+        # 尝试新格式，如果不存在则尝试旧格式（兼容 1.x）
+        
         # 加载实体
-        entities_file = output_dir / "create_final_entities.parquet"
+        entities_file = output_dir / "entities.parquet"
+        if not entities_file.exists():
+            entities_file = output_dir / "create_final_entities.parquet"
         if entities_file.exists():
             self._entities_df = pd.read_parquet(entities_file)
+            print(f"[DEBUG] 加载实体: {len(self._entities_df)} 条")
         
         # 加载关系
-        rel_file = output_dir / "create_final_relationships.parquet"
+        rel_file = output_dir / "relationships.parquet"
+        if not rel_file.exists():
+            rel_file = output_dir / "create_final_relationships.parquet"
         if rel_file.exists():
             self._relationships_df = pd.read_parquet(rel_file)
+            print(f"[DEBUG] 加载关系: {len(self._relationships_df)} 条")
         
         # 加载社区报告
-        comm_file = output_dir / "create_final_community_reports.parquet"
+        comm_file = output_dir / "community_reports.parquet"
+        if not comm_file.exists():
+            comm_file = output_dir / "create_final_community_reports.parquet"
         if comm_file.exists():
             self._communities_df = pd.read_parquet(comm_file)
+            print(f"[DEBUG] 加载社区报告: {len(self._communities_df)} 条")
         
         # 加载文本单元
-        text_file = output_dir / "create_final_text_units.parquet"
+        text_file = output_dir / "text_units.parquet"
+        if not text_file.exists():
+            text_file = output_dir / "create_final_text_units.parquet"
         if text_file.exists():
             self._text_units_df = pd.read_parquet(text_file)
+            print(f"[DEBUG] 加载文本单元: {len(self._text_units_df)} 条")
     
     async def retrieve(
         self,
@@ -184,22 +199,32 @@ class MemoirRetriever:
         
         results = []
         
-        # 构建搜索词
+        # 构建搜索词（包含中英文变体）
         search_terms = []
         if context.year:
             search_terms.append(context.year)
+            search_terms.append(str(context.year))
         if context.location:
             search_terms.append(context.location)
+            # 添加英文变体
+            location_map = {
+                "深圳": "SHENZHEN", "北京": "BEIJING", "上海": "SHANGHAI",
+                "广州": "GUANGZHOU", "香港": "HONG KONG"
+            }
+            if context.location in location_map:
+                search_terms.append(location_map[context.location])
         search_terms.extend(context.keywords)
         
         for _, row in self._entities_df.iterrows():
-            entity_name = str(row.get("name", row.get("title", "")))
+            # GraphRAG 2.x 使用 title 字段
+            entity_name = str(row.get("title", row.get("name", "")))
             entity_desc = str(row.get("description", ""))
             
-            # 计算匹配分数
+            # 计算匹配分数（不区分大小写）
             score = 0
+            search_text = f"{entity_name} {entity_desc}".upper()
             for term in search_terms:
-                if term and (term in entity_name or term in entity_desc):
+                if term and term.upper() in search_text:
                     score += 1
             
             if score > 0:
@@ -315,5 +340,7 @@ class MemoirRetriever:
     def is_index_ready(self) -> bool:
         """检查索引是否就绪"""
         output_dir = self.index_dir / "output"
-        entities_file = output_dir / "create_final_entities.parquet"
-        return entities_file.exists()
+        # 兼容 GraphRAG 1.x 和 2.x
+        new_format = output_dir / "entities.parquet"
+        old_format = output_dir / "create_final_entities.parquet"
+        return new_format.exists() or old_format.exists()
