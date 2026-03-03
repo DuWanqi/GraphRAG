@@ -32,7 +32,8 @@
 │  ├── Deepseek                                                │
 │  ├── Qwen3 (通义千问)                                        │
 │  ├── Hunyuan (腾讯混元)                                      │
-│  └── Google Gemini                                           │
+│  ├── Google Gemini                                           │
+│  └── Ollama (本地模型)                                       │
 ├─────────────────────────────────────────────────────────────┤
 │  输出层                                                      │
 │  ├── Web界面 (Gradio)                                        │
@@ -82,7 +83,13 @@ HUNYUAN_API_KEY=your_hunyuan_api_key
 # Google Gemini
 GOOGLE_API_KEY=your_google_api_key
 
-GraphRAG 索引构建只使用一个 API（通过 GRAPHRAG_API_KEY 指定），
+# 默认 LLM 配置（可选 Ollama 本地模型）
+DEFAULT_LLM_PROVIDER=gemini
+DEFAULT_LLM_MODEL=gemini-2.0-flash
+
+# 使用 Ollama 本地模型时
+# DEFAULT_LLM_PROVIDER=ollama
+# DEFAULT_LLM_MODEL=qwen3:32b
 ```
 
 ### 3. 准备历史数据
@@ -112,31 +119,56 @@ python run_web.py api
 python run_web.py both
 ```
 
-访问 http://localhost:8000 使用系统。关闭旧进程：Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+访问 http://localhost:8000 使用系统。
 
-启动流程总结
+### 6. 使用本地模型 (Ollama)
+
+如果你想使用本地部署的模型，可以配置 Ollama：
+
+```bash
+# 确保 Ollama 服务已启动
+ollama serve
+
+# 在 .env 中配置
+DEFAULT_LLM_PROVIDER=ollama
+DEFAULT_LLM_MODEL=qwen3:32b
+```
+
+### 启动流程总结
+
 每次启动项目时，需要执行以下步骤：
-1. 激活虚拟环境（必须！）
+
+```powershell
+# 1. 激活虚拟环境
 cd D:\projects\Capstone\GraphRAG
 .\venv\Scripts\Activate.ps1
-cd D:\projects\Capstone\GraphRAG.\venv\Scripts\Activate.ps1
-2. 启动应用
+
+# 2. 启动应用
 python run_web.py gradio
-python run_web.py gradio
-完整启动命令（一行）
+```
+
+**完整启动命令（一行）**：
+
+```powershell
 cd D:\projects\Capstone\GraphRAG; .\venv\Scripts\Activate.ps1; python run_web.py gradio
-cd D:\projects\Capstone\GraphRAG; .\venv\Scripts\Activate.ps1; python run_web.py gradio
-界面说明
+```
+
+### 界面说明
+
 应用有四个功能标签页：
-标签	功能
-📝 生成历史背景	输入回忆录片段，生成相关历史背景
-🔄 多模型对比	同时对比多个LLM的生成效果
-⚙️ 索引管理	管理历史事件知识图谱索引
-📖 使用说明	查看详细使用指南
-⚠️ 注意事项
-Python版本要求：GraphRAG需要 Python 3.10-3.12，您的虚拟环境已使用 Python 3.10.11
-API密钥配置：使用前需要配置 .env 文件中的 API 密钥（Deepseek、Qwen、混元、Google等）
-首次使用：需要先在"索引管理"标签页构建知识图谱索引
+
+| 标签 | 功能 |
+|------|------|
+| 📝 生成历史背景 | 输入回忆录片段，生成相关历史背景 |
+| 🔄 多模型对比 | 同时对比多个LLM的生成效果 |
+| ⚙️ 索引管理 | 管理历史事件知识图谱索引 |
+| 📖 使用说明 | 查看详细使用指南 |
+
+### ⚠️ 注意事项
+
+- **Python版本要求**：GraphRAG 需要 Python 3.10-3.12
+- **API密钥配置**：使用前需要配置 `.env` 文件中的 API 密钥
+- **首次使用**：需要先在"索引管理"标签页构建知识图谱索引
 
 ## 项目结构
 
@@ -184,7 +216,8 @@ GraphRAG/
 | Deepseek | deepseek-chat | 高性价比，中文优化 |
 | Qwen | qwen-plus | 阿里云，中文能力强 |
 | Hunyuan | hunyuan-lite | 腾讯，国产优化 |
-| Gemini | gemini-1.5-flash | Google，多模态能力 |
+| Gemini | gemini-2.0-flash | Google，多模态能力 |
+| Ollama | qwen3:32b | 本地部署，数据隐私 |
 
 ### 2. 写作风格
 
@@ -276,6 +309,8 @@ print(result.content)
 ## 详细文档
 
 - 📖 [GraphRAG 部署与实现指南](docs/GRAPHRAG_GUIDE.md) - 详细介绍 GraphRAG 在本项目中的部署和实现
+- 🏗️ [系统技术架构文档](docs/TECHNICAL_ARCHITECTURE.md) - 完整的系统架构、设计模式和扩展指南
+- 📊 [GraphRAG vs Mem0 对比分析](docs/GRAPHRAG_VS_MEM0_COMPARISON.md) - 两种 RAG 方案的对比
 
 ## 参考资源
 
