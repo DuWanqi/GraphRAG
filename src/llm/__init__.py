@@ -7,7 +7,9 @@ from .adapter import (
     QwenAdapter,
     HunyuanAdapter,
     GeminiAdapter,
-    OpenAIAdapter
+    OpenAIAdapter,
+    build_ollama_model_choices,
+    list_ollama_models_sync,
 )
 from .factory import create_llm_adapter, get_available_providers, get_all_adapters
 from .router import LLMRouter, MultiLLMResponse
@@ -23,6 +25,8 @@ __all__ = [
     "HunyuanAdapter",
     "GeminiAdapter",
     "OpenAIAdapter",
+    "build_ollama_model_choices",
+    "list_ollama_models_sync",
     "create_llm_adapter",
     "get_available_providers",
     "get_all_adapters",

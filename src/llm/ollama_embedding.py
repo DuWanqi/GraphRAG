@@ -5,6 +5,7 @@ Ollama Embedding封装
 
 import asyncio
 import aiohttp
+import os
 from typing import List, Optional
 from dataclasses import dataclass
 
@@ -34,6 +35,8 @@ class OllamaEmbedding:
             config: 配置对象，默认使用nomic-embed-text模型
         """
         self.config = config or OllamaEmbeddingConfig()
+        # 允许用环境变量覆盖（与 LLM 侧保持一致）
+        self.config.base_url = os.getenv("OLLAMA_API_BASE", self.config.base_url)
         self._dimension = None
     
     @property

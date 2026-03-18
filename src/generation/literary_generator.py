@@ -4,6 +4,8 @@
 """
 
 import asyncio
+import os
+import time
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 
@@ -130,8 +132,15 @@ class LiteraryGenerator:
         if not self.llm_adapter and not self.llm_router:
             raise ValueError("需要提供llm_adapter或llm_router")
         
+        timing = os.getenv("TEMP_TIMING") == "1"
+        t0 = time.perf_counter()
+
         # 构建提示词
+        t_prompt0 = time.perf_counter()
         prompt = self._build_prompt(memoir_text, retrieval_result)
+        t_prompt = time.perf_counter() - t_prompt0
+        if timing:
+            print(f"[TEMP_TIMING] generator.build_prompt={t_prompt:.3f}s prompt_chars={len(prompt)}")
         
         # 调用LLM生成
         adapter = self.llm_adapter
@@ -144,12 +153,20 @@ class LiteraryGenerator:
         if adapter is None:
             raise ValueError("没有可用的LLM适配器")
         
+        t_llm0 = time.perf_counter()
         response = await adapter.generate(
             prompt=prompt,
             system_prompt=self.SYSTEM_PROMPT,
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        t_llm = time.perf_counter() - t_llm0
+        if timing:
+            total = time.perf_counter() - t0
+            print(
+                f"[TEMP_TIMING] generator.llm_call={t_llm:.3f}s total={total:.3f}s "
+                f"provider={response.provider.value} model={response.model}"
+            )
         
         return GenerationResult(
             content=response.content,

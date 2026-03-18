@@ -4,6 +4,8 @@ FastAPI 后端服务
 """
 
 from typing import Optional, List
+import os
+import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -113,27 +115,37 @@ async def generate(request: GenerateRequest):
     输入回忆录文本，返回生成的历史背景描述
     """
     try:
+        timing = os.getenv("TEMP_TIMING") == "1"
+        t0 = time.perf_counter()
         # 创建组件
         llm_adapter = create_llm_adapter(provider=request.provider)
         retriever = MemoirRetriever(llm_adapter=llm_adapter)
         generator = LiteraryGenerator(llm_adapter=llm_adapter)
         
         # 检索
+        t_ret0 = time.perf_counter()
         retrieval_result = await retriever.retrieve(
             request.memoir_text,
             top_k=10,
             use_llm_parsing=True,
         )
+        if timing:
+            print(f"[TEMP_TIMING] api.generate.retrieve={time.perf_counter()-t_ret0:.3f}s")
         
         # 生成
+        t_gen0 = time.perf_counter()
         gen_result = await generator.generate(
             memoir_text=request.memoir_text,
             retrieval_result=retrieval_result,
             temperature=request.temperature,
         )
+        if timing:
+            print(f"[TEMP_TIMING] api.generate.generate={time.perf_counter()-t_gen0:.3f}s")
         
         # 构建响应
         context = retrieval_result.context
+        if timing:
+            print(f"[TEMP_TIMING] api.generate.total={time.perf_counter()-t0:.3f}s")
         return GenerateResponse(
             content=gen_result.content,
             provider=gen_result.provider,
