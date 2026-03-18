@@ -17,6 +17,7 @@ OLLAMA_LOG="$OLLAMA_ROOT/ollama.log"
 # 参数
 MODE="gradio"
 PORT=8000
+RESTART_OLLAMA=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -25,6 +26,10 @@ while [[ $# -gt 0 ]]; do
         --ollama_path)
             OLLAMA_ROOT="$2"
             shift 2
+            ;;
+        --restart_ollama)
+            RESTART_OLLAMA=1
+            shift
             ;;
         *) shift ;;
     esac
@@ -40,14 +45,30 @@ echo "模式: $MODE | 端口: $PORT"
 echo "Ollama ROOT: $OLLAMA_ROOT"
 echo "Ollama BIN:  $OLLAMA_BIN"
 echo "Ollama LOG:  $OLLAMA_LOG"
+echo "Restart Ollama: $RESTART_OLLAMA"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # === 1. 启动 Ollama ===
 echo "[1/2] 检查 Ollama..."
 
-if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-    echo "  ✓ Ollama 已运行"
-else
+OLLAMA_API_BASE="${OLLAMA_API_BASE:-http://localhost:11434}"
+
+# 关键：让 Ollama 使用指定目录下的模型，而不是默认 ~/.ollama
+export OLLAMA_MODELS="${OLLAMA_MODELS:-$OLLAMA_ROOT/models}"
+mkdir -p "$OLLAMA_MODELS"
+
+if curl -s "$OLLAMA_API_BASE/api/tags" > /dev/null 2>&1; then
+    if [ "$RESTART_OLLAMA" = "1" ]; then
+        echo "  → 检测到 Ollama 已运行，按需重启以应用 OLLAMA_MODELS..."
+        # 尝试停止旧的 ollama serve（避免仍使用旧模型目录）
+        pkill -f "ollama serve" > /dev/null 2>&1 || true
+        sleep 1
+    else
+        echo "  ✓ Ollama 已运行（如需应用 --ollama_path 的模型目录，请加 --restart_ollama）"
+    fi
+fi
+
+if ! curl -s "$OLLAMA_API_BASE/api/tags" > /dev/null 2>&1; then
     echo "  → 启动 Ollama..."
 
     if [ ! -x "$OLLAMA_BIN" ]; then
@@ -57,14 +78,11 @@ else
 
     # 确保日志目录存在
     mkdir -p "$OLLAMA_ROOT"
-    # 关键：让 Ollama 使用指定目录下的模型，而不是默认 ~/.ollama
-    export OLLAMA_MODELS="${OLLAMA_MODELS:-$OLLAMA_ROOT/models}"
-    mkdir -p "$OLLAMA_MODELS"
 
     nohup "$OLLAMA_BIN" serve > "$OLLAMA_LOG" 2>&1 &
 
     for i in {1..10}; do
-        if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+        if curl -s "$OLLAMA_API_BASE/api/tags" > /dev/null 2>&1; then
             echo "  ✓ Ollama 启动成功"
             break
         fi

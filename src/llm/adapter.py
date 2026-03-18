@@ -11,6 +11,72 @@ import asyncio
 
 import litellm
 from litellm import acompletion, completion, aembedding, embedding
+import aiohttp
+
+def _prettify_ollama_model_name(model: str) -> str:
+    """
+    将 Ollama 模型名转为更友好的展示名。
+    例如: qwen3:32b -> Qwen3-32b, deepseek-r1:70b -> Deepseek-r1-70b
+    """
+    raw = (model or "").strip()
+    if not raw:
+        return raw
+    # 有些模型可能形如 "library/qwen3:32b"
+    raw = raw.split("/")[-1]
+    raw = raw.replace(":", "-")
+    return raw[:1].upper() + raw[1:]
+
+
+async def fetch_ollama_model_names(api_base: str) -> List[str]:
+    """
+    从 Ollama /api/tags 拉取模型名称列表（name 字段）。
+    """
+    base = (api_base or "http://localhost:11434").rstrip("/")
+    url = f"{base}/api/tags"
+    timeout = aiohttp.ClientTimeout(total=5)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise RuntimeError(f"Ollama /api/tags 返回 {resp.status}: {text}")
+            payload = await resp.json()
+
+    names: List[str] = []
+    for m in (payload.get("models") or []):
+        n = m.get("name")
+        if isinstance(n, str) and n.strip():
+            names.append(n.strip())
+    return names
+
+
+def list_ollama_models_sync(api_base: Optional[str] = None) -> List[str]:
+    """
+    同步获取 Ollama 模型列表（供 Gradio UI 构建阶段使用）。
+    """
+    base = (api_base or "http://localhost:11434").rstrip("/")
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    if running_loop and running_loop.is_running():
+        # 在已有事件循环中无法阻塞等待；这里退化为“空列表”，前端可通过刷新按钮重试。
+        return []
+
+    return asyncio.run(fetch_ollama_model_names(base))
+
+
+def build_ollama_model_choices(api_base: Optional[str] = None) -> List[tuple]:
+    """
+    构建 Gradio Dropdown 友好的 choices: [(label, value), ...]
+    label 形如: "Qwen3-32b (Ollama)"，value 为原始模型名: "qwen3:32b"
+    """
+    names = list_ollama_models_sync(api_base=api_base)
+    choices: List[tuple] = []
+    for name in names:
+        label = f"{_prettify_ollama_model_name(name)} (Ollama)"
+        choices.append((label, name))
+    return choices
 
 
 class LLMProvider(Enum):
@@ -495,6 +561,44 @@ class OllamaAdapter(LLMAdapter):
     def default_model(self) -> str:
         return "qwen3:32b"
     
+    async def _assert_model_available(self) -> None:
+        """
+        调用前预检：从 /api/tags 获取可用模型，避免盲猜模型名。
+        """
+        base = (self.api_base or "http://localhost:11434").rstrip("/")
+        url = f"{base}/api/tags"
+        model = self._get_model()
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        raise RuntimeError(f"Ollama /api/tags 返回 {resp.status}: {text}")
+                    payload = await resp.json()
+        except Exception as e:
+            # 网络/服务不可用时，沿用原有 LiteLLM 报错路径
+            return
+
+        names: List[str] = []
+        for m in (payload.get("models") or []):
+            n = m.get("name")
+            if isinstance(n, str):
+                names.append(n)
+
+        if names and model not in names:
+            preview = ", ".join(names[:20])
+            more = "" if len(names) <= 20 else f" ... (+{len(names) - 20})"
+            raise ValueError(
+                f"Ollama 未找到模型 '{model}'。"
+                f"当前 {url} 可用模型包括: {preview}{more}。"
+                f"请把 DEFAULT_LLM_MODEL 改成其中一个，或确认 OLLAMA_MODELS/OLLAMA_API_BASE 指向同一服务。"
+            )
+
     def _get_litellm_model_name(self) -> str:
         model = self._get_model()
         return f"ollama/{model}"
+
+    async def chat(self, *args, **kwargs) -> LLMResponse:
+        await self._assert_model_available()
+        return await super().chat(*args, **kwargs)

@@ -8,7 +8,12 @@ from typing import Optional, List, Tuple
 import gradio as gr
 
 from src.config import get_settings
-from src.llm import create_llm_adapter, get_available_providers, LLMRouter
+from src.llm import (
+    create_llm_adapter,
+    get_available_providers,
+    LLMRouter,
+    build_ollama_model_choices,
+)
 from src.indexing import GraphBuilder, DataLoader
 from src.retrieval import MemoirRetriever
 from src.generation import LiteraryGenerator, PromptTemplates
@@ -20,22 +25,29 @@ settings = get_settings()
 retriever: Optional[MemoirRetriever] = None
 generator: Optional[LiteraryGenerator] = None
 current_provider: Optional[str] = None  # 跟踪当前使用的 provider
+current_model: Optional[str] = None  # 跟踪当前使用的模型（目前仅用于 ollama）
 
 
-def init_components(provider: str = "gemini"):
+def init_components(provider: str = "gemini", model: Optional[str] = None):
     """初始化组件"""
-    global retriever, generator, current_provider
+    global retriever, generator, current_provider, current_model
     
     # 如果 provider 相同且组件已初始化，则跳过
-    if provider == current_provider and retriever is not None and generator is not None:
-        return f"✅ 已使用 {provider} 模型"
+    if (
+        provider == current_provider
+        and (provider != "ollama" or model == current_model)
+        and retriever is not None
+        and generator is not None
+    ):
+        return f"✅ 已使用 {provider}{f'/{model}' if model else ''} 模型"
     
     try:
-        llm_adapter = create_llm_adapter(provider=provider)
+        llm_adapter = create_llm_adapter(provider=provider, model=(model if provider == "ollama" else None))
         retriever = MemoirRetriever(llm_adapter=llm_adapter)
         generator = LiteraryGenerator(llm_adapter=llm_adapter)
         current_provider = provider
-        return f"✅ 初始化成功！使用 {provider} 模型"
+        current_model = model if provider == "ollama" else None
+        return f"✅ 初始化成功！使用 {provider}{f'/{model}' if model else ''} 模型"
     except Exception as e:
         return f"❌ 初始化失败: {str(e)}"
 
@@ -43,6 +55,7 @@ def init_components(provider: str = "gemini"):
 async def process_memoir_async(
     memoir_text: str,
     provider: str,
+    model: Optional[str],
     style: str,
     temperature: float,
     enable_fact_check: bool = True,
@@ -55,13 +68,18 @@ async def process_memoir_async(
     Returns:
         (生成的历史背景, 提取的信息, 检索结果, 事实性检查结果)
     """
-    global retriever, generator, current_provider
+    global retriever, generator, current_provider, current_model
     
     if not memoir_text.strip():
         return "请输入回忆录文本", "", "", ""
     
-    if retriever is None or generator is None or current_provider != provider:
-        init_result = init_components(provider)
+    if (
+        retriever is None
+        or generator is None
+        or current_provider != provider
+        or (provider == "ollama" and current_model != model)
+    ):
+        init_result = init_components(provider, model=model)
         if "失败" in init_result:
             return init_result, "", "", ""
     
@@ -129,7 +147,7 @@ async def process_memoir_async(
             """运行事实性检查"""
             check_start = time.time()
             try:
-                llm_adapter = create_llm_adapter(provider=provider)
+                llm_adapter = create_llm_adapter(provider=provider, model=(model if provider == "ollama" else None))
                 # 使用FActScoreChecker替代原来的FactChecker
                 fact_checker = FActScoreChecker(llm_adapter=llm_adapter)
                 
@@ -198,6 +216,7 @@ async def process_memoir_async(
 def process_memoir(
     memoir_text: str,
     provider: str,
+    model: Optional[str],
     style: str,
     temperature: float,
     enable_fact_check: bool = True,
@@ -206,7 +225,7 @@ def process_memoir(
 ) -> Tuple[str, str, str, str]:
     """处理回忆录（同步包装）"""
     return asyncio.run(process_memoir_async(
-        memoir_text, provider, style, temperature, enable_fact_check, retrieval_mode, use_rule_decompose
+        memoir_text, provider, model, style, temperature, enable_fact_check, retrieval_mode, use_rule_decompose
     ))
 
 
@@ -362,8 +381,14 @@ def create_ui():
                         with gr.Row():
                             provider_select = gr.Dropdown(
                                 choices=available_providers,
-                                value=available_providers[0] if available_providers else None,
+                                value=None,
                                 label="LLM 模型",
+                            )
+                            ollama_model_select = gr.Dropdown(
+                                choices=build_ollama_model_choices(settings.ollama_api_base),
+                                value=None,
+                                label="Ollama 模型",
+                                visible=False,
                             )
                             style_select = gr.Dropdown(
                                 choices=list(PromptTemplates.list_styles().keys()),
@@ -403,6 +428,7 @@ def create_ui():
                         )
                         
                         generate_btn = gr.Button("🚀 生成历史背景", variant="primary")
+                        refresh_ollama_models_btn = gr.Button("🔄 刷新 Ollama 模型列表", variant="secondary")
                     
                     with gr.Column(scale=1):
                         output_text = gr.Textbox(
@@ -420,8 +446,40 @@ def create_ui():
                 
                 generate_btn.click(
                     fn=process_memoir,
-                    inputs=[memoir_input, provider_select, style_select, temperature_slider, fact_check_checkbox, retrieval_mode_select, rule_decompose_checkbox],
+                    inputs=[memoir_input, provider_select, ollama_model_select, style_select, temperature_slider, fact_check_checkbox, retrieval_mode_select, rule_decompose_checkbox],
                     outputs=[output_text, extracted_info, retrieval_info, fact_check_output],
+                )
+
+                def _update_ollama_model_ui(provider: str):
+                    if provider == "ollama":
+                        choices = build_ollama_model_choices(settings.ollama_api_base)
+                        value = choices[0][1] if choices else None
+                        return gr.update(visible=True, choices=choices, value=value)
+                    return gr.update(visible=False, value=None)
+
+                provider_select.change(
+                    fn=_update_ollama_model_ui,
+                    inputs=[provider_select],
+                    outputs=[ollama_model_select],
+                )
+
+                app.load(
+                    fn=_update_ollama_model_ui,
+                    inputs=[provider_select],
+                    outputs=[ollama_model_select],
+                )
+
+                def _refresh_ollama_models(provider: str, current_value: Optional[str]):
+                    if provider != "ollama":
+                        return gr.update()
+                    choices = build_ollama_model_choices(settings.ollama_api_base)
+                    value = current_value if any(v == current_value for _, v in choices) else (choices[0][1] if choices else None)
+                    return gr.update(choices=choices, value=value, visible=True)
+
+                refresh_ollama_models_btn.click(
+                    fn=_refresh_ollama_models,
+                    inputs=[provider_select, ollama_model_select],
+                    outputs=[ollama_model_select],
                 )
             
             # 多模型对比标签页

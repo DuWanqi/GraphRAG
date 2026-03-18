@@ -6,6 +6,7 @@
 
 import os
 import asyncio
+import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
@@ -157,18 +158,29 @@ class MemoirRetriever:
         Returns:
             RetrievalResult: 检索结果
         """
+        timing = os.getenv("TEMP_TIMING") == "1"
+        t0 = time.perf_counter()
+
         # 解析回忆录
+        t_parse0 = time.perf_counter()
         if use_llm_parsing and self.llm_adapter:
             context = await self.parser.parse_with_llm(memoir_text)
         else:
             context = self.parser.parse(memoir_text, use_llm=False)
+        t_parse = time.perf_counter() - t_parse0
+        if timing:
+            print(f"[TEMP_TIMING] retriever.parse={t_parse:.3f}s use_llm_parsing={use_llm_parsing} mode={mode}")
         
         # 生成查询
         query = context.to_query()
         
         # 确保索引数据已加载
+        t_load0 = time.perf_counter()
         if self._entities_df is None:
             self._load_index_data()
+        t_load = time.perf_counter() - t_load0
+        if timing:
+            print(f"[TEMP_TIMING] retriever.load_index={t_load:.3f}s")
         
         # 执行检索
         result = RetrievalResult(query=query, context=context)
@@ -176,12 +188,16 @@ class MemoirRetriever:
         # 根据模式选择检索策略
         if mode == "vector" and self.vector_retriever.is_ready():
             # 纯向量检索
+            t_v0 = time.perf_counter()
             result.entities = await self.vector_retriever.search_entities(query, top_k)
             result.communities = await self.vector_retriever.search_communities(query, top_k // 2)
             result.text_units = await self.vector_retriever.search_text_units(query, top_k)
+            if timing:
+                print(f"[TEMP_TIMING] retriever.vector_search={time.perf_counter()-t_v0:.3f}s")
             
         elif mode == "hybrid" and self.vector_retriever.is_ready():
             # 混合检索：关键词 + 向量融合
+            t_h0 = time.perf_counter()
             keyword_entities = self._search_entities(context, top_k)
             vector_entities = await self.vector_retriever.search_entities(query, top_k)
             result.entities = self._merge_results(keyword_entities, vector_entities, top_k)
@@ -193,9 +209,12 @@ class MemoirRetriever:
             keyword_texts = self._search_text_units(context, top_k)
             vector_texts = await self.vector_retriever.search_text_units(query, top_k)
             result.text_units = self._merge_text_results(keyword_texts, vector_texts, top_k)
+            if timing:
+                print(f"[TEMP_TIMING] retriever.hybrid_search={time.perf_counter()-t_h0:.3f}s")
             
         else:
             # 关键词检索（默认）
+            t_k0 = time.perf_counter()
             if self._entities_df is not None:
                 result.entities = self._search_entities(context, top_k)
             if self._relationships_df is not None:
@@ -204,7 +223,15 @@ class MemoirRetriever:
                 result.communities = self._search_communities(context, top_k // 2)
             if self._text_units_df is not None:
                 result.text_units = self._search_text_units(context, top_k)
+            if timing:
+                print(f"[TEMP_TIMING] retriever.keyword_search={time.perf_counter()-t_k0:.3f}s")
         
+        if timing:
+            total = time.perf_counter() - t0
+            print(
+                f"[TEMP_TIMING] retriever.total={total:.3f}s "
+                f"entities={len(result.entities)} rel={len(result.relationships)} comm={len(result.communities)} texts={len(result.text_units)}"
+            )
         return result
     
     def _merge_results(
