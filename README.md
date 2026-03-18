@@ -119,6 +119,11 @@ python run_web.py api
 python run_web.py both
 ```
 
+```bash
+# 或直接运行
+bash start.sh
+```
+
 访问 http://localhost:8000 使用系统。
 
 ### 6. 使用本地模型 (Ollama)
@@ -127,6 +132,7 @@ python run_web.py both
 
 ```bash
 ollama serve
+# 运行start.sh脚本时需要添加路径后缀
 bash /GraphRAG/start.sh --ollama_path .../Ollama
 ```
 
