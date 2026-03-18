@@ -6,7 +6,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, List, Dict, Any, AsyncIterator
+from typing import Optional, List, Dict, Any, AsyncIterator, Union
 import asyncio
 
 import litellm
@@ -186,6 +186,52 @@ class LLMAdapter(ABC):
             usage=dict(response.usage) if response.usage else None,
             finish_reason=response.choices[0].finish_reason
         )
+
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **kwargs
+    ) -> AsyncIterator[str]:
+        """
+        流式聊天接口：逐步 yield 新增文本片段（delta）。
+        """
+        litellm_model = self._get_litellm_model_name()
+
+        extra_params = {}
+        if self.api_key:
+            extra_params["api_key"] = self.api_key
+        if self.api_base:
+            extra_params["api_base"] = self.api_base
+
+        stream = await acompletion(
+            model=litellm_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+            **extra_params,
+            **kwargs
+        )
+
+        async for chunk in stream:
+            # 兼容不同 provider 的 chunk 结构
+            delta = None
+            try:
+                choice = chunk.choices[0]
+                delta = getattr(choice, "delta", None)
+                if delta is not None:
+                    delta = getattr(delta, "content", None)
+                if delta is None:
+                    msg = getattr(choice, "message", None)
+                    if msg is not None:
+                        delta = getattr(msg, "content", None)
+            except Exception:
+                delta = None
+
+            if isinstance(delta, str) and delta:
+                yield delta
     
     def chat_sync(
         self,
@@ -246,6 +292,25 @@ class LLMAdapter(ABC):
         messages.append({"role": "user", "content": prompt})
         
         return await self.chat(messages, temperature, max_tokens, **kwargs)
+
+    async def generate_stream(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **kwargs
+    ) -> AsyncIterator[str]:
+        """
+        流式生成接口：逐步 yield 新增文本片段（delta）。
+        """
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        async for delta in self.chat_stream(messages, temperature, max_tokens, **kwargs):
+            yield delta
     
     async def get_embedding(
         self,
@@ -602,3 +667,8 @@ class OllamaAdapter(LLMAdapter):
     async def chat(self, *args, **kwargs) -> LLMResponse:
         await self._assert_model_available()
         return await super().chat(*args, **kwargs)
+
+    async def chat_stream(self, *args, **kwargs) -> AsyncIterator[str]:
+        await self._assert_model_available()
+        async for delta in super().chat_stream(*args, **kwargs):
+            yield delta
