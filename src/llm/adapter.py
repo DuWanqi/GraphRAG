@@ -219,14 +219,33 @@ class LLMAdapter(ABC):
             # 兼容不同 provider 的 chunk 结构
             delta = None
             try:
-                choice = chunk.choices[0]
-                delta = getattr(choice, "delta", None)
-                if delta is not None:
-                    delta = getattr(delta, "content", None)
-                if delta is None:
-                    msg = getattr(choice, "message", None)
-                    if msg is not None:
-                        delta = getattr(msg, "content", None)
+                # litellm 可能返回对象，也可能返回 dict（不同 provider/版本）
+                if isinstance(chunk, dict):
+                    # OpenAI 兼容结构：{"choices":[{"delta":{"content":...}}]}
+                    choices = chunk.get("choices") or []
+                    choice = choices[0] if choices else {}
+                    if isinstance(choice, dict):
+                        d = choice.get("delta")
+                        if isinstance(d, dict):
+                            delta = d.get("content")
+                        if delta is None:
+                            m = choice.get("message")
+                            if isinstance(m, dict):
+                                delta = m.get("content")
+                    # Ollama 兼容结构（常见）：{"message":{"content":...}}
+                    if delta is None:
+                        m = chunk.get("message")
+                        if isinstance(m, dict):
+                            delta = m.get("content")
+                else:
+                    choice = chunk.choices[0]
+                    delta = getattr(choice, "delta", None)
+                    if delta is not None:
+                        delta = getattr(delta, "content", None)
+                    if delta is None:
+                        msg = getattr(choice, "message", None)
+                        if msg is not None:
+                            delta = getattr(msg, "content", None)
             except Exception:
                 delta = None
 
@@ -664,11 +683,103 @@ class OllamaAdapter(LLMAdapter):
         model = self._get_model()
         return f"ollama/{model}"
 
-    async def chat(self, *args, **kwargs) -> LLMResponse:
-        await self._assert_model_available()
-        return await super().chat(*args, **kwargs)
+    async def chat(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **kwargs,
+    ) -> LLMResponse:
+        """
+        使用 Ollama 原生 /api/chat。
 
-    async def chat_stream(self, *args, **kwargs) -> AsyncIterator[str]:
+        说明：
+        - Ollama 的 OpenAI 兼容端点（/v1/chat/completions）对部分“推理模型”会把文本放到 reasoning 字段，
+          导致 content 为空，从而前端看起来“无法流式/无输出”。
+        - 这里直接调用 /api/chat，确保 content 字段有可见输出，并支持真正的 token 流式。
+        """
         await self._assert_model_available()
-        async for delta in super().chat_stream(*args, **kwargs):
-            yield delta
+        base = (self.api_base or "http://localhost:11434").rstrip("/")
+        url = f"{base}/api/chat"
+        payload = {
+            "model": self._get_model(),
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        }
+
+        timeout = aiohttp.ClientTimeout(total=kwargs.pop("timeout", None) or 120)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json=payload) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise RuntimeError(f"Ollama /api/chat 返回 {resp.status}: {text}")
+                data = await resp.json()
+
+        msg = (data.get("message") or {}) if isinstance(data, dict) else {}
+        content = msg.get("content") if isinstance(msg, dict) else ""
+        return LLMResponse(
+            content=content or "",
+            model=self._get_model(),
+            provider=self.provider,
+            usage=None,
+            finish_reason=None,
+        )
+
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **kwargs,
+    ) -> AsyncIterator[str]:
+        """
+        Ollama 原生流式：读取 NDJSON，每条 JSON 里 message.content 是增量片段。
+        """
+        await self._assert_model_available()
+        base = (self.api_base or "http://localhost:11434").rstrip("/")
+        url = f"{base}/api/chat"
+        payload = {
+            "model": self._get_model(),
+            "messages": messages,
+            "stream": True,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        }
+
+        timeout = aiohttp.ClientTimeout(total=kwargs.pop("timeout", None) or 120)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json=payload) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise RuntimeError(f"Ollama /api/chat 返回 {resp.status}: {text}")
+
+                import json
+                buffer = ""
+                async for raw in resp.content.iter_chunked(1024):
+                    if not raw:
+                        continue
+                    buffer += raw.decode("utf-8", errors="ignore")
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except Exception:
+                            continue
+                        if not isinstance(obj, dict):
+                            continue
+                        msg = obj.get("message")
+                        if isinstance(msg, dict):
+                            delta = msg.get("content")
+                            if isinstance(delta, str) and delta:
+                                yield delta
+                        if obj.get("done") is True:
+                            return
