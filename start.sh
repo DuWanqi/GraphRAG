@@ -57,6 +57,9 @@ else
 
     # 确保日志目录存在
     mkdir -p "$OLLAMA_ROOT"
+    # 关键：让 Ollama 使用指定目录下的模型，而不是默认 ~/.ollama
+    export OLLAMA_MODELS="${OLLAMA_MODELS:-$OLLAMA_ROOT/models}"
+    mkdir -p "$OLLAMA_MODELS"
 
     nohup "$OLLAMA_BIN" serve > "$OLLAMA_LOG" 2>&1 &
 
