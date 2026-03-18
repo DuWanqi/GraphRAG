@@ -11,6 +11,7 @@ import json
 
 from ..llm import LLMAdapter, create_llm_adapter
 from ..retrieval import RetrievalResult
+from .factscore_adapter import FActScoreChecker, FactCheckResult
 
 
 class EvaluationDimension(Enum):
@@ -39,10 +40,11 @@ class EvaluationResult:
     summary: str
     suggestions: List[str] = field(default_factory=list)
     raw_response: Optional[str] = None
+    fact_check: Optional[FactCheckResult] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
-        return {
+        result = {
             "scores": {
                 k: {
                     "dimension": v.dimension.value,
@@ -55,6 +57,9 @@ class EvaluationResult:
             "summary": self.summary,
             "suggestions": self.suggestions,
         }
+        if self.fact_check:
+            result["fact_check"] = self.fact_check.to_dict()
+        return result
     
     def get_score(self, dimension: str) -> float:
         """获取指定维度的评分"""
@@ -158,6 +163,8 @@ class Evaluator:
             llm_adapter: LLM适配器（用于深度评估）
         """
         self.llm_adapter = llm_adapter
+        # 使用 FActScoreChecker 替代原来的 FactChecker
+        self.fact_checker = FActScoreChecker(llm_adapter)
     
     async def evaluate(
         self,
@@ -165,6 +172,7 @@ class Evaluator:
         generated_text: str,
         retrieval_result: Optional[RetrievalResult] = None,
         use_llm: bool = True,
+        enable_fact_check: bool = True,
     ) -> EvaluationResult:
         """
         评估生成的历史背景文本
@@ -174,18 +182,36 @@ class Evaluator:
             generated_text: 生成的历史背景文本
             retrieval_result: 检索结果（可选，用于准确性评估）
             use_llm: 是否使用LLM进行评估
+            enable_fact_check: 是否启用事实性检查
             
         Returns:
             EvaluationResult: 评估结果
         """
         if use_llm and self.llm_adapter:
-            return await self._evaluate_with_llm(
+            result = await self._evaluate_with_llm(
                 memoir_text, generated_text, retrieval_result
             )
         else:
-            return self._evaluate_simple(
+            result = self._evaluate_simple(
                 memoir_text, generated_text, retrieval_result
             )
+        
+        if enable_fact_check:
+            fact_check_result = await self.fact_checker.check(
+                memoir_text=memoir_text,
+                generated_text=generated_text,
+                retrieval_result=retrieval_result,
+                use_llm=use_llm and self.llm_adapter is not None,
+            )
+            result.fact_check = fact_check_result
+            
+            if not fact_check_result.is_factual:
+                result.suggestions.insert(
+                    0, 
+                    f"⚠️ 事实性警告：{fact_check_result.summary}"
+                )
+        
+        return result
     
     def evaluate_sync(
         self,

@@ -14,6 +14,17 @@ from .metrics import (
     calculate_all_metrics,
     aggregate_scores,
 )
+from .factscore_adapter import (
+    FActScoreChecker,
+    FactCheckResult,
+)
+from .retrieval_benchmark import (
+    RetrievalBenchmark,
+    TestCase,
+    RetrievalMetrics,
+    BenchmarkResult,
+    run_benchmark,
+)
 
 __all__ = [
     "Evaluator",
@@ -27,4 +38,11 @@ __all__ = [
     "MetricResult",
     "calculate_all_metrics",
     "aggregate_scores",
+    "FActScoreChecker",
+    "FactCheckResult",
+    "RetrievalBenchmark",
+    "TestCase",
+    "RetrievalMetrics",
+    "BenchmarkResult",
+    "run_benchmark",
 ]

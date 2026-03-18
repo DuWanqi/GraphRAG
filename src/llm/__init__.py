@@ -11,6 +11,8 @@ from .adapter import (
 )
 from .factory import create_llm_adapter, get_available_providers, get_all_adapters
 from .router import LLMRouter, MultiLLMResponse
+from .local_embedding import LocalEmbedding, get_local_embedding
+from .ollama_embedding import OllamaEmbedding, OllamaEmbeddingConfig, get_ollama_embedding
 
 __all__ = [
     "LLMAdapter",
@@ -26,4 +28,9 @@ __all__ = [
     "get_all_adapters",
     "LLMRouter",
     "MultiLLMResponse",
+    "LocalEmbedding",
+    "get_local_embedding",
+    "OllamaEmbedding",
+    "OllamaEmbeddingConfig",
+    "get_ollama_embedding",
 ]

@@ -85,7 +85,7 @@ GOOGLE_API_KEY=your_google_api_key
 
 # 默认 LLM 配置（可选 Ollama 本地模型）
 DEFAULT_LLM_PROVIDER=gemini
-DEFAULT_LLM_MODEL=gemini-2.0-flash
+DEFAULT_LLM_MODEL=gemini-2.5-flash
 
 # 使用 Ollama 本地模型时
 # DEFAULT_LLM_PROVIDER=ollama
@@ -216,7 +216,7 @@ GraphRAG/
 | Deepseek | deepseek-chat | 高性价比，中文优化 |
 | Qwen | qwen-plus | 阿里云，中文能力强 |
 | Hunyuan | hunyuan-lite | 腾讯，国产优化 |
-| Gemini | gemini-2.0-flash | Google，多模态能力 |
+| Gemini | gemini-2.5-flash | Google，多模态能力 |
 | Ollama | qwen3:32b | 本地部署，数据隐私 |
 
 ### 2. 写作风格

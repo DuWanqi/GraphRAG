@@ -464,7 +464,7 @@ builder = GraphBuilder(llm_provider="deepseek")
 builder = GraphBuilder(llm_provider="qwen", llm_model="qwen-plus")
 
 # 使用 Google Gemini
-builder = GraphBuilder(llm_provider="gemini", llm_model="gemini-1.5-flash")
+builder = GraphBuilder(llm_provider="gemini", llm_model="gemini-2.5-flash")
 ```
 
 ### 7.2 分块参数调整

@@ -12,6 +12,7 @@ from src.llm import create_llm_adapter, get_available_providers, LLMRouter
 from src.indexing import GraphBuilder, DataLoader
 from src.retrieval import MemoirRetriever
 from src.generation import LiteraryGenerator, PromptTemplates
+from src.evaluation import Evaluator, FActScoreChecker
 
 
 # 全局变量
@@ -44,40 +45,51 @@ async def process_memoir_async(
     provider: str,
     style: str,
     temperature: float,
-) -> Tuple[str, str, str]:
+    enable_fact_check: bool = True,
+    retrieval_mode: str = "keyword",
+    use_rule_decompose: bool = False,
+) -> Tuple[str, str, str, str]:
     """
     异步处理回忆录
     
     Returns:
-        (生成的历史背景, 提取的信息, 检索结果)
+        (生成的历史背景, 提取的信息, 检索结果, 事实性检查结果)
     """
     global retriever, generator, current_provider
     
     if not memoir_text.strip():
-        return "请输入回忆录文本", "", ""
+        return "请输入回忆录文本", "", "", ""
     
-    # 确保组件初始化，或在 provider 变化时重新初始化
     if retriever is None or generator is None or current_provider != provider:
         init_result = init_components(provider)
         if "失败" in init_result:
-            return init_result, "", ""
+            return init_result, "", "", ""
     
     try:
-        # 检索历史背景
+        import time
+        start_time = time.time()
+        
+        print(f"[DEBUG] 开始处理回忆录，长度: {len(memoir_text)} 字符")
+        
+        # 检索相关内容（包含实体提取）
+        retrieve_start = time.time()
+        print("[DEBUG] 开始检索相关内容...")
         retrieval_result = await retriever.retrieve(
             memoir_text, 
             top_k=10,
-            use_llm_parsing=True
+            use_llm_parsing=False,
+            mode=retrieval_mode,
         )
+        retrieve_time = time.time() - retrieve_start
+        print(f"[DEBUG] 检索完成，耗时: {retrieve_time:.2f} 秒")
         
-        # 提取的信息
         context = retrieval_result.context
         extracted_info = f"""**提取的时间**: {context.year or '未识别'}
 **提取的地点**: {context.location or '未识别'}
 **关键词**: {', '.join(context.keywords) if context.keywords else '无'}
-**生成的查询**: {retrieval_result.query}"""
+**生成的查询**: {retrieval_result.query}
+**提取+检索耗时**: {retrieve_time:.2f} 秒"""
         
-        # 检索结果
         retrieval_info = f"""**找到实体**: {len(retrieval_result.entities)} 个
 **找到关系**: {len(retrieval_result.relationships)} 个
 **社区报告**: {len(retrieval_result.communities)} 个
@@ -88,17 +100,99 @@ async def process_memoir_async(
             for entity in retrieval_result.entities[:5]:
                 retrieval_info += f"- {entity.get('name', '未知')}: {entity.get('description', '')[:100]}...\n"
         
-        # 生成历史背景
+        # 生成文本
+        gen_start = time.time()
+        print("[DEBUG] 开始生成文本...")
         gen_result = await generator.generate(
             memoir_text=memoir_text,
             retrieval_result=retrieval_result,
             temperature=temperature,
+            max_tokens=2048,  # 增加最大token数，避免输出被截断
         )
+        gen_time = time.time() - gen_start
+        print(f"[DEBUG] 生成完成，耗时: {gen_time:.2f} 秒")
         
-        return gen_result.content, extracted_info, retrieval_info
+        # 先生成基本的事实性检查信息
+        fact_check_info = f"**生成耗时**: {gen_time:.2f} 秒\n"
+        
+        # 如果不需要事实性检查，直接返回
+        if not enable_fact_check:
+            total_time = time.time() - start_time
+            fact_check_info += f"\n**总耗时**: {total_time:.2f} 秒"
+            print(f"[DEBUG] 处理完成，总耗时: {total_time:.2f} 秒")
+            return gen_result.content, extracted_info, retrieval_info, fact_check_info
+        
+        # 事实性检查（带超时处理）
+        print("[DEBUG] 开始事实性检查...")
+        
+        async def run_fact_check():
+            """运行事实性检查"""
+            check_start = time.time()
+            try:
+                llm_adapter = create_llm_adapter(provider=provider)
+                # 使用FActScoreChecker替代原来的FactChecker
+                fact_checker = FActScoreChecker(llm_adapter=llm_adapter)
+                
+                # 带超时的事实性检查
+                async def check_with_timeout():
+                    return await fact_checker.check(
+                        memoir_text=memoir_text,
+                        generated_text=gen_result.content,
+                        retrieval_result=retrieval_result,
+                        use_llm=True,
+                        use_rule_decompose=use_rule_decompose,
+                    )
+                
+                # 设置90秒超时（宽限超时时间）
+                fact_result = await asyncio.wait_for(check_with_timeout(), timeout=90.0)
+                check_time = time.time() - check_start
+                print(f"[DEBUG] 事实性检查完成，耗时: {check_time:.2f} 秒")
+                
+                status_icon = "✅" if fact_result.is_factual else "⚠️"
+                return f"""**生成耗时**: {gen_time:.2f} 秒
+
+### {status_icon} 事实性检查结果
+
+**一致性判定**: {'事实一致' if fact_result.is_factual else '存在潜在问题'}
+**置信度**: {fact_result.confidence:.2%}
+**实体覆盖率**: {fact_result.entity_coverage:.2%}
+**证据支持度**: {fact_result.evidence_support:.2%}
+**检查耗时**: {check_time:.2f} 秒
+
+**总结**: {fact_result.summary}
+
+"""
+                
+            except asyncio.TimeoutError:
+                check_time = time.time() - check_start
+                print(f"[DEBUG] 事实性检查超时，耗时: {check_time:.2f} 秒")
+                return f"**生成耗时**: {gen_time:.2f} 秒\n**检查耗时**: {check_time:.2f} 秒\n事实性检查超时，请稍后重试"
+            except Exception as e:
+                check_time = time.time() - check_start
+                print(f"[DEBUG] 事实性检查失败: {str(e)}")
+                return f"**生成耗时**: {gen_time:.2f} 秒\n**检查耗时**: {check_time:.2f} 秒\n事实性检查失败: {str(e)}"
+        
+        # 优化：不再使用后台任务，而是直接同步执行事实性检查
+        # 这样可以确保结果能够正确返回给Gradio
+        print("[DEBUG] 开始事实性检查...")
+        
+        # 运行事实性检查（带超时）
+        try:
+            fact_check_info = await run_fact_check()
+            print("[DEBUG] 事实性检查完成")
+        except Exception as e:
+            print(f"[DEBUG] 事实性检查失败: {e}")
+            fact_check_info = fact_check_info + f"\n**事实性检查失败**: {str(e)}"
+        
+        total_time = time.time() - start_time
+        fact_check_info += f"\n**总耗时**: {total_time:.2f} 秒"
+        print(f"[DEBUG] 处理完成，总耗时: {total_time:.2f} 秒")
+        
+        return gen_result.content, extracted_info, retrieval_info, fact_check_info
         
     except Exception as e:
-        return f"处理失败: {str(e)}", "", ""
+        print(f"[DEBUG] 处理失败: {str(e)}")
+        return f"处理失败: {str(e)}", "", "", ""
 
 
 def process_memoir(
@@ -106,9 +200,14 @@ def process_memoir(
     provider: str,
     style: str,
     temperature: float,
-) -> Tuple[str, str, str]:
+    enable_fact_check: bool = True,
+    retrieval_mode: str = "keyword",
+    use_rule_decompose: bool = False,
+) -> Tuple[str, str, str, str]:
     """处理回忆录（同步包装）"""
-    return asyncio.run(process_memoir_async(memoir_text, provider, style, temperature))
+    return asyncio.run(process_memoir_async(
+        memoir_text, provider, style, temperature, enable_fact_check, retrieval_mode, use_rule_decompose
+    ))
 
 
 async def compare_providers_async(
@@ -280,6 +379,29 @@ def create_ui():
                             label="创意度 (Temperature)",
                         )
                         
+                        retrieval_mode_select = gr.Radio(
+                            choices=[
+                                ("关键词检索 (快速)", "keyword"),
+                                ("向量检索 (精准)", "vector"),
+                                ("混合检索 (推荐)", "hybrid"),
+                            ],
+                            value="keyword",
+                            label="检索模式",
+                            info="选择知识图谱检索策略",
+                        )
+                        
+                        fact_check_checkbox = gr.Checkbox(
+                            value=True,
+                            label="🔍 启用事实性检查",
+                            info="检测生成内容是否存在幻觉或事实不一致",
+                        )
+                        
+                        rule_decompose_checkbox = gr.Checkbox(
+                            value=False,
+                            label="⚡ 使用规则拆分",
+                            info="使用规则而非LLM进行原子事实拆分，大幅提高速度",
+                        )
+                        
                         generate_btn = gr.Button("🚀 生成历史背景", variant="primary")
                     
                     with gr.Column(scale=1):
@@ -292,11 +414,14 @@ def create_ui():
                         with gr.Accordion("📊 详细信息", open=False):
                             extracted_info = gr.Markdown(label="提取的信息")
                             retrieval_info = gr.Markdown(label="检索结果")
+                        
+                        with gr.Accordion("🔍 事实性检查", open=True):
+                            fact_check_output = gr.Markdown(label="事实性检查结果")
                 
                 generate_btn.click(
                     fn=process_memoir,
-                    inputs=[memoir_input, provider_select, style_select, temperature_slider],
-                    outputs=[output_text, extracted_info, retrieval_info],
+                    inputs=[memoir_input, provider_select, style_select, temperature_slider, fact_check_checkbox, retrieval_mode_select, rule_decompose_checkbox],
+                    outputs=[output_text, extracted_info, retrieval_info, fact_check_output],
                 )
             
             # 多模型对比标签页
@@ -346,9 +471,10 @@ def create_ui():
                 **支持的 LLM 模型：**
                 | 提供商 | 环境变量 | 默认模型 |
                 |-------|----------|---------|
-                | Gemini | `GOOGLE_API_KEY` | gemini-2.0-flash |
+                | Gemini | `GOOGLE_API_KEY` | gemini-2.5-flash |
                 | DeepSeek | `DEEPSEEK_API_KEY` | deepseek-chat |
                 | Qwen | `QWEN_API_KEY` | qwen-plus |
+                | 智谱GLM | `GLM_API_KEY` | glm-4.7-flash |
                 | OpenAI | `OPENAI_API_KEY` | gpt-4o-mini |
                 | 混元 | `HUNYUAN_API_KEY` | hunyuan-lite |
                 
@@ -364,7 +490,7 @@ def create_ui():
                     
                     with gr.Column():
                         # 完整的模型选择列表
-                        all_providers = ["gemini", "deepseek", "qwen", "openai", "hunyuan"]
+                        all_providers = ["gemini", "deepseek", "qwen", "openai", "hunyuan", "glm"]
                         default_provider = available_providers[0] if available_providers else "gemini"
                         
                         index_provider = gr.Dropdown(
@@ -421,6 +547,7 @@ def create_ui():
                 - Qwen (通义千问)
                 - Hunyuan (腾讯混元)
                 - Google Gemini
+                - 智谱GLM
                 - OpenAI GPT
                 """)
         

@@ -56,6 +56,8 @@ class GraphBuilder:
         output_dir: Optional[str] = None,
         llm_provider: str = "deepseek",
         llm_model: Optional[str] = None,
+        embedding_provider: str = "ollama",
+        embedding_model: str = "nomic-embed-text",
     ):
         """
         初始化图谱构建器
@@ -65,6 +67,8 @@ class GraphBuilder:
             output_dir: 输出索引目录
             llm_provider: LLM提供商
             llm_model: LLM模型名称
+            embedding_provider: Embedding提供商（默认ollama）
+            embedding_model: Embedding模型名称（默认nomic-embed-text）
         """
         settings = get_settings()
         
@@ -72,6 +76,8 @@ class GraphBuilder:
         self.output_dir = Path(output_dir or settings.graphrag_output_dir)
         self.llm_provider = llm_provider
         self.llm_model = llm_model
+        self.embedding_provider = embedding_provider
+        self.embedding_model = embedding_model
         
         # 确保目录存在
         self.input_dir.mkdir(parents=True, exist_ok=True)
@@ -122,7 +128,7 @@ class GraphBuilder:
                 "api_key": settings.google_api_key,
                 "env_var_name": "GEMINI_API_KEY",
                 "model_provider": "gemini",
-                "chat_model": self.llm_model or "gemini-2.0-flash",
+                "chat_model": self.llm_model or "gemini-2.5-flash",
                 "embedding_model": "text-embedding-004",
                 "embedding_provider": "gemini",
             },
@@ -161,9 +167,34 @@ class GraphBuilder:
                 dest.write_text(txt_file.read_text(encoding="utf-8"), encoding="utf-8")
         
         # GraphRAG 2.x YAML 配置
+        # 根据embedding provider决定embedding配置
+        if self.embedding_provider == "ollama":
+            embedding_config = f"""  default_embedding_model:
+    type: embedding
+    model_provider: ollama
+    auth_type: api_key
+    api_key: ollama
+    model: {self.embedding_model}
+    concurrent_requests: 5
+    async_mode: threaded
+    retry_strategy: exponential_backoff
+    max_retries: 3"""
+        else:
+            embedding_config = f"""  default_embedding_model:
+    type: embedding
+    model_provider: {llm_config.get('embedding_provider', llm_config['model_provider'])}
+    auth_type: api_key
+    api_key: ${{{env_var_name}}}
+    model: {llm_config['embedding_model']}
+    concurrent_requests: 5
+    async_mode: threaded
+    retry_strategy: exponential_backoff
+    max_retries: 3"""
+        
         yaml_content = f"""### GraphRAG 2.x 配置文件
 ### 由记忆图谱系统自动生成
 ### LLM 提供商: {self.llm_provider}
+### Embedding 提供商: {self.embedding_provider}
 
 models:
   default_chat_model:
@@ -173,24 +204,13 @@ models:
     api_key: ${{{env_var_name}}}
     model: {llm_config['chat_model']}
     model_supports_json: true
-    concurrent_requests: 5
+    concurrent_requests: 2
     async_mode: threaded
     retry_strategy: exponential_backoff
-    max_retries: 3
-    tokens_per_minute: null
-    requests_per_minute: null
-  default_embedding_model:
-    type: embedding
-    model_provider: {llm_config.get('embedding_provider', llm_config['model_provider'])}
-    auth_type: api_key
-    api_key: ${{{env_var_name}}}
-    model: {llm_config['embedding_model']}
-    concurrent_requests: 5
-    async_mode: threaded
-    retry_strategy: exponential_backoff
-    max_retries: 3
-    tokens_per_minute: null
-    requests_per_minute: null
+    max_retries: 5
+    tokens_per_minute: 100000
+    requests_per_minute: 30
+{embedding_config}
 
 ### Input settings ###
 
@@ -499,6 +519,12 @@ basic_search:
             
             # 初始化 GraphRAG（如果 prompts 目录不存在）
             prompts_dir = self.output_dir / "prompts"
+            settings_path = self.output_dir / "settings.yaml"
+            
+            # 如果settings.yaml已存在，先删除
+            if settings_path.exists():
+                settings_path.unlink()
+            
             if not prompts_dir.exists():
                 init_result = subprocess.run(
                     [sys.executable, "-m", "graphrag", "init", "--root", str(self.output_dir.resolve())],
@@ -548,10 +574,10 @@ basic_search:
                     output_dir=str(self.output_dir)
                 )
             else:
-                error_msg = result.stderr[:500] if result.stderr else "未知错误"
+                error_msg = result.stderr if result.stderr else result.stdout if result.stdout else "未知错误"
                 return IndexingResult(
                     success=False,
-                    message=f"索引构建失败: {error_msg}",
+                    message=f"索引构建失败: {error_msg[-2000:]}",
                     output_dir=str(self.output_dir)
                 )
                 

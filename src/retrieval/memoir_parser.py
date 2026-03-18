@@ -4,6 +4,8 @@
 """
 
 import re
+import jieba
+import jieba.analyse
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from ..llm import LLMAdapter, create_llm_adapter
@@ -195,8 +197,24 @@ class MemoirParser:
         return None
     
     def _extract_location(self, text: str) -> Optional[str]:
-        """提取地点"""
-        # 尝试匹配"在XX"、"到XX"、"来到XX"等模式
+        """
+        提取地点（使用jieba词性标注）
+        
+        改进：不再硬编码城市列表，而是用词性标注识别地名
+        """
+        import jieba.posseg as pseg
+        
+        # 使用jieba词性标注识别地名（ns表示地名）
+        words = pseg.cut(text)
+        locations = []
+        for word, flag in words:
+            if flag in ['ns', 'nsf']:  # ns=地名, nsf=音译地名
+                locations.append(word)
+        
+        if locations:
+            return locations[0]
+        
+        # 备选：尝试匹配"在XX"、"到XX"等模式
         location_patterns = [
             r'(?:在|到|来到|去|前往|抵达)\s*([^\s,，。！？\n]{2,10}(?:省|市|县|区|镇|村)?)',
             r'([^\s,，。！？\n]{2,6}(?:省|市|县|区))',
@@ -207,36 +225,38 @@ class MemoirParser:
             if match:
                 return match.group(1)
         
-        # 检查是否包含知名城市
-        for city in ['北京', '上海', '广州', '深圳', '杭州', '南京', '武汉', '成都', '重庆']:
-            if city in text:
-                return city
-        
         return None
     
     def _extract_keywords(self, text: str) -> List[str]:
-        """提取关键词"""
+        """
+        提取关键词（使用jieba TF-IDF）
+        
+        改进：不再硬编码关键词，而是用TF-IDF自动提取
+        """
         keywords = []
         
-        # 历史事件相关关键词
+        # 使用jieba的TF-IDF提取关键词
+        try:
+            tfidf_keywords = jieba.analyse.extract_tags(text, topK=5, withWeight=False)
+            keywords.extend(tfidf_keywords)
+        except Exception:
+            pass
+        
+        # 补充：历史事件相关关键词（保留一些重要的）
         event_patterns = [
             r'(改革开放)',
             r'(经济特区)',
-            r'(大学毕业)',
-            r'(金融危机)',
             r'(南方谈话)',
             r'(下海创业)',
             r'(国企改革)',
-            r'(市场经济)',
-            r'(包分配)',
-            r'(双向选择)',
         ]
         
         for pattern in event_patterns:
-            if re.search(pattern, text):
-                keywords.append(re.search(pattern, text).group(1))
+            match = re.search(pattern, text)
+            if match and match.group(1) not in keywords:
+                keywords.append(match.group(1))
         
-        return keywords[:5]  # 最多返回5个关键词
+        return keywords[:5]
     
     def _chinese_to_number(self, chinese: str) -> str:
         """汉字数字转阿拉伯数字"""

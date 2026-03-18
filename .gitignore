@@ -43,3 +43,20 @@ logs/
 # GraphRAG outputs
 output/
 cache/
+
+# Sensitive files - API keys and secrets
+api.key
+*.key
+*_key.json
+secrets.json
+.env.local
+.env.*.local
+
+# Cache directories
+.cache/
+
+# Trae IDE documents
+.trae/documents/
+
+# Benchmark results
+benchmark_results/

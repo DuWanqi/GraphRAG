@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # Google Gemini配置
     google_api_key: Optional[str] = Field(default=None, alias="GOOGLE_API_KEY")
     
+    # 智谱GLM配置
+    glm_api_key: Optional[str] = Field(default=None, alias="GLM_API_KEY")
+    
     # OpenAI配置 (可选)
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
     

@@ -1,6 +1,7 @@
 """
 回忆录历史背景检索器
 基于GraphRAG进行知识图谱检索
+支持关键词检索、向量检索、混合检索三种模式
 """
 
 import os
@@ -8,10 +9,12 @@ import asyncio
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
+from enum import Enum
 
 import pandas as pd
 
 from .memoir_parser import MemoirParser, MemoirContext
+from .vector_retriever import VectorRetriever, RetrievalMode
 from ..config import get_settings
 from ..llm import LLMAdapter, create_llm_adapter
 
@@ -65,6 +68,11 @@ class MemoirRetriever:
     2. 在知识图谱中进行本地检索（实体、关系）
     3. 进行全局检索（社区报告）
     4. 返回相关的历史背景信息
+    
+    检索模式：
+    - keyword: 关键词匹配（默认，快速）
+    - vector: 向量相似度检索（需要embedding）
+    - hybrid: 混合检索（关键词+向量融合）
     """
     
     def __init__(
@@ -83,6 +91,7 @@ class MemoirRetriever:
         self.index_dir = Path(index_dir or settings.graphrag_output_dir)
         self.llm_adapter = llm_adapter
         self.parser = MemoirParser(llm_adapter)
+        self.vector_retriever = VectorRetriever(index_dir=str(self.index_dir), llm_adapter=llm_adapter)
         
         # 缓存加载的数据
         self._entities_df = None
@@ -134,6 +143,7 @@ class MemoirRetriever:
         memoir_text: str,
         top_k: int = 10,
         use_llm_parsing: bool = True,
+        mode: str = "keyword",
     ) -> RetrievalResult:
         """
         检索与回忆录相关的历史背景
@@ -142,6 +152,7 @@ class MemoirRetriever:
             memoir_text: 回忆录文本
             top_k: 返回结果数量
             use_llm_parsing: 是否使用LLM解析回忆录
+            mode: 检索模式 (keyword/vector/hybrid)
             
         Returns:
             RetrievalResult: 检索结果
@@ -162,23 +173,91 @@ class MemoirRetriever:
         # 执行检索
         result = RetrievalResult(query=query, context=context)
         
-        # 本地检索：实体匹配
-        if self._entities_df is not None:
-            result.entities = self._search_entities(context, top_k)
-        
-        # 本地检索：关系匹配
-        if self._relationships_df is not None:
-            result.relationships = self._search_relationships(context, top_k)
-        
-        # 全局检索：社区报告
-        if self._communities_df is not None:
-            result.communities = self._search_communities(context, top_k // 2)
-        
-        # 文本单元检索
-        if self._text_units_df is not None:
-            result.text_units = self._search_text_units(context, top_k)
+        # 根据模式选择检索策略
+        if mode == "vector" and self.vector_retriever.is_ready():
+            # 纯向量检索
+            result.entities = await self.vector_retriever.search_entities(query, top_k)
+            result.communities = await self.vector_retriever.search_communities(query, top_k // 2)
+            result.text_units = await self.vector_retriever.search_text_units(query, top_k)
+            
+        elif mode == "hybrid" and self.vector_retriever.is_ready():
+            # 混合检索：关键词 + 向量融合
+            keyword_entities = self._search_entities(context, top_k)
+            vector_entities = await self.vector_retriever.search_entities(query, top_k)
+            result.entities = self._merge_results(keyword_entities, vector_entities, top_k)
+            
+            keyword_communities = self._search_communities(context, top_k // 2)
+            vector_communities = await self.vector_retriever.search_communities(query, top_k // 2)
+            result.communities = self._merge_results(keyword_communities, vector_communities, top_k // 2)
+            
+            keyword_texts = self._search_text_units(context, top_k)
+            vector_texts = await self.vector_retriever.search_text_units(query, top_k)
+            result.text_units = self._merge_text_results(keyword_texts, vector_texts, top_k)
+            
+        else:
+            # 关键词检索（默认）
+            if self._entities_df is not None:
+                result.entities = self._search_entities(context, top_k)
+            if self._relationships_df is not None:
+                result.relationships = self._search_relationships(context, top_k)
+            if self._communities_df is not None:
+                result.communities = self._search_communities(context, top_k // 2)
+            if self._text_units_df is not None:
+                result.text_units = self._search_text_units(context, top_k)
         
         return result
+    
+    def _merge_results(
+        self,
+        keyword_results: List[Dict[str, Any]],
+        vector_results: List[Dict[str, Any]],
+        top_k: int,
+    ) -> List[Dict[str, Any]]:
+        """融合关键词和向量检索结果"""
+        merged = {}
+        
+        for item in keyword_results:
+            name = item.get("name", item.get("title", ""))
+            if name:
+                merged[name] = item.copy()
+                merged[name]["score"] = item.get("score", 1) * 0.5
+                merged[name]["source"] = "keyword"
+        
+        for item in vector_results:
+            name = item.get("name", item.get("title", ""))
+            if name:
+                if name in merged:
+                    merged[name]["score"] += item.get("score", 1) * 0.5
+                    merged[name]["source"] = "hybrid"
+                else:
+                    merged[name] = item.copy()
+                    merged[name]["score"] = item.get("score", 1) * 0.5
+                    merged[name]["source"] = "vector"
+        
+        sorted_results = sorted(merged.values(), key=lambda x: x.get("score", 0), reverse=True)
+        return sorted_results[:top_k]
+    
+    def _merge_text_results(
+        self,
+        keyword_texts: List[str],
+        vector_texts: List[str],
+        top_k: int,
+    ) -> List[str]:
+        """融合文本结果"""
+        seen = set()
+        merged = []
+        
+        for text in keyword_texts:
+            if text not in seen:
+                seen.add(text)
+                merged.append(text)
+        
+        for text in vector_texts:
+            if text not in seen:
+                seen.add(text)
+                merged.append(text)
+        
+        return merged[:top_k]
     
     def retrieve_sync(
         self,
