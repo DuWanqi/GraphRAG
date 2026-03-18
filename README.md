@@ -123,16 +123,14 @@ python run_web.py both
 
 ### 6. 使用本地模型 (Ollama)
 
-如果你想使用本地部署的模型，可以配置 Ollama：
+如果你想使用本地部署的模型，可以使用Ollama：
 
 ```bash
-# 确保 Ollama 服务已启动
 ollama serve
-
-# 在 .env 中配置
-DEFAULT_LLM_PROVIDER=ollama
-DEFAULT_LLM_MODEL=qwen3:32b
+bash /GraphRAG/start.sh --ollama_path .../Ollama
 ```
+
+注意：需要安装full_requirements.txt中的依赖
 
 ### 启动流程总结
 
