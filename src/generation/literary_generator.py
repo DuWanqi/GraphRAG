@@ -7,10 +7,11 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, AsyncIterator
 
 from ..llm import LLMAdapter, LLMRouter, MultiLLMResponse, create_llm_adapter
 from ..retrieval import RetrievalResult, MemoirContext
+from .prompts import PromptTemplates, get_system_prompt
 
 
 @dataclass
@@ -58,42 +59,7 @@ class LiteraryGenerator:
     4. 支持多LLM并行生成对比
     """
     
-    # 系统提示词
-    SYSTEM_PROMPT = """你是一位优秀的回忆录作家和历史学者。你的任务是将历史背景信息融入个人回忆录中，使其既准确又富有文学性。
-
-你的写作风格应该：
-1. 使用温暖、怀旧的笔调，如同在回忆往事
-2. 将宏大的历史事件与个人经历自然衔接
-3. 使用生动的细节描写，让读者感同身受
-4. 保持历史事实的准确性，不添加虚构的具体事件
-5. 语言优美流畅，适合中国读者的阅读习惯
-
-注意事项：
-- 不要使用"据记载"、"历史上"等生硬的过渡词
-- 要让历史背景与个人叙事融为一体
-- 控制篇幅在1-3段，约200-500字"""
-    
-    # 生成提示词模板
-    GENERATION_PROMPT = """请根据以下信息，为回忆录片段生成1-3段历史背景描述，使其能自然融入个人叙事中。
-
-## 回忆录原文
-{memoir_text}
-
-## 时间背景
-年份：{year}
-地点：{location}
-
-## 检索到的历史信息
-{context}
-
-## 要求
-1. 生成的内容应该能够自然地衔接在回忆录原文之后或穿插其中
-2. 使用文学性的语言，避免教科书式的叙述
-3. 突出这段历史与个人经历的关联
-4. 总字数控制在200-500字之间
-5. 可以分成1-3个自然段
-
-请直接输出生成的历史背景描述文本，不要包含任何解释或元信息。"""
+    DEFAULT_SYSTEM_PROMPT_KEY = "default"
     
     def __init__(
         self,
@@ -114,6 +80,8 @@ class LiteraryGenerator:
         self,
         memoir_text: str,
         retrieval_result: RetrievalResult,
+        style: str = "standard",
+        length_hint: str = "200-500字",
         temperature: float = 0.7,
         max_tokens: int = 1024,
     ) -> GenerationResult:
@@ -137,7 +105,7 @@ class LiteraryGenerator:
 
         # 构建提示词
         t_prompt0 = time.perf_counter()
-        prompt = self._build_prompt(memoir_text, retrieval_result)
+        prompt = self._build_prompt(memoir_text, retrieval_result, style=style, length_hint=length_hint)
         t_prompt = time.perf_counter() - t_prompt0
         if timing:
             print(f"[TEMP_TIMING] generator.build_prompt={t_prompt:.3f}s prompt_chars={len(prompt)}")
@@ -156,7 +124,7 @@ class LiteraryGenerator:
         t_llm0 = time.perf_counter()
         response = await adapter.generate(
             prompt=prompt,
-            system_prompt=self.SYSTEM_PROMPT,
+            system_prompt=get_system_prompt(self.DEFAULT_SYSTEM_PROMPT_KEY),
             temperature=temperature,
             max_tokens=max_tokens,
         )
@@ -179,6 +147,43 @@ class LiteraryGenerator:
                 "query": retrieval_result.query,
             }
         )
+
+    async def generate_stream(
+        self,
+        memoir_text: str,
+        retrieval_result: RetrievalResult,
+        style: str = "standard",
+        length_hint: str = "200-500字",
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+    ) -> AsyncIterator[str]:
+        """
+        流式生成：逐步产出新增文本片段（delta）。
+        """
+        if not self.llm_adapter and not self.llm_router:
+            raise ValueError("需要提供llm_adapter或llm_router")
+
+        prompt = self._build_prompt(memoir_text, retrieval_result, style=style, length_hint=length_hint)
+
+        adapter = self.llm_adapter
+        if adapter is None and self.llm_router:
+            adapters = self.llm_router.list_adapters()
+            if adapters:
+                adapter = self.llm_router.adapters[adapters[0]]
+        if adapter is None:
+            raise ValueError("没有可用的LLM适配器")
+
+        if not hasattr(adapter, "generate_stream"):
+            raise ValueError("当前适配器不支持流式生成")
+
+        async for delta in adapter.generate_stream(
+            prompt=prompt,
+            system_prompt=get_system_prompt(self.DEFAULT_SYSTEM_PROMPT_KEY),
+            temperature=temperature,
+            max_tokens=max_tokens,
+        ):
+            if delta:
+                yield delta
     
     async def generate_parallel(
         self,
@@ -249,15 +254,19 @@ class LiteraryGenerator:
         self,
         memoir_text: str,
         retrieval_result: RetrievalResult,
+        style: str = "standard",
+        length_hint: str = "200-500字",
     ) -> str:
         """构建生成提示词"""
         context = retrieval_result.context
         
-        return self.GENERATION_PROMPT.format(
+        template = PromptTemplates.get_template(style=style)
+        return template.format(
             memoir_text=memoir_text,
             year=context.year or "未知",
             location=context.location or "未知",
             context=retrieval_result.get_context_text() or "暂无相关历史信息",
+            length_hint=length_hint,
         )
     
     async def enhance_memoir(

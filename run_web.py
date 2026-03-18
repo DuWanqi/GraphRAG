@@ -17,6 +17,8 @@ def run_gradio(host: str, port: int, share: bool = False):
     from web.app import create_ui, settings
     
     app = create_ui()
+    # 启用队列以确保 generator 流式更新可以实时推送到前端
+    app.queue()
     app.launch(
         server_name=host,
         server_port=port,

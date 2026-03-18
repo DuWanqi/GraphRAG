@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import time
 from typing import Optional, List, Tuple
 import gradio as gr
 
@@ -57,6 +58,7 @@ async def process_memoir_async(
     provider: str,
     model: Optional[str],
     style: str,
+    length_bucket: str,
     temperature: float,
     enable_fact_check: bool = True,
     retrieval_mode: str = "keyword",
@@ -72,6 +74,9 @@ async def process_memoir_async(
     
     if not memoir_text.strip():
         return "请输入回忆录文本", "", "", ""
+
+    if not provider:
+        return "请先选择 LLM 模型（供应商）", "", "", ""
     
     if (
         retriever is None
@@ -92,11 +97,14 @@ async def process_memoir_async(
         # 检索相关内容（包含实体提取）
         retrieve_start = time.time()
         print("[DEBUG] 开始检索相关内容...")
-        retrieval_result = await retriever.retrieve(
-            memoir_text, 
-            top_k=10,
-            use_llm_parsing=False,
-            mode=retrieval_mode,
+        retrieval_result = await asyncio.wait_for(
+            retriever.retrieve(
+                memoir_text,
+                top_k=10,
+                use_llm_parsing=False,
+                mode=retrieval_mode,
+            ),
+            timeout=45.0,
         )
         retrieve_time = time.time() - retrieve_start
         print(f"[DEBUG] 检索完成，耗时: {retrieve_time:.2f} 秒")
@@ -121,11 +129,31 @@ async def process_memoir_async(
         # 生成文本
         gen_start = time.time()
         print("[DEBUG] 开始生成文本...")
-        gen_result = await generator.generate(
-            memoir_text=memoir_text,
-            retrieval_result=retrieval_result,
-            temperature=temperature,
-            max_tokens=2048,  # 增加最大token数，避免输出被截断
+        length_hint_map = {
+            "200-400": "200-400字",
+            "400-800": "400-800字",
+            "800-1200": "800-1200字",
+            "1200+": "1200字以上",
+        }
+        max_tokens_map = {
+            "200-400": 800,
+            "400-800": 1400,
+            "800-1200": 2200,
+            "1200+": 3200,
+        }
+        length_hint = length_hint_map.get(length_bucket, "200-500字")
+        max_tokens = max_tokens_map.get(length_bucket, 2048)
+
+        gen_result = await asyncio.wait_for(
+            generator.generate(
+                memoir_text=memoir_text,
+                retrieval_result=retrieval_result,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                style=style,
+                length_hint=length_hint,
+            ),
+            timeout=90.0,
         )
         gen_time = time.time() - gen_start
         print(f"[DEBUG] 生成完成，耗时: {gen_time:.2f} 秒")
@@ -218,6 +246,7 @@ def process_memoir(
     provider: str,
     model: Optional[str],
     style: str,
+    length_bucket: str,
     temperature: float,
     enable_fact_check: bool = True,
     retrieval_mode: str = "keyword",
@@ -225,8 +254,156 @@ def process_memoir(
 ) -> Tuple[str, str, str, str]:
     """处理回忆录（同步包装）"""
     return asyncio.run(process_memoir_async(
-        memoir_text, provider, model, style, temperature, enable_fact_check, retrieval_mode, use_rule_decompose
+        memoir_text, provider, model, style, length_bucket, temperature, enable_fact_check, retrieval_mode, use_rule_decompose
     ))
+
+
+def process_memoir_stream(
+    memoir_text: str,
+    provider: str,
+    model: Optional[str],
+    style: str,
+    length_bucket: str,
+    temperature: float,
+    enable_fact_check: bool = True,
+    retrieval_mode: str = "keyword",
+    use_rule_decompose: bool = False,
+):
+    """
+    Gradio 流式生成：边生成边更新 output_text。
+    其它输出（提取信息/检索信息/事实性检查）在生成完成后一次性补齐。
+    """
+    global retriever, generator, current_provider, current_model
+
+    if not memoir_text.strip():
+        yield "请输入回忆录文本", "", "", ""
+        return
+    if not provider:
+        yield "请先选择 LLM 模型（供应商）", "", "", ""
+        return
+
+    if (
+        retriever is None
+        or generator is None
+        or current_provider != provider
+        or (provider == "ollama" and current_model != model)
+    ):
+        init_result = init_components(provider, model=model)
+        if "失败" in init_result:
+            yield init_result, "", "", ""
+            return
+
+    length_hint_map = {
+        "200-400": "200-400字",
+        "400-800": "400-800字",
+        "800-1200": "800-1200字",
+        "1200+": "1200字以上",
+    }
+    max_tokens_map = {
+        "200-400": 800,
+        "400-800": 1400,
+        "800-1200": 2200,
+        "1200+": 3200,
+    }
+    length_hint = length_hint_map.get(length_bucket, "200-500字")
+    max_tokens = max_tokens_map.get(length_bucket, 2048)
+
+    # 用独立 event loop 同步驱动 async（Gradio generator 为 sync）
+    loop = asyncio.new_event_loop()
+    try:
+        # 先立刻输出一次，避免用户长时间无反馈（例如索引加载/检索较慢）
+        yield "⏳ 正在检索相关历史背景，请稍候…", "", "", ""
+
+        # 检索
+        retrieval_result = loop.run_until_complete(asyncio.wait_for(
+            retriever.retrieve(
+                memoir_text,
+                top_k=10,
+                use_llm_parsing=False,
+                mode=retrieval_mode,
+            ),
+            timeout=45.0,
+        ))
+
+        context = retrieval_result.context
+        extracted_info_md = f"""**提取的时间**: {context.year or '未识别'}
+**提取的地点**: {context.location or '未识别'}
+**关键词**: {', '.join(context.keywords) if context.keywords else '无'}
+**生成的查询**: {retrieval_result.query}"""
+
+        retrieval_info_md = f"""**找到实体**: {len(retrieval_result.entities)} 个
+**找到关系**: {len(retrieval_result.relationships)} 个
+**社区报告**: {len(retrieval_result.communities)} 个
+**相关文本**: {len(retrieval_result.text_units)} 段"""
+
+        # 先输出一次：让前端立即开始刷新（同时清空“检索中”提示）
+        yield "", extracted_info_md, retrieval_info_md, ""
+
+        # 流式生成
+        async def _stream():
+            async for delta in generator.generate_stream(
+                memoir_text=memoir_text,
+                retrieval_result=retrieval_result,
+                style=style,
+                length_hint=length_hint,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ):
+                yield delta
+
+        content = ""
+        agen = _stream()
+        gen_start = time.monotonic()
+        while True:
+            try:
+                remaining = 90.0 - (time.monotonic() - gen_start)
+                if remaining <= 0:
+                    raise asyncio.TimeoutError()
+                delta = loop.run_until_complete(asyncio.wait_for(agen.__anext__(), timeout=remaining))
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                content += "\n\n（⚠️ 生成超时：已达到 90s 上限，返回已生成的部分内容）"
+                yield content, extracted_info_md, retrieval_info_md, ""
+                break
+            content += delta
+            yield content, extracted_info_md, retrieval_info_md, ""
+
+        # 事实性检查（保持原逻辑：生成完再做）
+        fact_check_info = ""
+        if enable_fact_check:
+            async def _run_fact_check():
+                llm_adapter = create_llm_adapter(provider=provider, model=(model if provider == "ollama" else None))
+                fact_checker = FActScoreChecker(llm_adapter=llm_adapter)
+                return await fact_checker.check(
+                    memoir_text=memoir_text,
+                    generated_text=content,
+                    retrieval_result=retrieval_result,
+                    use_llm=True,
+                    use_rule_decompose=use_rule_decompose,
+                )
+
+            try:
+                fact_result = loop.run_until_complete(asyncio.wait_for(_run_fact_check(), timeout=90.0))
+                status_icon = "✅" if fact_result.is_factual else "⚠️"
+                fact_check_info = f"""### {status_icon} 事实性检查结果
+
+**一致性判定**: {'事实一致' if fact_result.is_factual else '存在潜在问题'}
+**置信度**: {fact_result.confidence:.2%}
+**实体覆盖率**: {fact_result.entity_coverage:.2%}
+**证据支持度**: {fact_result.evidence_support:.2%}
+
+**总结**: {fact_result.summary}
+"""
+            except Exception as e:
+                fact_check_info = f"事实性检查失败: {str(e)}"
+
+        yield content, extracted_info_md, retrieval_info_md, fact_check_info
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
 
 
 async def compare_providers_async(
@@ -377,6 +554,30 @@ def create_ui():
                             placeholder="输入您的回忆录文本，例如：\n1988年夏天，我从大学毕业，怀揣着梦想来到了深圳...",
                             lines=8,
                         )
+
+                        demo_presets = [
+                            (
+                                "深圳打工｜南下特区的第一份工",
+                                "1998年夏天，我背着行李从内地来到深圳。火车站外的热浪裹着汽油味，霓虹把夜色照得发白。"
+                                "我在华强北附近找了份电子厂的工作，白天流水线的机器声像潮水一样涌来，手指被焊锡烫出小泡。"
+                                "晚上回到城中村的出租屋，楼道狭窄、风扇吱呀转，隔壁的普通话夹着各地口音。"
+                                "我一边攒钱，一边学着适应这座快得让人喘不过气的城市，心里却始终留着一点不服输的劲。",
+                            ),
+                            (
+                                "知青生活｜下乡岁月与集体劳动",
+                                "1972年冬天，我作为知青下乡到了北方的一个生产队。天还没亮就集合出工，镰刀与铁锹在霜里发冷。"
+                                "春耕时脚陷在泥里拔不出来，秋收时肩上挑着沉甸甸的麻袋，手掌磨出厚茧。"
+                                "夜里回到土屋，煤油灯火苗忽明忽暗，我们靠着一张旧桌子写信、抄歌、偷偷读几页书。"
+                                "返城的消息时有时无，年轻的心在盼望与失落之间来回摇摆。可也是在这段日子里，我学会了忍耐，学会了与土地、与人群相处。",
+                            ),
+                            (
+                                "下海经商｜告别铁饭碗去闯荡",
+                                "1992年春天，南巡讲话的消息传来，街头巷尾都在谈“机会”。我犹豫了许久，还是辞去单位的“铁饭碗”，跟着朋友南下闯一闯。"
+                                "最开始是在批发市场摆摊，清晨抢货、午后跑客户、晚上对账算成本，兜里零钱叮当作响却不敢乱花。"
+                                "行情好的时候一夜卖空，行情差时货压在仓里，心里像压着石头。"
+                                "我学着看人脸色谈合作，学着在风险里做决定。那几年，机会与不确定并存，我也在改革开放的浪潮里一点点找到自己的位置。",
+                            ),
+                        ]
                         
                         with gr.Row():
                             provider_select = gr.Dropdown(
@@ -395,6 +596,17 @@ def create_ui():
                                 value="standard",
                                 label="写作风格",
                             )
+
+                        length_bucket_select = gr.Radio(
+                            choices=[
+                                ("200-400字", "200-400"),
+                                ("400-800字", "400-800"),
+                                ("800-1200字", "800-1200"),
+                                ("1200字以上", "1200+"),
+                            ],
+                            value="400-800",
+                            label="生成字数",
+                        )
                         
                         temperature_slider = gr.Slider(
                             minimum=0.1,
@@ -429,6 +641,25 @@ def create_ui():
                         
                         generate_btn = gr.Button("🚀 生成历史背景", variant="primary")
                         refresh_ollama_models_btn = gr.Button("🔄 刷新 Ollama 模型列表", variant="secondary")
+
+                        gr.Markdown("**Demo 场景预置（位于底部，选择即载入）**")
+                        demo_select = gr.Dropdown(
+                            choices=[label for label, _ in demo_presets],
+                            value=None,
+                            label="选择 Demo 场景（选择后自动载入到上方文本框）",
+                        )
+
+                        def _load_demo(selected_label: str) -> str:
+                            for label, text in demo_presets:
+                                if label == selected_label:
+                                    return text
+                            return ""
+
+                        demo_select.change(
+                            fn=_load_demo,
+                            inputs=[demo_select],
+                            outputs=[memoir_input],
+                        )
                     
                     with gr.Column(scale=1):
                         output_text = gr.Textbox(
@@ -445,8 +676,8 @@ def create_ui():
                             fact_check_output = gr.Markdown(label="事实性检查结果")
                 
                 generate_btn.click(
-                    fn=process_memoir,
-                    inputs=[memoir_input, provider_select, ollama_model_select, style_select, temperature_slider, fact_check_checkbox, retrieval_mode_select, rule_decompose_checkbox],
+                    fn=process_memoir_stream,
+                    inputs=[memoir_input, provider_select, ollama_model_select, style_select, length_bucket_select, temperature_slider, fact_check_checkbox, retrieval_mode_select, rule_decompose_checkbox],
                     outputs=[output_text, extracted_info, retrieval_info, fact_check_output],
                 )
 
@@ -621,6 +852,7 @@ def create_ui():
 
 if __name__ == "__main__":
     app = create_ui()
+    app.queue()
     app.launch(
         server_name=settings.app_host,
         server_port=settings.app_port,

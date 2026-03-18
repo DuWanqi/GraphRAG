@@ -6,6 +6,7 @@ FastAPI 后端服务
 from typing import Optional, List
 import os
 import time
+import asyncio
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -124,20 +125,26 @@ async def generate(request: GenerateRequest):
         
         # 检索
         t_ret0 = time.perf_counter()
-        retrieval_result = await retriever.retrieve(
-            request.memoir_text,
-            top_k=10,
-            use_llm_parsing=True,
+        retrieval_result = await asyncio.wait_for(
+            retriever.retrieve(
+                request.memoir_text,
+                top_k=10,
+                use_llm_parsing=True,
+            ),
+            timeout=45.0,
         )
         if timing:
             print(f"[TEMP_TIMING] api.generate.retrieve={time.perf_counter()-t_ret0:.3f}s")
         
         # 生成
         t_gen0 = time.perf_counter()
-        gen_result = await generator.generate(
-            memoir_text=request.memoir_text,
-            retrieval_result=retrieval_result,
-            temperature=request.temperature,
+        gen_result = await asyncio.wait_for(
+            generator.generate(
+                memoir_text=request.memoir_text,
+                retrieval_result=retrieval_result,
+                temperature=request.temperature,
+            ),
+            timeout=90.0,
         )
         if timing:
             print(f"[TEMP_TIMING] api.generate.generate={time.perf_counter()-t_gen0:.3f}s")
@@ -166,6 +173,8 @@ async def generate(request: GenerateRequest):
         
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except asyncio.TimeoutError as e:
+        raise HTTPException(status_code=504, detail="请求超时（检索45s / 生成90s）") from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
 
