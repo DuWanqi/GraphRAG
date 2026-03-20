@@ -18,7 +18,7 @@ from src.llm import (
 from src.indexing import GraphBuilder, DataLoader
 from src.retrieval import MemoirRetriever
 from src.generation import LiteraryGenerator, PromptTemplates
-from src.evaluation import Evaluator, FActScoreChecker
+from src.evaluation import Evaluator, EvaluationDimension, FActScoreChecker
 
 
 # 全局变量
@@ -195,11 +195,14 @@ async def process_memoir_async(
                 print(f"[DEBUG] 事实性检查完成，耗时: {check_time:.2f} 秒")
                 
                 status_icon = "✅" if fact_result.is_factual else "⚠️"
+                factscore_line = ""
+                if fact_result.total_facts > 0:
+                    factscore_line = f"**FActScore**: {fact_result.factscore:.1%} ({fact_result.supported_facts}/{fact_result.total_facts} 事实被支持)\n"
                 return f"""**生成耗时**: {gen_time:.2f} 秒
 
 ### {status_icon} 事实性检查结果
 
-**一致性判定**: {'事实一致' if fact_result.is_factual else '存在潜在问题'}
+{factscore_line}**一致性判定**: {'事实一致' if fact_result.is_factual else '存在潜在问题'}
 **置信度**: {fact_result.confidence:.2%}
 **实体覆盖率**: {fact_result.entity_coverage:.2%}
 **证据支持度**: {fact_result.evidence_support:.2%}
@@ -230,12 +233,25 @@ async def process_memoir_async(
             print(f"[DEBUG] 事实性检查失败: {e}")
             fact_check_info = fact_check_info + f"\n**事实性检查失败**: {str(e)}"
         
+        # 合规性检查
+        try:
+            evaluator = Evaluator(llm_adapter=create_llm_adapter(provider=provider, model=(model if provider == "ollama" else None)))
+            compliance = await asyncio.wait_for(
+                evaluator._evaluate_compliance(gen_result.content, use_llm=True), timeout=30.0
+            )
+            comp_icon = "✅" if compliance.score >= 8 else "⚠️"
+            fact_check_info += f"\n### {comp_icon} 合规性检查\n\n"
+            fact_check_info += f"**合规评分**: {compliance.score:.1f}/10\n"
+            fact_check_info += f"**结果**: {compliance.explanation}\n"
+        except Exception as e:
+            fact_check_info += f"\n合规性检查失败: {str(e)}\n"
+
         total_time = time.time() - start_time
         fact_check_info += f"\n**总耗时**: {total_time:.2f} 秒"
         print(f"[DEBUG] 处理完成，总耗时: {total_time:.2f} 秒")
-        
+
         return gen_result.content, extracted_info, retrieval_info, fact_check_info
-        
+
     except Exception as e:
         print(f"[DEBUG] 处理失败: {str(e)}")
         return f"处理失败: {str(e)}", "", "", ""
@@ -386,9 +402,12 @@ def process_memoir_stream(
             try:
                 fact_result = loop.run_until_complete(asyncio.wait_for(_run_fact_check(), timeout=90.0))
                 status_icon = "✅" if fact_result.is_factual else "⚠️"
+                factscore_line = ""
+                if fact_result.total_facts > 0:
+                    factscore_line = f"**FActScore**: {fact_result.factscore:.1%} ({fact_result.supported_facts}/{fact_result.total_facts} 事实被支持)\n"
                 fact_check_info = f"""### {status_icon} 事实性检查结果
 
-**一致性判定**: {'事实一致' if fact_result.is_factual else '存在潜在问题'}
+{factscore_line}**一致性判定**: {'事实一致' if fact_result.is_factual else '存在潜在问题'}
 **置信度**: {fact_result.confidence:.2%}
 **实体覆盖率**: {fact_result.entity_coverage:.2%}
 **证据支持度**: {fact_result.evidence_support:.2%}
@@ -397,6 +416,21 @@ def process_memoir_stream(
 """
             except Exception as e:
                 fact_check_info = f"事实性检查失败: {str(e)}"
+
+        # 合规性检查
+        async def _run_compliance_check():
+            llm_adapter = create_llm_adapter(provider=provider, model=(model if provider == "ollama" else None))
+            evaluator = Evaluator(llm_adapter=llm_adapter)
+            return await evaluator._evaluate_compliance(content, use_llm=True)
+
+        try:
+            compliance = loop.run_until_complete(asyncio.wait_for(_run_compliance_check(), timeout=30.0))
+            comp_icon = "✅" if compliance.score >= 8 else "⚠️"
+            fact_check_info += f"\n### {comp_icon} 合规性检查\n\n"
+            fact_check_info += f"**合规评分**: {compliance.score:.1f}/10\n"
+            fact_check_info += f"**结果**: {compliance.explanation}\n"
+        except Exception as e:
+            fact_check_info += f"\n合规性检查失败: {str(e)}\n"
 
         yield content, extracted_info_md, retrieval_info_md, fact_check_info
     finally:
@@ -524,14 +558,6 @@ def create_ui():
     
     with gr.Blocks(
         title="记忆图谱 - 历史背景注入系统",
-        theme=gr.themes.Soft(
-            primary_hue="blue",
-            secondary_hue="gray",
-        ),
-        css="""
-        .main-title { text-align: center; margin-bottom: 20px; }
-        .output-box { min-height: 200px; }
-        """
     ) as app:
         
         gr.Markdown(
@@ -850,6 +876,12 @@ def create_ui():
     return app
 
 
+_THEME = gr.themes.Soft(primary_hue="blue", secondary_hue="gray")
+_CSS = """
+.main-title { text-align: center; margin-bottom: 20px; }
+.output-box { min-height: 200px; }
+"""
+
 if __name__ == "__main__":
     app = create_ui()
     app.queue()
@@ -857,4 +889,6 @@ if __name__ == "__main__":
         server_name=settings.app_host,
         server_port=settings.app_port,
         share=False,
+        theme=_THEME,
+        css=_CSS,
     )

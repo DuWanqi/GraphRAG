@@ -7,6 +7,7 @@
 
 import os
 import json
+import math
 import time
 import asyncio
 from pathlib import Path
@@ -40,6 +41,7 @@ class RetrievalMetrics:
     f1: float = 0.0
     hit_at_k: Dict[int, bool] = field(default_factory=dict)
     mrr: float = 0.0
+    ndcg_at_k: Dict[int, float] = field(default_factory=dict)
     latency_ms: float = 0.0
 
 
@@ -55,8 +57,12 @@ class BenchmarkResult:
     hit_at_3: float
     hit_at_5: float
     hit_at_10: float
+    avg_mrr: float = 0.0
+    avg_ndcg_at_3: float = 0.0
+    avg_ndcg_at_5: float = 0.0
+    avg_ndcg_at_10: float = 0.0
     details: List[Dict[str, Any]] = field(default_factory=list)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "strategy_name": self.strategy_name,
@@ -64,6 +70,10 @@ class BenchmarkResult:
             "avg_precision": round(self.avg_precision, 4),
             "avg_recall": round(self.avg_recall, 4),
             "avg_f1": round(self.avg_f1, 4),
+            "avg_mrr": round(self.avg_mrr, 4),
+            "avg_ndcg_at_3": round(self.avg_ndcg_at_3, 4),
+            "avg_ndcg_at_5": round(self.avg_ndcg_at_5, 4),
+            "avg_ndcg_at_10": round(self.avg_ndcg_at_10, 4),
             "avg_latency_ms": round(self.avg_latency_ms, 2),
             "hit_at_3": round(self.hit_at_3, 4),
             "hit_at_5": round(self.hit_at_5, 4),
@@ -296,44 +306,99 @@ class RetrievalBenchmark:
     ) -> RetrievalMetrics:
         """计算检索指标"""
         metrics = RetrievalMetrics(latency_ms=latency_ms)
-        
+
         if not ground_truth:
             return metrics
-        
+
         retrieved_names = []
         for e in retrieved_entities:
             name = e.get("name", "")
             retrieved_names.extend(self._normalize_entity_name(name))
         retrieved_names = list(set(retrieved_names))
-        
+
         ground_truth_variants = []
         for gt in ground_truth:
             ground_truth_variants.extend(self._normalize_entity_name(gt))
         ground_truth_variants = list(set(v.lower() for v in ground_truth_variants))
-        
+
         retrieved_set = set(n.lower() for n in retrieved_names)
         ground_truth_set = set(ground_truth_variants)
-        
+
         if retrieved_set:
             metrics.precision = len(retrieved_set & ground_truth_set) / len(retrieved_set)
-        
+
         if ground_truth_set:
             metrics.recall = len(retrieved_set & ground_truth_set) / len(ground_truth_set)
-        
+
         if metrics.precision + metrics.recall > 0:
             metrics.f1 = 2 * metrics.precision * metrics.recall / (metrics.precision + metrics.recall)
-        
+
         for k in [3, 5, 10]:
             top_k = retrieved_names[:k]
             top_k_lower = [n.lower() for n in top_k]
             metrics.hit_at_k[k] = any(gt.lower() in top_k_lower for gt in ground_truth)
-        
+
         for i, name in enumerate(retrieved_names):
             if name.lower() in ground_truth_variants:
                 metrics.mrr = 1.0 / (i + 1)
                 break
-        
+
+        # nDCG@k: graded relevance based on retrieval score
+        # relevance = 2 for exact ground-truth match, 1 for partial, 0 otherwise
+        rel_vector = self._build_relevance_vector(
+            retrieved_entities, ground_truth_variants
+        )
+        for k in [3, 5, 10]:
+            metrics.ndcg_at_k[k] = self._ndcg(rel_vector, k, len(ground_truth))
+
         return metrics
+
+    @staticmethod
+    def _ndcg(relevances: List[float], k: int, n_relevant: int) -> float:
+        """Compute nDCG@k given a relevance vector."""
+        rel_k = relevances[:k]
+        dcg = sum(
+            rel / math.log2(i + 2) for i, rel in enumerate(rel_k)
+        )
+        # ideal: all relevant items at the top with max relevance (2)
+        ideal_rels = sorted(relevances, reverse=True)[:k]
+        # if fewer relevant items than k, pad with 0
+        if not ideal_rels and n_relevant > 0:
+            ideal_rels = [2.0] * min(k, n_relevant)
+        elif not ideal_rels:
+            return 0.0
+        idcg = sum(
+            rel / math.log2(i + 2) for i, rel in enumerate(ideal_rels)
+        )
+        return dcg / idcg if idcg > 0 else 0.0
+
+    def _build_relevance_vector(
+        self,
+        retrieved_entities: List[Dict[str, Any]],
+        ground_truth_lower: List[str],
+    ) -> List[float]:
+        """Assign graded relevance to each retrieved entity.
+
+        2 = exact ground-truth match
+        1 = partial match (entity name shares a substring with ground truth)
+        0 = no match
+        """
+        gt_set = set(ground_truth_lower)
+        rels: List[float] = []
+        for entity in retrieved_entities:
+            name = entity.get("name", "")
+            variants = [v.lower() for v in self._normalize_entity_name(name)]
+            if any(v in gt_set for v in variants):
+                rels.append(2.0)
+            elif any(
+                gt in name.lower() or name.lower() in gt
+                for gt in gt_set
+                if len(gt) > 1 and len(name) > 1
+            ):
+                rels.append(1.0)
+            else:
+                rels.append(0.0)
+        return rels
     
     def _strategy_keyword_only(self, context: MemoirContext, top_k: int) -> List[Dict[str, Any]]:
         """策略1：仅关键词匹配（当前实现）"""
@@ -552,33 +617,42 @@ class RetrievalBenchmark:
             start_time = time.time()
             results = strategy_fn(context, top_k)
             latency_ms = (time.time() - start_time) * 1000
-            
+
             metrics = self._calculate_metrics(
                 retrieved_entities=results,
                 ground_truth=test_case.ground_truth_entities,
                 latency_ms=latency_ms,
             )
             all_metrics.append(metrics)
-            
+
             details.append({
                 "query_id": test_case.query_id,
                 "query_type": test_case.query_type,
                 "precision": metrics.precision,
                 "recall": metrics.recall,
                 "f1": metrics.f1,
+                "mrr": metrics.mrr,
+                "ndcg_at_3": metrics.ndcg_at_k.get(3, 0.0),
+                "ndcg_at_5": metrics.ndcg_at_k.get(5, 0.0),
+                "ndcg_at_10": metrics.ndcg_at_k.get(10, 0.0),
                 "hit_at_3": metrics.hit_at_k.get(3, False),
                 "hit_at_5": metrics.hit_at_k.get(5, False),
                 "latency_ms": metrics.latency_ms,
             })
-        
-        avg_precision = sum(m.precision for m in all_metrics) / len(all_metrics)
-        avg_recall = sum(m.recall for m in all_metrics) / len(all_metrics)
-        avg_f1 = sum(m.f1 for m in all_metrics) / len(all_metrics)
-        avg_latency = sum(m.latency_ms for m in all_metrics) / len(all_metrics)
-        hit_at_3 = sum(1 for m in all_metrics if m.hit_at_k.get(3, False)) / len(all_metrics)
-        hit_at_5 = sum(1 for m in all_metrics if m.hit_at_k.get(5, False)) / len(all_metrics)
-        hit_at_10 = sum(1 for m in all_metrics if m.hit_at_k.get(10, False)) / len(all_metrics)
-        
+
+        n = len(all_metrics)
+        avg_precision = sum(m.precision for m in all_metrics) / n
+        avg_recall = sum(m.recall for m in all_metrics) / n
+        avg_f1 = sum(m.f1 for m in all_metrics) / n
+        avg_latency = sum(m.latency_ms for m in all_metrics) / n
+        avg_mrr = sum(m.mrr for m in all_metrics) / n
+        avg_ndcg_3 = sum(m.ndcg_at_k.get(3, 0.0) for m in all_metrics) / n
+        avg_ndcg_5 = sum(m.ndcg_at_k.get(5, 0.0) for m in all_metrics) / n
+        avg_ndcg_10 = sum(m.ndcg_at_k.get(10, 0.0) for m in all_metrics) / n
+        hit_at_3 = sum(1 for m in all_metrics if m.hit_at_k.get(3, False)) / n
+        hit_at_5 = sum(1 for m in all_metrics if m.hit_at_k.get(5, False)) / n
+        hit_at_10 = sum(1 for m in all_metrics if m.hit_at_k.get(10, False)) / n
+
         return BenchmarkResult(
             strategy_name=strategy_name,
             total_queries=len(self.test_cases),
@@ -589,9 +663,13 @@ class RetrievalBenchmark:
             hit_at_3=hit_at_3,
             hit_at_5=hit_at_5,
             hit_at_10=hit_at_10,
+            avg_mrr=avg_mrr,
+            avg_ndcg_at_3=avg_ndcg_3,
+            avg_ndcg_at_5=avg_ndcg_5,
+            avg_ndcg_at_10=avg_ndcg_10,
             details=details,
         )
-    
+
     def run_all_strategies(self, top_k: int = 10) -> Dict[str, BenchmarkResult]:
         """
         运行所有策略的对比评测
@@ -653,26 +731,35 @@ class RetrievalBenchmark:
                 latency_ms=latency_ms,
             )
             all_metrics.append(metrics)
-            
+
             details.append({
                 "query_id": test_case.query_id,
                 "query_type": test_case.query_type,
                 "precision": metrics.precision,
                 "recall": metrics.recall,
                 "f1": metrics.f1,
+                "mrr": metrics.mrr,
+                "ndcg_at_3": metrics.ndcg_at_k.get(3, 0.0),
+                "ndcg_at_5": metrics.ndcg_at_k.get(5, 0.0),
+                "ndcg_at_10": metrics.ndcg_at_k.get(10, 0.0),
                 "hit_at_3": metrics.hit_at_k.get(3, False),
                 "hit_at_5": metrics.hit_at_k.get(5, False),
                 "latency_ms": metrics.latency_ms,
             })
-        
-        avg_precision = sum(m.precision for m in all_metrics) / len(all_metrics)
-        avg_recall = sum(m.recall for m in all_metrics) / len(all_metrics)
-        avg_f1 = sum(m.f1 for m in all_metrics) / len(all_metrics)
-        avg_latency = sum(m.latency_ms for m in all_metrics) / len(all_metrics)
-        hit_at_3 = sum(1 for m in all_metrics if m.hit_at_k.get(3, False)) / len(all_metrics)
-        hit_at_5 = sum(1 for m in all_metrics if m.hit_at_k.get(5, False)) / len(all_metrics)
-        hit_at_10 = sum(1 for m in all_metrics if m.hit_at_k.get(10, False)) / len(all_metrics)
-        
+
+        n = len(all_metrics)
+        avg_precision = sum(m.precision for m in all_metrics) / n
+        avg_recall = sum(m.recall for m in all_metrics) / n
+        avg_f1 = sum(m.f1 for m in all_metrics) / n
+        avg_latency = sum(m.latency_ms for m in all_metrics) / n
+        avg_mrr = sum(m.mrr for m in all_metrics) / n
+        avg_ndcg_3 = sum(m.ndcg_at_k.get(3, 0.0) for m in all_metrics) / n
+        avg_ndcg_5 = sum(m.ndcg_at_k.get(5, 0.0) for m in all_metrics) / n
+        avg_ndcg_10 = sum(m.ndcg_at_k.get(10, 0.0) for m in all_metrics) / n
+        hit_at_3 = sum(1 for m in all_metrics if m.hit_at_k.get(3, False)) / n
+        hit_at_5 = sum(1 for m in all_metrics if m.hit_at_k.get(5, False)) / n
+        hit_at_10 = sum(1 for m in all_metrics if m.hit_at_k.get(10, False)) / n
+
         return BenchmarkResult(
             strategy_name=strategy_name,
             total_queries=len(self.test_cases),
@@ -683,9 +770,13 @@ class RetrievalBenchmark:
             hit_at_3=hit_at_3,
             hit_at_5=hit_at_5,
             hit_at_10=hit_at_10,
+            avg_mrr=avg_mrr,
+            avg_ndcg_at_3=avg_ndcg_3,
+            avg_ndcg_at_5=avg_ndcg_5,
+            avg_ndcg_at_10=avg_ndcg_10,
             details=details,
         )
-    
+
     def generate_report(
         self,
         results: Dict[str, BenchmarkResult],
@@ -707,25 +798,33 @@ class RetrievalBenchmark:
         lines.append(f"测试用例数: {len(self.test_cases)}")
         
         lines.append("\n## 汇总结果\n")
-        lines.append("| 策略 | Precision | Recall | F1 | Hit@3 | Hit@5 | Hit@10 | 延迟(ms) |")
-        lines.append("|------|-----------|--------|-----|-------|-------|--------|----------|")
-        
+        lines.append("| 策略 | Precision | Recall | F1 | MRR | nDCG@3 | nDCG@5 | nDCG@10 | Hit@3 | Hit@5 | Hit@10 | 延迟(ms) |")
+        lines.append("|------|-----------|--------|-----|-----|--------|--------|---------|-------|-------|--------|----------|")
+
         for name, result in results.items():
             lines.append(
                 f"| {name} | {result.avg_precision:.4f} | {result.avg_recall:.4f} | "
-                f"{result.avg_f1:.4f} | {result.hit_at_3:.2%} | {result.hit_at_5:.2%} | "
+                f"{result.avg_f1:.4f} | {result.avg_mrr:.4f} | "
+                f"{result.avg_ndcg_at_3:.4f} | {result.avg_ndcg_at_5:.4f} | {result.avg_ndcg_at_10:.4f} | "
+                f"{result.hit_at_3:.2%} | {result.hit_at_5:.2%} | "
                 f"{result.hit_at_10:.2%} | {result.avg_latency_ms:.2f} |"
             )
-        
+
         best_f1 = max(results.items(), key=lambda x: x[1].avg_f1)
+        best_ndcg = max(results.items(), key=lambda x: x[1].avg_ndcg_at_5)
         lines.append(f"\n**最佳策略（F1）**: {best_f1[0]} (F1={best_f1[1].avg_f1:.4f})")
-        
+        lines.append(f"**最佳策略（nDCG@5）**: {best_ndcg[0]} (nDCG@5={best_ndcg[1].avg_ndcg_at_5:.4f})")
+
         lines.append("\n## 各策略详细分析\n")
         for name, result in results.items():
             lines.append(f"### {name}\n")
             lines.append(f"- 平均Precision: {result.avg_precision:.4f}")
             lines.append(f"- 平均Recall: {result.avg_recall:.4f}")
             lines.append(f"- 平均F1: {result.avg_f1:.4f}")
+            lines.append(f"- 平均MRR: {result.avg_mrr:.4f}")
+            lines.append(f"- nDCG@3: {result.avg_ndcg_at_3:.4f}")
+            lines.append(f"- nDCG@5: {result.avg_ndcg_at_5:.4f}")
+            lines.append(f"- nDCG@10: {result.avg_ndcg_at_10:.4f}")
             lines.append(f"- Hit@3: {result.hit_at_3:.2%}")
             lines.append(f"- Hit@5: {result.hit_at_5:.2%}")
             lines.append(f"- Hit@10: {result.hit_at_10:.2%}")

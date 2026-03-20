@@ -36,6 +36,9 @@ class FactCheckResult:
     """事实性检查结果"""
     is_factual: bool
     confidence: float
+    factscore: float = 0.0  # S(y) = supported_facts / total_facts
+    total_facts: int = 0
+    supported_facts: int = 0
     inconsistencies: List[Dict[str, Any]] = field(default_factory=list)
     entity_coverage: float = 0.0
     evidence_support: float = 0.0
@@ -194,28 +197,36 @@ class FActScoreChecker:
         
         try:
             inconsistencies = []
-            
+            total_facts = 0
+            supported_facts = 0
+
             # FActScore原子化检查
             if use_llm and self.llm_adapter:
                 logger.info("[FActScore] 执行原子化检查")
-                factscore_issues = await self._factscore_check(
+                factscore_issues, total_facts, supported_facts = await self._factscore_check(
                     memoir_text, generated_text, retrieval_result
                 )
                 inconsistencies.extend(factscore_issues)
-        
+
+            # 计算 FActScore 比值: S(y) = supported / total
+            factscore_ratio = supported_facts / total_facts if total_facts > 0 else 0.0
+
             # 计算指标
             entity_coverage = self._calculate_entity_coverage(generated_text, retrieval_result)
             evidence_support = self._calculate_evidence_support(generated_text, retrieval_result)
-            
+
             # 计算置信度
             confidence = self._calculate_confidence(inconsistencies, entity_coverage, evidence_support)
-            
+
             # 生成总结
-            summary = self._generate_summary(inconsistencies, confidence)
-            
+            summary = self._generate_summary(inconsistencies, confidence, factscore_ratio, total_facts)
+
             result = FactCheckResult(
                 is_factual=len(inconsistencies) == 0,
                 confidence=confidence,
+                factscore=factscore_ratio,
+                total_facts=total_facts,
+                supported_facts=supported_facts,
                 inconsistencies=inconsistencies,
                 entity_coverage=entity_coverage,
                 evidence_support=evidence_support,
@@ -237,42 +248,47 @@ class FActScoreChecker:
         memoir_text: str,
         generated_text: str,
         retrieval_result: Optional[RetrievalResult],
-    ) -> List[Dict[str, Any]]:
+    ) -> tuple:
         """
         FActScore原子化检查
-        
+
         将生成文本分解为原子事实，逐一验证
+
+        Returns:
+            (inconsistencies, total_facts, supported_facts)
         """
         logger = logging.getLogger(__name__)
         inconsistencies = []
-        
+
         # 准备上下文（历史背景证据）
         context = ""
         if retrieval_result:
-            # 使用 get_context_text() 方法获取上下文
             context = retrieval_result.get_context_text()
-        
+
         if not context:
             logger.warning("[FActScore] 无检索结果，跳过原子化检查")
-            return inconsistencies
-        
+            return inconsistencies, 0, 0
+
         # 分解生成文本为原子事实
         logger.info("[FActScore] 分解生成文本为原子事实...")
         atomic_facts = await self._decompose_text(generated_text)
-        logger.info(f"[FActScore] 分解得到 {len(atomic_facts)} 个原子事实")
-        
+        total_facts = len(atomic_facts)
+        logger.info(f"[FActScore] 分解得到 {total_facts} 个原子事实")
+
+        if total_facts == 0:
+            return inconsistencies, 0, 0
+
         # 批量验证原子事实
-        logger.info(f"[FActScore] 开始批量验证 {len(atomic_facts)} 个原子事实")
+        logger.info(f"[FActScore] 开始批量验证 {total_facts} 个原子事实")
         verification_results = await self._verify_facts_batch(atomic_facts, context)
-        
+
         # 为不支持的事实创建不一致项
         unsupported_facts = []
         for fact, is_supported in zip(atomic_facts, verification_results):
             if not is_supported:
                 unsupported_facts.append(fact)
                 logger.info(f"[FActScore] 事实不支持: {fact[:50]}...")
-        
-        # 为不支持的事实创建不一致项
+
         for fact in unsupported_facts:
             inconsistencies.append({
                 "type": "unsupported_claim",
@@ -280,23 +296,25 @@ class FActScoreChecker:
                 "explanation": "该事实缺乏历史背景证据支持",
                 "severity": 0.4,
             })
-        
+
         logger.info(f"[FActScore] 批量验证完成，发现 {len(unsupported_facts)} 个不支持的事实")
-        
+
         # 验证不支持的事实是否在回忆录原文中有依据
         if inconsistencies:
             logger.info("[FActScore] 验证不支持的事实是否在回忆录原文中有依据...")
             verified_facts = await self._verify_against_memoir(
                 memoir_text, inconsistencies
             )
-            # 移除在回忆录中有依据的事实（误报）
             inconsistencies = self._remove_false_positives(
                 inconsistencies, verified_facts
             )
-        
-        unsupported_count = len(inconsistencies)
-        logger.info(f"[FActScore] 验证完成，发现 {unsupported_count} 个不支持的事实")
-        return inconsistencies
+
+        supported_facts = total_facts - len(inconsistencies)
+        logger.info(
+            f"[FActScore] 验证完成: {supported_facts}/{total_facts} 事实被支持 "
+            f"(FActScore={supported_facts/total_facts:.2%})"
+        )
+        return inconsistencies, total_facts, supported_facts
     
     async def _verify_against_memoir(
         self,
@@ -728,19 +746,29 @@ class FActScoreChecker:
         
         return max(0.0, min(1.0, base_confidence))
     
-    def _generate_summary(self, inconsistencies: List[Dict[str, Any]], confidence: float) -> str:
+    def _generate_summary(
+        self,
+        inconsistencies: List[Dict[str, Any]],
+        confidence: float,
+        factscore: float = 0.0,
+        total_facts: int = 0,
+    ) -> str:
         """生成检查总结"""
+        parts = []
+        if total_facts > 0:
+            supported = total_facts - len(inconsistencies)
+            parts.append(f"FActScore: {factscore:.1%} ({supported}/{total_facts} 事实被支持)")
+
         if not inconsistencies:
-            return "未检测到明显的事实不一致问题。"
-        
-        summary_parts = [f"发现 {len(inconsistencies)} 处潜在问题："]
-        for inc in inconsistencies:
-            summary_parts.append(f"- 缺乏证据支持: {inc.get('generated_text', '')[:50]}...")
-        
-        if confidence < 0.5:
-            summary_parts.append("\n建议仔细核查生成内容。")
-        
-        return "\n".join(summary_parts)
+            parts.append("未检测到明显的事实不一致问题。")
+        else:
+            parts.append(f"发现 {len(inconsistencies)} 处潜在问题：")
+            for inc in inconsistencies:
+                parts.append(f"- 缺乏证据支持: {inc.get('generated_text', '')[:50]}...")
+            if confidence < 0.5:
+                parts.append("\n建议仔细核查生成内容。")
+
+        return "\n".join(parts)
     
     def _extract_json_array(self, text: str) -> List[str]:
         """从文本中提取JSON数组"""

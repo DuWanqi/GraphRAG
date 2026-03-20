@@ -20,6 +20,7 @@ class EvaluationDimension(Enum):
     RELEVANCE = "relevance"        # 相关性
     LITERARY = "literary"          # 文学性
     COHERENCE = "coherence"        # 连贯性
+    COMPLIANCE = "compliance"      # 合规性
     OVERALL = "overall"            # 综合评分
 
 
@@ -133,6 +134,28 @@ class Evaluator:
 
 只返回JSON，不要其他内容。"""
 
+    # 合规性检查提示词
+    COMPLIANCE_PROMPT = """请检查以下文本是否存在合规性问题。
+
+## 待检查文本
+{generated_text}
+
+请检查以下方面：
+1. 是否泄露敏感个人信息（身份证号、电话、地址等）
+2. 是否包含未经证实的谣言或不实信息
+3. 是否涉及政治敏感内容的不当表述
+4. 是否存在歧视性或侮辱性言论
+
+请以JSON格式返回：
+{{
+    "is_compliant": true/false,
+    "score": <0-10, 10表示完全合规>,
+    "issues": ["问题1", "问题2"],
+    "explanation": "<总体评价>"
+}}
+
+只返回JSON，不要其他内容。"""
+
     # 简化版评估（不需要LLM）
     SIMPLE_EVALUATION_CRITERIA = {
         "accuracy": {
@@ -196,6 +219,12 @@ class Evaluator:
                 memoir_text, generated_text, retrieval_result
             )
         
+        # 合规性检查
+        compliance_score = await self._evaluate_compliance(
+            generated_text, use_llm and self.llm_adapter is not None
+        )
+        result.scores["compliance"] = compliance_score
+
         if enable_fact_check:
             fact_check_result = await self.fact_checker.check(
                 memoir_text=memoir_text,
@@ -204,13 +233,18 @@ class Evaluator:
                 use_llm=use_llm and self.llm_adapter is not None,
             )
             result.fact_check = fact_check_result
-            
+
             if not fact_check_result.is_factual:
                 result.suggestions.insert(
-                    0, 
+                    0,
                     f"⚠️ 事实性警告：{fact_check_result.summary}"
                 )
-        
+
+        if compliance_score.score < 8:
+            result.suggestions.append(
+                f"⚠️ 合规性警告：{compliance_score.explanation}"
+            )
+
         return result
     
     def evaluate_sync(
@@ -431,6 +465,60 @@ class Evaluator:
             explanation="; ".join(explanations) if explanations else "基于规则的评估",
         )
     
+    async def _evaluate_compliance(
+        self,
+        generated_text: str,
+        use_llm: bool = True,
+    ) -> DimensionScore:
+        """合规性评估：检查敏感信息、谣言、不当内容"""
+        import re as _re
+
+        issues = []
+        score = 10.0
+
+        # 规则检查：个人敏感信息
+        id_pattern = _re.compile(r'\d{17}[\dXx]')  # 身份证号
+        phone_pattern = _re.compile(r'1[3-9]\d{9}')  # 手机号
+        email_pattern = _re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+
+        if id_pattern.search(generated_text):
+            issues.append("包含疑似身份证号")
+            score -= 5.0
+        if phone_pattern.search(generated_text):
+            issues.append("包含疑似手机号码")
+            score -= 3.0
+        if email_pattern.search(generated_text):
+            issues.append("包含疑似电子邮箱")
+            score -= 2.0
+
+        # LLM 深度合规检查
+        if use_llm and self.llm_adapter and score >= 5.0:
+            try:
+                prompt = self.COMPLIANCE_PROMPT.format(generated_text=generated_text)
+                response = await self.llm_adapter.generate(
+                    prompt=prompt,
+                    system_prompt="你是一位内容合规审核专家。请严格检查文本的合规性。",
+                    temperature=0.1,
+                    max_tokens=512,
+                )
+                result_data = json.loads(response.content)
+                llm_score = float(result_data.get("score", 10))
+                llm_issues = result_data.get("issues", [])
+                if llm_issues:
+                    issues.extend(llm_issues)
+                    score = min(score, llm_score)
+            except Exception:
+                pass  # LLM 失败时仅依赖规则检查
+
+        score = max(0.0, score)
+        explanation = "; ".join(issues) if issues else "未发现合规性问题"
+
+        return DimensionScore(
+            dimension=EvaluationDimension.COMPLIANCE,
+            score=score,
+            explanation=explanation,
+        )
+
     def _generate_suggestions(
         self,
         scores: Dict[str, DimensionScore]
