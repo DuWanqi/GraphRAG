@@ -24,6 +24,7 @@ from .retrieval_benchmark import (
     RetrievalMetrics,
     BenchmarkResult,
     run_benchmark,
+    evaluate_retrieval_quality,
 )
 
 __all__ = [
@@ -45,4 +46,5 @@ __all__ = [
     "RetrievalMetrics",
     "BenchmarkResult",
     "run_benchmark",
+    "evaluate_retrieval_quality",
 ]

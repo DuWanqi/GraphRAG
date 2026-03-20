@@ -93,6 +93,8 @@ def main():
     results = run_benchmark(
         test_cases=custom_test_cases,
         output_dir=str(output_dir),
+        llm_provider="hunyuan",
+        use_llm_judge=True,
     )
     
     if results:

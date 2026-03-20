@@ -18,7 +18,7 @@ from src.llm import (
 from src.indexing import GraphBuilder, DataLoader
 from src.retrieval import MemoirRetriever
 from src.generation import LiteraryGenerator, PromptTemplates
-from src.evaluation import Evaluator, EvaluationDimension, FActScoreChecker
+from src.evaluation import Evaluator, EvaluationDimension, FActScoreChecker, evaluate_retrieval_quality
 
 
 # 全局变量
@@ -120,12 +120,36 @@ async def process_memoir_async(
 **找到关系**: {len(retrieval_result.relationships)} 个
 **社区报告**: {len(retrieval_result.communities)} 个
 **相关文本**: {len(retrieval_result.text_units)} 段"""
-        
+
         if retrieval_result.entities:
             retrieval_info += "\n\n**主要实体**:\n"
             for entity in retrieval_result.entities[:5]:
                 retrieval_info += f"- {entity.get('name', '未知')}: {entity.get('description', '')[:100]}...\n"
-        
+
+        # 检索质量评估（LLM-as-a-Judge，基于 text_units）
+        try:
+            eval_llm = create_llm_adapter(provider=provider, model=(model if provider == "ollama" else None))
+            eval_result = await asyncio.wait_for(
+                evaluate_retrieval_quality(
+                    query_text=memoir_text,
+                    text_units=retrieval_result.text_units,
+                    llm_adapter=eval_llm,
+                ),
+                timeout=30.0,
+            )
+            retrieval_info += f"\n\n### 检索质量评估 (LLM-as-a-Judge)\n"
+            retrieval_info += f"**nDCG@3**: {eval_result['ndcg_at_3']:.4f}  "
+            retrieval_info += f"**nDCG@5**: {eval_result['ndcg_at_5']:.4f}  "
+            retrieval_info += f"**nDCG@10**: {eval_result['ndcg_at_10']:.4f}\n"
+            retrieval_info += f"**MRR**: {eval_result['mrr']:.4f}\n"
+            if eval_result["per_doc_scores"]:
+                retrieval_info += "\n| # | 文档摘要 | 相关性 | 理由 |\n|---|----------|--------|------|\n"
+                for item in eval_result["per_doc_scores"][:10]:
+                    score_bar = "★" * int(item["score"]) + "☆" * (3 - int(item["score"]))
+                    retrieval_info += f"| {item['doc_id']} | {item['snippet'][:30]} | {score_bar} ({item['score']:.0f}/3) | {item['reason'][:30]} |\n"
+        except Exception as e:
+            retrieval_info += f"\n\n检索质量评估失败: {str(e)}"
+
         # 生成文本
         gen_start = time.time()
         print("[DEBUG] 开始生成文本...")
@@ -352,8 +376,34 @@ def process_memoir_stream(
 **社区报告**: {len(retrieval_result.communities)} 个
 **相关文本**: {len(retrieval_result.text_units)} 段"""
 
-        # 先输出一次：让前端立即开始刷新（同时清空“检索中”提示）
+        # 先输出一次：让前端立即开始刷新（同时清空"检索中"提示）
         yield "", extracted_info_md, retrieval_info_md, ""
+
+        # 检索质量评估（LLM-as-a-Judge，基于 text_units）
+        try:
+            eval_llm = create_llm_adapter(provider=provider, model=(model if provider == "ollama" else None))
+            eval_result = loop.run_until_complete(asyncio.wait_for(
+                evaluate_retrieval_quality(
+                    query_text=memoir_text,
+                    text_units=retrieval_result.text_units,
+                    llm_adapter=eval_llm,
+                ),
+                timeout=30.0,
+            ))
+            retrieval_info_md += f"\n\n### 检索质量评估 (LLM-as-a-Judge)\n"
+            retrieval_info_md += f"**nDCG@3**: {eval_result['ndcg_at_3']:.4f}  "
+            retrieval_info_md += f"**nDCG@5**: {eval_result['ndcg_at_5']:.4f}  "
+            retrieval_info_md += f"**nDCG@10**: {eval_result['ndcg_at_10']:.4f}\n"
+            retrieval_info_md += f"**MRR**: {eval_result['mrr']:.4f}\n"
+            if eval_result["per_doc_scores"]:
+                retrieval_info_md += "\n| # | 文档摘要 | 相关性 | 理由 |\n|---|----------|--------|------|\n"
+                for item in eval_result["per_doc_scores"][:10]:
+                    score_bar = "★" * int(item["score"]) + "☆" * (3 - int(item["score"]))
+                    retrieval_info_md += f"| {item['doc_id']} | {item['snippet'][:30]} | {score_bar} ({item['score']:.0f}/3) | {item['reason'][:30]} |\n"
+            yield "", extracted_info_md, retrieval_info_md, ""
+        except Exception as e:
+            retrieval_info_md += f"\n\n检索质量评估失败: {str(e)}"
+            yield "", extracted_info_md, retrieval_info_md, ""
 
         # 流式生成
         async def _stream():
@@ -598,7 +648,7 @@ def create_ui():
                             ),
                             (
                                 "下海经商｜告别铁饭碗去闯荡",
-                                "1992年春天，南巡讲话的消息传来，街头巷尾都在谈“机会”。我犹豫了许久，还是辞去单位的“铁饭碗”，跟着朋友南下闯一闯。"
+                                "1992年春天，南巡讲话的消息传来，街头巷尾都在谈\u201c机会\u201d。我犹豫了许久，还是辞去单位的\u201c铁饭碗\u201d，跟着朋友南下闯一闯。"
                                 "最开始是在批发市场摆摊，清晨抢货、午后跑客户、晚上对账算成本，兜里零钱叮当作响却不敢乱花。"
                                 "行情好的时候一夜卖空，行情差时货压在仓里，心里像压着石头。"
                                 "我学着看人脸色谈合作，学着在风险里做决定。那几年，机会与不确定并存，我也在改革开放的浪潮里一点点找到自己的位置。",
