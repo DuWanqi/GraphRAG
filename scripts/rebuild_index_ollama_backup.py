@@ -13,7 +13,7 @@ print("=" * 60)
 
 # 创建GraphBuilder，使用Ollama embedding
 builder = GraphBuilder(
-    llm_provider="gemini",  # LLM仍用Gemini
+    llm_provider="ollama",  # LLM仍用Gemini
     embedding_provider="ollama",  # Embedding用Ollama
     embedding_model="nomic-embed-text",
 )
