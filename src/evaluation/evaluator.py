@@ -210,14 +210,14 @@ class Evaluator:
         Returns:
             EvaluationResult: 评估结果
         """
-        if use_llm and self.llm_adapter:
-            result = await self._evaluate_with_llm(
-                memoir_text, generated_text, retrieval_result
+        if not self.llm_adapter:
+            raise RuntimeError(
+                "相关性、文学性等评估维度必须使用 LLM-as-a-Judge，"
+                "但未配置 LLM 适配器。请提供有效的 llm_provider。"
             )
-        else:
-            result = self._evaluate_simple(
-                memoir_text, generated_text, retrieval_result
-            )
+        result = await self._evaluate_with_llm(
+            memoir_text, generated_text, retrieval_result
+        )
         
         # 合规性检查
         compliance_score = await self._evaluate_compliance(
@@ -283,8 +283,13 @@ class Evaluator:
                 max_tokens=1000,
             )
             
-            # 解析JSON响应
-            result_data = json.loads(response.content)
+            # 解析JSON响应（LLM 可能返回 ```json ... ``` 包裹的内容）
+            import re
+            raw = response.content.strip()
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if not json_match:
+                raise ValueError(f"LLM 返回内容中未找到 JSON: {raw[:200]}")
+            result_data = json.loads(json_match.group(0))
             
             scores = {}
             for dim in ["accuracy", "relevance", "literary"]:
@@ -307,8 +312,7 @@ class Evaluator:
             )
             
         except Exception as e:
-            # LLM评估失败，回退到简单评估
-            return self._evaluate_simple(memoir_text, generated_text, retrieval_result)
+            raise RuntimeError(f"LLM-as-a-Judge 评估失败: {e}") from e
     
     def _evaluate_simple(
         self,
