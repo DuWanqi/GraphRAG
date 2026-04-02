@@ -42,8 +42,10 @@ output:
   base_dir: "output"
 
 cache:
-  type: file
-  base_dir: "cache"
+  type: json
+  storage:
+    type: file
+    base_dir: "cache"
 
 reporting:
   type: file
