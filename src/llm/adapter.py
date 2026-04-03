@@ -22,6 +22,7 @@ class LLMProvider(Enum):
     GLM = "glm"  # 智谱AI
     OPENAI = "openai"
     OLLAMA = "ollama"
+    SHUBIAOBIAO = "shubiaobiao"  # 数标标
 
 
 @dataclass
@@ -498,3 +499,25 @@ class OllamaAdapter(LLMAdapter):
     def _get_litellm_model_name(self) -> str:
         model = self._get_model()
         return f"ollama/{model}"
+
+
+class ShubiaobiaoAdapter(LLMAdapter):
+    """数标标适配器 - 统一的大模型接口网关"""
+    
+    @property
+    def provider(self) -> LLMProvider:
+        return LLMProvider.SHUBIAOBIAO
+    
+    @property
+    def default_model(self) -> str:
+        return "gemini-2.0-flash"
+    
+    @property
+    def default_api_base(self) -> str:
+        """数标标API默认地址"""
+        return "https://hk.n1n.ai/v1"
+    
+    def _get_litellm_model_name(self) -> str:
+        model = self._get_model()
+        # 数标标使用OpenAI兼容接口
+        return f"openai/{model}"

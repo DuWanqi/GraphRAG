@@ -3,13 +3,15 @@ import os
 import subprocess
 import sys
 
-os.environ['GLM_API_KEY'] = '9ed068cde7f549efad0fb1affde722d1.SWLbfEK1eni4Tv9d'
+# 使用数标标 API
+os.environ['SHUBIAOBIAO_API_KEY'] = 'sk-6IPAckVNGiQCP8Q9O2sAl4TV7KzGmNiGS8YuGsPHF0t406av'
+os.environ['SHUBIAOBIAO_API_BASE'] = 'https://hk.n1n.ai/v1'
 
-os.chdir(r'D:\projects\Capstone\GraphRAG\data\graphrag_output')
+os.chdir(r'D:\projects\GraphRAG\data\graphrag_output')
 
 result = subprocess.run(
     [sys.executable, '-m', 'graphrag', 'index', '--root', '.', '--verbose'],
-    cwd=r'D:\projects\Capstone\GraphRAG\data\graphrag_output',
+    cwd=r'D:\projects\GraphRAG\data\graphrag_output',
     env=os.environ
 )
 

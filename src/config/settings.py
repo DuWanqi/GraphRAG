@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     # OpenAI配置 (可选)
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
     
+    # 数标标配置
+    shubiaobiao_api_key: Optional[str] = Field(default=None, alias="SHUBIAOBIAO_API_KEY")
+    shubiaobiao_api_base: str = Field(
+        default="https://hk.n1n.ai/v1", 
+        alias="SHUBIAOBIAO_API_BASE"
+    )
+    
     # 默认LLM配置
     default_llm_provider: str = Field(default="deepseek", alias="DEFAULT_LLM_PROVIDER")
     default_llm_model: str = Field(default="deepseek-chat", alias="DEFAULT_LLM_MODEL")
