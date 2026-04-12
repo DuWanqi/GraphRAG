@@ -1,0 +1,51 @@
+-Goal-
+Given a text document that is relevant to this activity, identify all entities of the specified types from the text and all relationships among the identified entities.
+
+-Steps-
+1. Identify all entities. For each identified entity, extract the following information:
+- entity_name: Name of the entity, capitalized
+- entity_type: One of the following types: [{entity_types}]
+- entity_description: Comprehensive description of the entity's attributes and activities
+Format each entity as ("entity"<|>entity_name<|>entity_type<|>entity_description)
+
+2. From the entities identified in step 1, identify all *clearly related* (source_entity, target_entity) pairs.
+For each pair, extract the following information:
+- source_entity: Name of the source entity, as identified in step 1
+- target_entity: Name of the target entity, as identified in step 1
+- relationship_description: Explanation of why you think the source entity and the target entity are related to each other
+- relationship_strength: A numeric score indicating the strength of the relationship between the source entity and the target entity
+Format each relationship as ("relationship"<|>source_entity<|>target_entity<|>relationship_description<|>relationship_strength)
+
+3. Return output as a single list of all entities and relationships identified in steps 1 and 2. Use ## as the record delimiter between each entity/relationship.
+
+4. When finished, output <|COMPLETE|>
+
+######################
+-Examples-
+######################
+Example 1:
+Entity_types: organization, person
+Text:
+The central institution of Verdantis plans to meet on Monday and Thursday, with the institution planning to release its latest policy decisions on Thursday afternoon at 1:30 PDT, followed by a press conference where the central institution's chairman, Martin Smith, will answer questions. Investors expect the market strategy committee to keep the benchmark interest rate stable in the 3.5%-3.75% range.
+######################
+Output:
+("entity"<|>CENTRAL INSTITUTION<|>ORGANIZATION<|>The central institution is the federal reserve system of Verdantis, responsible for setting interest rates on Mondays and Thursdays)##("entity"<|>MARTIN SMITH<|>PERSON<|>Martin Smith is the chairman of the central institution)##("entity"<|>MARKET STRATEGY COMMITTEE<|>ORGANIZATION<|>The central institution committee responsible for making key decisions regarding interest rates and Verdantis currency supply growth)##("relationship"<|>MARTIN SMITH<|>CENTRAL INSTITUTION<|>Martin Smith is the chairman of the central institution and will answer questions at the press conference<|>9)<|COMPLETE|>
+
+######################
+Example 2:
+Entity_types: organization
+Text:
+TechGlobal (TG) shares soared on their first day of trading on the Global Exchange on Thursday. But IPO experts warned that the semiconductor company's debut on the public market doesn't represent the performance of other new listings.
+
+TechGlobal, a former public company, was taken private by Vision Holdings in 2014. The well-known chip design company said it powers 85% of high-end smartphones.
+######################
+Output:
+("entity"<|>TECHGLOBAL<|>ORGANIZATION<|>TechGlobal is a stock now trading on the Global Exchange that powers 85% of high-end smartphones)##("entity"<|>VISION HOLDINGS<|>ORGANIZATION<|>Vision Holdings is a company that previously owned TechGlobal)##("relationship"<|>TECHGLOBAL<|>VISION HOLDINGS<|>Vision Holdings owned TechGlobal from 2014 to the present<|>5)<|COMPLETE|>
+
+######################
+-Real Data-
+######################
+Entity_types: {entity_types}
+Text: {input_text}
+######################
+Output:
