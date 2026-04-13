@@ -138,6 +138,15 @@ bash /GraphRAG/start.sh --ollama_path .../Ollama
 
 注意：需要安装full_requirements.txt中的依赖
 
+也可在 `.env` 中直接指定 Ollama（与 test 分支用法一致）：
+
+```bash
+ollama serve
+# 在 .env 中配置
+DEFAULT_LLM_PROVIDER=ollama
+DEFAULT_LLM_MODEL=qwen3:32b
+```
+
 ### 启动流程总结
 
 每次启动项目时，需要执行以下步骤：
