@@ -120,8 +120,9 @@ class GraphBuilder:
                 "api_key": settings.hunyuan_api_key,
                 "env_var_name": "HUNYUAN_API_KEY",
                 "model_provider": "openai",  # 混元通过 OpenAI 兼容接口
-                "chat_model": self.llm_model or "hunyuan-lite",
-                "embedding_model": "text-embedding-3-small",
+                "api_base": "https://api.hunyuan.cloud.tencent.com/v1",
+                "chat_model": self.llm_model or "hunyuan-turbos-latest",
+                "embedding_model": "hunyuan-embedding",
                 "embedding_provider": "openai",
             },
             "gemini": {
@@ -157,149 +158,126 @@ class GraphBuilder:
     
     def create_settings_yaml(self) -> str:
         """
-        创建GraphRAG 2.x 配置文件
+        创建GraphRAG 3.x 配置文件
         根据选择的 LLM 提供商动态生成配置
-        
+
         Returns:
             配置文件路径
         """
         llm_config = self._get_llm_config()
         env_var_name = llm_config.get("env_var_name", "GRAPHRAG_API_KEY")
-        
+
         # 输入目录（相对于 output_dir）
         input_dir_rel = "input"
         input_dir_abs = self.output_dir / input_dir_rel
         input_dir_abs.mkdir(parents=True, exist_ok=True)
-        
+
         # 复制输入文件到 output_dir/input
         for txt_file in self.input_dir.glob("*.txt"):
             dest = input_dir_abs / txt_file.name
             if not dest.exists():
                 dest.write_text(txt_file.read_text(encoding="utf-8"), encoding="utf-8")
-        
-        # GraphRAG 2.x YAML 配置
-        # 根据embedding provider决定embedding配置
+
+        # Embedding model config
         if self.embedding_provider == "ollama":
-            embedding_config = f"""  default_embedding_model:
-    type: embedding
-    model_provider: ollama
-    auth_type: api_key
-    api_key: ollama
-    model: {self.embedding_model}
-    concurrent_requests: 5
-    async_mode: threaded
-    retry_strategy: exponential_backoff
-    max_retries: 3"""
+            embedding_model_provider = "ollama"
+            embedding_api_key = "ollama"
+            embedding_model_name = self.embedding_model
+            embedding_api_base = ""
         else:
-            embedding_config = f"""  default_embedding_model:
-    type: embedding
-    model_provider: {llm_config.get('embedding_provider', llm_config['model_provider'])}
-    auth_type: api_key
-    api_key: ${{{env_var_name}}}
-    model: {llm_config['embedding_model']}
-    concurrent_requests: 5
-    async_mode: threaded
-    retry_strategy: exponential_backoff
-    max_retries: 3"""
-        
-        yaml_content = f"""### GraphRAG 2.x 配置文件
+            embedding_model_provider = llm_config.get('embedding_provider', llm_config['model_provider'])
+            embedding_api_key = f"${{{env_var_name}}}"
+            embedding_model_name = llm_config['embedding_model']
+            embedding_api_base = llm_config.get('api_base', '')
+
+        # Completion model api_base
+        completion_api_base = llm_config.get('api_base', '')
+        completion_api_base_line = f"\n    api_base: {completion_api_base}" if completion_api_base else ""
+        embedding_api_base_line = f"\n    api_base: {embedding_api_base}" if embedding_api_base else ""
+
+        yaml_content = f"""### GraphRAG 3.x 配置文件
 ### 由记忆图谱系统自动生成
 ### LLM 提供商: {self.llm_provider}
 ### Embedding 提供商: {self.embedding_provider}
 
-models:
-  default_chat_model:
-    type: chat
+completion_models:
+  default_completion_model:
     model_provider: {llm_config['model_provider']}
-    auth_type: api_key
-    api_key: ${{{env_var_name}}}
+    auth_method: api_key
+    api_key: ${{{env_var_name}}}{completion_api_base_line}
     model: {llm_config['chat_model']}
-    model_supports_json: true
-    concurrent_requests: 2
-    async_mode: threaded
-    retry_strategy: exponential_backoff
-    max_retries: 5
-    tokens_per_minute: 100000
-    requests_per_minute: 30
-{embedding_config}
+    concurrent_requests: 1
+    rate_limit:
+      requests_per_period: 10
+      tokens_per_period: 100000
+      period: 60
+    retry:
+      max_retries: 10
+
+embedding_models:
+  default_embedding_model:
+    model_provider: {embedding_model_provider}
+    auth_method: api_key
+    api_key: {embedding_api_key}{embedding_api_base_line}
+    model: {embedding_model_name}
 
 ### Input settings ###
 
+input_storage:
+  type: file
+  base_dir: "{input_dir_rel}"
+
 input:
-  storage:
-    type: file
-    base_dir: "{input_dir_rel}"
   file_type: text
 
-chunks:
+chunking:
   size: 1200
   overlap: 100
-  group_by_columns: [id]
 
 ### Output/storage settings ###
 
-output:
+output_storage:
   type: file
   base_dir: "output"
-    
+
 cache:
-  type: file
-  base_dir: "cache"
+  type: json
+  storage:
+    type: file
+    base_dir: "cache"
 
 reporting:
   type: file
   base_dir: "logs"
 
 vector_store:
-  default_vector_store:
-    type: lancedb
-    db_uri: output/lancedb
-    container_name: default
+  type: lancedb
+  db_uri: output/lancedb
 
 ### Workflow settings ###
 
 embed_text:
-  model_id: default_embedding_model
-  vector_store_id: default_vector_store
+  embedding_model_id: default_embedding_model
 
 extract_graph:
-  model_id: default_chat_model
-  prompt: "prompts/extract_graph.txt"
-  entity_types: [organization, person, geo, event, 历史事件, 人物, 地点, 时间, 组织]
+  completion_model_id: default_completion_model
+  entity_types: [organization, person, geo, event]
   max_gleanings: 1
 
 summarize_descriptions:
-  model_id: default_chat_model
-  prompt: "prompts/summarize_descriptions.txt"
+  completion_model_id: default_completion_model
   max_length: 500
-
-extract_graph_nlp:
-  text_analyzer:
-    extractor_type: regex_english
-  async_mode: threaded
 
 cluster_graph:
   max_cluster_size: 10
 
 extract_claims:
   enabled: false
-  model_id: default_chat_model
-  prompt: "prompts/extract_claims.txt"
-  description: "Any claims or facts that could be relevant to information discovery."
-  max_gleanings: 1
 
 community_reports:
-  model_id: default_chat_model
-  graph_prompt: "prompts/community_report_graph.txt"
-  text_prompt: "prompts/community_report_text.txt"
+  completion_model_id: default_completion_model
   max_length: 2000
   max_input_length: 8000
-
-embed_graph:
-  enabled: false
-
-umap:
-  enabled: false
 
 snapshots:
   graphml: false
@@ -308,26 +286,19 @@ snapshots:
 ### Query settings ###
 
 local_search:
-  chat_model_id: default_chat_model
+  completion_model_id: default_completion_model
   embedding_model_id: default_embedding_model
-  prompt: "prompts/local_search_system_prompt.txt"
 
 global_search:
-  chat_model_id: default_chat_model
-  map_prompt: "prompts/global_search_map_system_prompt.txt"
-  reduce_prompt: "prompts/global_search_reduce_system_prompt.txt"
-  knowledge_prompt: "prompts/global_search_knowledge_system_prompt.txt"
+  completion_model_id: default_completion_model
 
 drift_search:
-  chat_model_id: default_chat_model
+  completion_model_id: default_completion_model
   embedding_model_id: default_embedding_model
-  prompt: "prompts/drift_search_system_prompt.txt"
-  reduce_prompt: "prompts/drift_search_reduce_prompt.txt"
 
 basic_search:
-  chat_model_id: default_chat_model
+  completion_model_id: default_completion_model
   embedding_model_id: default_embedding_model
-  prompt: "prompts/basic_search_system_prompt.txt"
 """
         
         # 写入配置文件

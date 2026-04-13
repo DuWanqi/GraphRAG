@@ -71,7 +71,11 @@ def build_ollama_model_choices(api_base: Optional[str] = None) -> List[tuple]:
     构建 Gradio Dropdown 友好的 choices: [(label, value), ...]
     label 形如: "Qwen3-32b (Ollama)"，value 为原始模型名: "qwen3:32b"
     """
-    names = list_ollama_models_sync(api_base=api_base)
+    try:
+        names = list_ollama_models_sync(api_base=api_base)
+    except Exception:
+        # Ollama 未运行时不阻塞 UI 启动
+        names = []
     choices: List[tuple] = []
     for name in names:
         label = f"{_prettify_ollama_model_name(name)} (Ollama)"
@@ -423,10 +427,16 @@ class HunyuanAdapter(LLMAdapter):
     def default_model(self) -> str:
         return "hunyuan-lite"
     
+    @property
+    def default_api_base(self) -> str:
+        return "https://api.hunyuan.cloud.tencent.com/v1"
+
     def _get_litellm_model_name(self) -> str:
         model = self._get_model()
-        # 混元通过OpenAI兼容接口或专用接口
-        return f"hunyuan/{model}"
+        # 混元通过OpenAI兼容接口调用
+        if not self.api_base:
+            self.api_base = self.default_api_base
+        return f"openai/{model}"
 
 
 class GeminiAdapter(LLMAdapter):
