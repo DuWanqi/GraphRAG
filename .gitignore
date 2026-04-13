@@ -57,6 +57,7 @@ secrets.json
 
 # Trae IDE documents
 .trae/documents/
+.trae/rules/
 
 # Benchmark results
 benchmark_results/
