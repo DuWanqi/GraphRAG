@@ -192,8 +192,12 @@ GraphRAG/
 │   │   ├── memoir_parser.py    # 回忆录解析
 │   │   └── memoir_retriever.py # 图谱检索
 │   ├── generation/       # 文本生成
-│   │   ├── literary_generator.py # 文学润色生成
-│   │   └── prompts.py    # 提示词模板
+│   │   ├── literary_generator.py     # 单段生成核心
+│   │   ├── long_form_orchestrator.py # 长文分章编排
+│   │   ├── memoir_segmenter.py       # 长文分段
+│   │   ├── chapter_budget.py         # 分章字数预算
+│   │   ├── runtime_options.py        # Web/API 统一运行参数
+│   │   └── prompts.py                # 提示词模板
 │   └── evaluation/       # 评估模块
 │       ├── evaluator.py  # 评估器
 │       └── metrics.py    # 评估指标
@@ -263,9 +267,14 @@ Content-Type: application/json
     "memoir_text": "1988年夏天，我从大学毕业，来到了深圳...",
     "provider": "deepseek",
     "style": "standard",
-    "temperature": 0.7
+    "temperature": 0.7,
+    "length_bucket": "400-800",
+    "retrieval_mode": "keyword",
+    "chapter_mode": false
 }
 ```
+
+`chapter_mode=true` 时会走“分章检索 + 分章生成 + 聚合评估”链路。
 
 ### 多模型对比
 

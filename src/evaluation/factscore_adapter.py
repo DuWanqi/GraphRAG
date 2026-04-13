@@ -162,6 +162,7 @@ class FActScoreChecker:
         retrieval_result: Optional[RetrievalResult] = None,
         use_llm: bool = True,
         use_rule_decompose: Optional[bool] = None,
+        max_atomic_facts: Optional[int] = None,
     ) -> FactCheckResult:
         """
         执行事实性检查（使用FActScore方法）
@@ -199,7 +200,10 @@ class FActScoreChecker:
             if use_llm and self.llm_adapter:
                 logger.info("[FActScore] 执行原子化检查")
                 factscore_issues = await self._factscore_check(
-                    memoir_text, generated_text, retrieval_result
+                    memoir_text,
+                    generated_text,
+                    retrieval_result,
+                    max_atomic_facts=max_atomic_facts,
                 )
                 inconsistencies.extend(factscore_issues)
         
@@ -237,6 +241,7 @@ class FActScoreChecker:
         memoir_text: str,
         generated_text: str,
         retrieval_result: Optional[RetrievalResult],
+        max_atomic_facts: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         FActScore原子化检查
@@ -259,6 +264,11 @@ class FActScoreChecker:
         # 分解生成文本为原子事实
         logger.info("[FActScore] 分解生成文本为原子事实...")
         atomic_facts = await self._decompose_text(generated_text)
+        if max_atomic_facts is not None and len(atomic_facts) > max_atomic_facts:
+            logger.info(
+                f"[FActScore] 原子事实 {len(atomic_facts)} 条超过上限 {max_atomic_facts}，截断以控制成本"
+            )
+            atomic_facts = atomic_facts[:max_atomic_facts]
         logger.info(f"[FActScore] 分解得到 {len(atomic_facts)} 个原子事实")
         
         # 批量验证原子事实
