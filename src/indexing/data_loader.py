@@ -157,8 +157,6 @@ class DataLoader:
     
     def _parse_txt_event(self, text: str) -> Optional[HistoricalEvent]:
         """解析单个TXT格式的事件"""
-        import re
-        
         lines = text.split("\n")
         
         title = "未命名事件"
@@ -180,27 +178,7 @@ class DataLoader:
         content = "\n".join(content_lines).strip()
         
         if not content and title == "未命名事件":
-            content = text.strip()
-            
-            year_match = re.search(r'([一二三四五六七八九〇]{4}年|\d{4}年)', content)
-            if year_match:
-                year = year_match.group(1)
-                date = year
-                date_match = re.search(r'(\d{1,2}月\d{1,2}日[—\-~～]?\d{0,2}日?)', content)
-                if date_match:
-                    date = f"{year} {date_match.group(1)}"
-                
-                rest = content[year_match.end():].strip()
-                if rest:
-                    title_match = re.search(r'([^。；，]+[。；，])', rest)
-                    if title_match:
-                        title_raw = title_match.group(1).strip().rstrip('。；，')
-                    else:
-                        title_raw = rest[:50]
-                    title = f"{year} {title_raw}"
-            
-            if not content:
-                return None
+            return None
         
         return HistoricalEvent(
             title=title,

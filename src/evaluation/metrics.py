@@ -230,13 +230,33 @@ class LiteraryMetrics:
     @staticmethod
     def paragraph_structure(
         generated_text: str,
+        relaxed: bool = False,
+        relaxed_max_paragraphs: int = 48,
     ) -> MetricResult:
         """
-        段落结构评分
+        段落结构评分。
+        relaxed=True时适用于长文合并输出（允许多段换行）。
         """
         paragraphs = [p.strip() for p in generated_text.split("\n") if p.strip()]
         num_paragraphs = len(paragraphs)
-        
+
+        if relaxed:
+            if num_paragraphs == 0:
+                score = 0.0
+                explanation = "无段落内容"
+            elif num_paragraphs <= relaxed_max_paragraphs:
+                score = 1.0
+                explanation = f"{num_paragraphs} 个段落（长文模式）"
+            else:
+                score = 0.75
+                explanation = f"{num_paragraphs} 个段落，略多"
+            return MetricResult(
+                name="paragraph_structure",
+                value=score,
+                max_value=1.0,
+                explanation=explanation,
+            )
+
         if 1 <= num_paragraphs <= 3:
             score = 1.0
             explanation = f"{num_paragraphs} 个段落，结构良好"
@@ -246,12 +266,12 @@ class LiteraryMetrics:
         else:
             score = 0.6
             explanation = f"{num_paragraphs} 个段落，结构略显零散"
-        
+
         return MetricResult(
             name="paragraph_structure",
             value=score,
             max_value=1.0,
-            explanation=explanation
+            explanation=explanation,
         )
     
     @staticmethod
@@ -322,10 +342,17 @@ def calculate_all_metrics(
     reference_entities: Optional[List[str]] = None,
     reference_year: Optional[str] = None,
     keywords: Optional[List[str]] = None,
+    *,
+    literary_length_min: int = 150,
+    literary_length_max: int = 600,
+    literary_optimal_min: int = 200,
+    literary_optimal_max: int = 500,
+    literary_paragraph_relaxed: bool = False,
 ) -> Dict[str, MetricResult]:
     """
     计算所有指标
-    
+
+    literary_* 参数用于长文/分章场景下校准长度与段落评分。
     Returns:
         Dict[str, MetricResult]: 指标名称到结果的映射
     """
@@ -348,8 +375,17 @@ def calculate_all_metrics(
     )
     
     # 文学性指标
-    results["length_score"] = LiteraryMetrics.length_score(generated_text)
-    results["paragraph_structure"] = LiteraryMetrics.paragraph_structure(generated_text)
+    results["length_score"] = LiteraryMetrics.length_score(
+        generated_text,
+        min_length=literary_length_min,
+        max_length=literary_length_max,
+        optimal_min=literary_optimal_min,
+        optimal_max=literary_optimal_max,
+    )
+    results["paragraph_structure"] = LiteraryMetrics.paragraph_structure(
+        generated_text,
+        relaxed=literary_paragraph_relaxed,
+    )
     results["transition_usage"] = LiteraryMetrics.transition_usage(generated_text)
     results["descriptive_richness"] = LiteraryMetrics.descriptive_richness(generated_text)
     

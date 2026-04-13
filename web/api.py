@@ -4,6 +4,9 @@ FastAPI 后端服务
 """
 
 from typing import Optional, List
+import os
+import time
+import asyncio
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -11,7 +14,16 @@ from pydantic import BaseModel, Field
 from src.config import get_settings
 from src.llm import create_llm_adapter, get_available_providers, LLMRouter
 from src.retrieval import MemoirRetriever
-from src.generation import LiteraryGenerator, PromptTemplates
+from src.generation import (
+    LiteraryGenerator,
+    PromptTemplates,
+    run_long_form_generation,
+    single_segment_generation_config,
+    estimate_long_form_generation_timeout,
+    estimate_long_form_evaluation_timeout,
+    build_long_form_eval_options,
+)
+from src.evaluation import evaluate_long_form, long_form_eval_to_json
 from src.indexing import GraphBuilder
 
 
@@ -39,6 +51,12 @@ class GenerateRequest(BaseModel):
     provider: str = Field(default="deepseek", description="LLM提供商")
     style: str = Field(default="standard", description="写作风格")
     temperature: float = Field(default=0.7, ge=0.1, le=1.0, description="创意度")
+    length_bucket: str = Field(
+        default="400-800",
+        description="生成字数档：200-400 / 400-800 / 800-1200 / 1200+",
+    )
+    retrieval_mode: str = Field(default="keyword", description="keyword / vector / hybrid")
+    chapter_mode: bool = Field(default=False, description="分章/长文：按段检索与生成后合并")
 
 
 class GenerateResponse(BaseModel):
@@ -48,6 +66,8 @@ class GenerateResponse(BaseModel):
     model: str
     extracted_info: dict
     retrieval_stats: dict
+    chapter_mode: bool = False
+    eval_summary: Optional[str] = None
 
 
 class CompareRequest(BaseModel):
@@ -113,27 +133,102 @@ async def generate(request: GenerateRequest):
     输入回忆录文本，返回生成的历史背景描述
     """
     try:
+        timing = os.getenv("TEMP_TIMING") == "1"
+        t0 = time.perf_counter()
         # 创建组件
         llm_adapter = create_llm_adapter(provider=request.provider)
         retriever = MemoirRetriever(llm_adapter=llm_adapter)
         generator = LiteraryGenerator(llm_adapter=llm_adapter)
-        
-        # 检索
-        retrieval_result = await retriever.retrieve(
-            request.memoir_text,
-            top_k=10,
-            use_llm_parsing=True,
+
+        if request.chapter_mode:
+            from src.generation.memoir_segmenter import segment_memoir
+
+            n_ch = max(1, len(segment_memoir(request.memoir_text)))
+            budget_timeout = estimate_long_form_generation_timeout(n_ch)
+            t_gen0 = time.perf_counter()
+            lf = await asyncio.wait_for(
+                run_long_form_generation(
+                    request.memoir_text,
+                    retriever,
+                    generator,
+                    length_bucket=request.length_bucket,
+                    style=request.style,
+                    temperature=request.temperature,
+                    retrieval_mode=request.retrieval_mode,
+                    use_llm_parsing=False,
+                ),
+                timeout=budget_timeout,
+            )
+            if timing:
+                print(f"[TEMP_TIMING] api.generate.long_form={time.perf_counter()-t_gen0:.3f}s")
+            last = lf.chapters[-1].generation if lf.chapters else None
+            ev_text: Optional[str] = None
+            if lf.chapters:
+                eval_kwargs = build_long_form_eval_options(
+                    llm_adapter=llm_adapter,
+                    use_llm_eval=False,
+                    enable_fact_check=True,
+                    max_atomic_facts_per_segment=12,
+                    fact_check_timeout_per_segment=45.0,
+                    use_rule_decompose=True,
+                )
+                ev = await asyncio.wait_for(
+                    evaluate_long_form(lf, **eval_kwargs),
+                    timeout=estimate_long_form_evaluation_timeout(len(lf.chapters)),
+                )
+                ev_text = ev.summary_text + "\n\n" + long_form_eval_to_json(ev)[:6000]
+            if timing:
+                print(f"[TEMP_TIMING] api.generate.total={time.perf_counter()-t0:.3f}s")
+            return GenerateResponse(
+                content=lf.merged_content,
+                provider=last.provider if last else request.provider,
+                model=last.model if last else "",
+                extracted_info={
+                    "chapter_mode": True,
+                    "chapters": len(lf.chapters),
+                    "queries": [ch.retrieval_result.query for ch in lf.chapters],
+                },
+                retrieval_stats={
+                    "entities_per_chapter": [len(ch.retrieval_result.entities) for ch in lf.chapters],
+                    "relationships_total": sum(len(ch.retrieval_result.relationships) for ch in lf.chapters),
+                },
+                chapter_mode=True,
+                eval_summary=ev_text,
+            )
+
+        # 单段：检索 + 生成
+        t_ret0 = time.perf_counter()
+        retrieval_result = await asyncio.wait_for(
+            retriever.retrieve(
+                request.memoir_text,
+                top_k=10,
+                use_llm_parsing=True,
+                mode=request.retrieval_mode,
+            ),
+            timeout=45.0,
         )
-        
-        # 生成
-        gen_result = await generator.generate(
-            memoir_text=request.memoir_text,
-            retrieval_result=retrieval_result,
-            temperature=request.temperature,
+        if timing:
+            print(f"[TEMP_TIMING] api.generate.retrieve={time.perf_counter()-t_ret0:.3f}s")
+
+        single_cfg = single_segment_generation_config(request.length_bucket)
+        t_gen0 = time.perf_counter()
+        gen_result = await asyncio.wait_for(
+            generator.generate(
+                memoir_text=request.memoir_text,
+                retrieval_result=retrieval_result,
+                temperature=request.temperature,
+                style=request.style,
+                length_hint=single_cfg["length_hint"],
+                max_tokens=single_cfg["max_tokens"],
+            ),
+            timeout=90.0,
         )
-        
-        # 构建响应
+        if timing:
+            print(f"[TEMP_TIMING] api.generate.generate={time.perf_counter()-t_gen0:.3f}s")
+
         context = retrieval_result.context
+        if timing:
+            print(f"[TEMP_TIMING] api.generate.total={time.perf_counter()-t0:.3f}s")
         return GenerateResponse(
             content=gen_result.content,
             provider=gen_result.provider,
@@ -150,10 +245,13 @@ async def generate(request: GenerateRequest):
                 "communities": len(retrieval_result.communities),
                 "text_units": len(retrieval_result.text_units),
             },
+            chapter_mode=False,
         )
         
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except asyncio.TimeoutError as e:
+        raise HTTPException(status_code=504, detail="请求超时（检索45s / 生成90s）") from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
 
