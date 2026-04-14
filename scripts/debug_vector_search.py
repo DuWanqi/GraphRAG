@@ -8,7 +8,7 @@ import lancedb
 import numpy as np
 
 # 连接LanceDB
-db = lancedb.connect("data/output/output/lancedb")
+db = lancedb.connect("data/graphrag_output/output/lancedb")
 table = db.open_table("default-entity-description")
 df = table.to_pandas()
 

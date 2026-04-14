@@ -175,13 +175,13 @@ class MemoirParser:
             match = re.search(pattern, text)
             if match:
                 year = match.group(1)
+                # 处理汉字年份（包括两位汉字如"七二"、"八八"）
+                if not year.isdigit():
+                    year = self._chinese_to_number(year)
                 # 处理两位数年份
-                if len(year) == 2:
+                if year.isdigit() and len(year) == 2:
                     prefix = "19" if int(year) > 50 else "20"
                     year = prefix + year
-                # 处理汉字年份
-                elif not year.isdigit():
-                    year = self._chinese_to_number(year)
                 return year
         return None
     
