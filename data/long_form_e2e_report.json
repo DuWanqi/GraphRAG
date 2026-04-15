@@ -1,0 +1,304 @@
+{
+  "aggregated_score": 7.836501901140684,
+  "segment_count": 6,
+  "segments": [
+    {
+      "segment_index": 0,
+      "metrics": {
+        "entity_coverage": {
+          "value": 0.5,
+          "max": 1.0,
+          "explanation": "覆盖了 1/2 个参考实体"
+        },
+        "time_consistency": {
+          "value": 1.0,
+          "max": 1.0,
+          "explanation": "包含参考年份 1972"
+        },
+        "keyword_overlap": {
+          "value": 0.2,
+          "max": 1.0,
+          "explanation": "匹配了 1/5 个关键词"
+        },
+        "semantic_similarity": {
+          "value": 0.5520960003932047,
+          "max": 1.0,
+          "explanation": "语义相似度 55.21%"
+        },
+        "length_score": {
+          "value": 0.896875,
+          "max": 1.0,
+          "explanation": "长度 172 字，略偏离最佳范围"
+        },
+        "paragraph_structure": {
+          "value": 1.0,
+          "max": 1.0,
+          "explanation": "1 个段落（长文模式）"
+        },
+        "transition_usage": {
+          "value": 1.0,
+          "max": 1.0,
+          "explanation": "使用了多个过渡词: 此时, 那一年"
+        },
+        "descriptive_richness": {
+          "value": 0.25,
+          "max": 1.0,
+          "explanation": "描述性元素评分: 1/4"
+        }
+      },
+      "eval_overall": 7.0,
+      "fact_is_factual": false,
+      "fact_skip": null
+    },
+    {
+      "segment_index": 1,
+      "metrics": {
+        "entity_coverage": {
+          "value": 0.1,
+          "max": 1.0,
+          "explanation": "覆盖了 1/10 个参考实体"
+        },
+        "time_consistency": {
+          "value": 0.3,
+          "max": 1.0,
+          "explanation": "生成文本中未找到年份"
+        },
+        "keyword_overlap": {
+          "value": 0.4,
+          "max": 1.0,
+          "explanation": "匹配了 2/5 个关键词"
+        },
+        "semantic_similarity": {
+          "value": 0.5295616382024515,
+          "max": 1.0,
+          "explanation": "语义相似度 52.96%"
+        },
+        "length_score": {
+          "value": 0.8987499999999999,
+          "max": 1.0,
+          "explanation": "长度 180 字，略偏离最佳范围"
+        },
+        "paragraph_structure": {
+          "value": 1.0,
+          "max": 1.0,
+          "explanation": "1 个段落（长文模式）"
+        },
+        "transition_usage": {
+          "value": 1.0,
+          "max": 1.0,
+          "explanation": "使用了多个过渡词: 正是, 彼时, 此时"
+        },
+        "descriptive_richness": {
+          "value": 0.25,
+          "max": 1.0,
+          "explanation": "描述性元素评分: 1/4"
+        }
+      },
+      "eval_overall": 8.0,
+      "fact_is_factual": false,
+      "fact_skip": null
+    },
+    {
+      "segment_index": 2,
+      "metrics": {
+        "entity_coverage": {
+          "value": 0.1,
+          "max": 1.0,
+          "explanation": "覆盖了 1/10 个参考实体"
+        },
+        "time_consistency": {
+          "value": 1.0,
+          "max": 1.0,
+          "explanation": "包含参考年份 1988"
+        },
+        "keyword_overlap": {
+          "value": 0.2,
+          "max": 1.0,
+          "explanation": "匹配了 1/5 个关键词"
+        },
+        "semantic_similarity": {
+          "value": 0.5787770108894223,
+          "max": 1.0,
+          "explanation": "语义相似度 57.88%"
+        },
+        "length_score": {
+          "value": 0.8837499999999999,
+          "max": 1.0,
+          "explanation": "长度 173 字，略偏离最佳范围"
+        },
+        "paragraph_structure": {
+          "value": 1.0,
+          "max": 1.0,
+          "explanation": "1 个段落（长文模式）"
+        },
+        "transition_usage": {
+          "value": 0.7,
+          "max": 1.0,
+          "explanation": "使用了过渡词: 那时"
+        },
+        "descriptive_richness": {
+          "value": 0.75,
+          "max": 1.0,
+          "explanation": "描述性元素评分: 3/4"
+        }
+      },
+      "eval_overall": 8.0,
+      "fact_is_factual": false,
+      "fact_skip": null
+    },
+    {
+      "segment_index": 3,
+      "metrics": {
+        "entity_coverage": {
+          "value": 0.2,
+          "max": 1.0,
+          "explanation": "覆盖了 2/10 个参考实体"
+        },
+        "time_consistency": {
+          "value": 0.3,
+          "max": 1.0,
+          "explanation": "生成文本中未找到年份"
+        },
+        "keyword_overlap": {
+          "value": 0.2,
+          "max": 1.0,
+          "explanation": "匹配了 1/5 个关键词"
+        },
+        "semantic_similarity": {
+          "value": 0.5613622353508846,
+          "max": 1.0,
+          "explanation": "语义相似度 56.14%"
+        },
+        "length_score": {
+          "value": 0.9043749999999999,
+          "max": 1.0,
+          "explanation": "长度 161 字，略偏离最佳范围"
+        },
+        "paragraph_structure": {
+          "value": 1.0,
+          "max": 1.0,
+          "explanation": "1 个段落（长文模式）"
+        },
+        "transition_usage": {
+          "value": 0.7,
+          "max": 1.0,
+          "explanation": "使用了过渡词: 正是"
+        },
+        "descriptive_richness": {
+          "value": 0.5,
+          "max": 1.0,
+          "explanation": "描述性元素评分: 2/4"
+        }
+      },
+      "eval_overall": 8.0,
+      "fact_is_factual": true,
+      "fact_skip": null
+    },
+    {
+      "segment_index": 4,
+      "metrics": {
+        "entity_coverage": {
+          "value": 0.2,
+          "max": 1.0,
+          "explanation": "覆盖了 2/10 个参考实体"
+        },
+        "time_consistency": {
+          "value": 1.0,
+          "max": 1.0,
+          "explanation": "包含参考年份 1998"
+        },
+        "keyword_overlap": {
+          "value": 0.2,
+          "max": 1.0,
+          "explanation": "匹配了 1/5 个关键词"
+        },
+        "semantic_similarity": {
+          "value": 0.5941351728167769,
+          "max": 1.0,
+          "explanation": "语义相似度 59.41%"
+        },
+        "length_score": {
+          "value": 0.866875,
+          "max": 1.0,
+          "explanation": "长度 177 字，略偏离最佳范围"
+        },
+        "paragraph_structure": {
+          "value": 1.0,
+          "max": 1.0,
+          "explanation": "1 个段落（长文模式）"
+        },
+        "transition_usage": {
+          "value": 0.7,
+          "max": 1.0,
+          "explanation": "使用了过渡词: 那时"
+        },
+        "descriptive_richness": {
+          "value": 0.75,
+          "max": 1.0,
+          "explanation": "描述性元素评分: 3/4"
+        }
+      },
+      "eval_overall": 8.0,
+      "fact_is_factual": true,
+      "fact_skip": null
+    },
+    {
+      "segment_index": 5,
+      "metrics": {
+        "entity_coverage": {
+          "value": 0.2,
+          "max": 1.0,
+          "explanation": "覆盖了 2/10 个参考实体"
+        },
+        "time_consistency": {
+          "value": 1.0,
+          "max": 1.0,
+          "explanation": "包含参考年份 2008"
+        },
+        "keyword_overlap": {
+          "value": 0.2,
+          "max": 1.0,
+          "explanation": "匹配了 1/5 个关键词"
+        },
+        "semantic_similarity": {
+          "value": 0.5190666146292986,
+          "max": 1.0,
+          "explanation": "语义相似度 51.91%"
+        },
+        "length_score": {
+          "value": 0.8574999999999999,
+          "max": 1.0,
+          "explanation": "长度 189 字，略偏离最佳范围"
+        },
+        "paragraph_structure": {
+          "value": 1.0,
+          "max": 1.0,
+          "explanation": "1 个段落（长文模式）"
+        },
+        "transition_usage": {
+          "value": 0.7,
+          "max": 1.0,
+          "explanation": "使用了过渡词: 正是"
+        },
+        "descriptive_richness": {
+          "value": 0.75,
+          "max": 1.0,
+          "explanation": "描述性元素评分: 3/4"
+        }
+      },
+      "eval_overall": 8.0,
+      "fact_is_factual": false,
+      "fact_skip": null
+    }
+  ],
+  "document": {
+    "year_diversity": {
+      "value": 0.75,
+      "max": 1.0
+    },
+    "merged_length": {
+      "value": 1.0,
+      "max": 1.0
+    }
+  }
+}

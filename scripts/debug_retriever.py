@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 from src.retrieval import MemoirRetriever, MemoirParser
 
-output_dir = Path("data/output/output")
+output_dir = Path("data/graphrag_output/output")
 
 entities_file = output_dir / "entities.parquet"
 df = pd.read_parquet(entities_file)

@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import lancedb
 
-db = lancedb.connect("data/output/output/lancedb")
+db = lancedb.connect("data/graphrag_output/output/lancedb")
 print(f"Tables: {db.table_names()}")
 
 for table_name in db.table_names():

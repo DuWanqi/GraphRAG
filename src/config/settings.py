@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     
     # OpenAI配置 (可选)
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
+    openai_api_base: Optional[str] = Field(default=None, alias="OPENAI_BASE_URL")
     
     # 数标标配置（test分支）
     shubiaobiao_api_key: Optional[str] = Field(default=None, alias="SHUBIAOBIAO_API_KEY")
@@ -71,7 +72,7 @@ class Settings(BaseSettings):
         alias="GRAPHRAG_INPUT_DIR"
     )
     graphrag_output_dir: str = Field(
-        default=str(PROJECT_ROOT / "data" / "output"), 
+        default=str(PROJECT_ROOT / "data" / "graphrag_output"),
         alias="GRAPHRAG_OUTPUT_DIR"
     )
     

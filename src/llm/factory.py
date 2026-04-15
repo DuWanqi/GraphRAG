@@ -137,7 +137,7 @@ def _get_api_base_from_settings(provider: LLMProvider, settings) -> Optional[str
         LLMProvider.HUNYUAN: None,  # 混元使用默认
         LLMProvider.GEMINI: None,   # Gemini使用默认
         LLMProvider.GLM: "https://open.bigmodel.cn/api/paas/v4",  # 智谱API地址
-        LLMProvider.OPENAI: None,   # OpenAI使用默认
+        LLMProvider.OPENAI: settings.openai_api_base,
         LLMProvider.OLLAMA: settings.ollama_api_base,  # Ollama本地地址可配置
     }
     return base_mapping.get(provider)
