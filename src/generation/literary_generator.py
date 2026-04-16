@@ -89,6 +89,7 @@ class LiteraryGenerator:
         length_hint: str = "200-500字",
         temperature: float = 0.7,
         max_tokens: int = 1024,
+        chapter_context: str = "",
     ) -> GenerationResult:
         """
         生成历史背景描述
@@ -110,7 +111,7 @@ class LiteraryGenerator:
 
         # 构建提示词
         t_prompt0 = time.perf_counter()
-        prompt = self._build_prompt(memoir_text, retrieval_result, style=style, length_hint=length_hint)
+        prompt = self._build_prompt(memoir_text, retrieval_result, style=style, length_hint=length_hint, chapter_context=chapter_context)
         t_prompt = time.perf_counter() - t_prompt0
         if timing:
             print(f"[TEMP_TIMING] generator.build_prompt={t_prompt:.3f}s prompt_chars={len(prompt)}")
@@ -161,6 +162,7 @@ class LiteraryGenerator:
         length_hint: str = "200-500字",
         temperature: float = 0.7,
         max_tokens: int = 1024,
+        chapter_context: str = "",
     ) -> AsyncIterator[str]:
         """
         流式生成：逐步产出新增文本片段（delta）。
@@ -168,7 +170,7 @@ class LiteraryGenerator:
         if not self.llm_adapter and not self.llm_router:
             raise ValueError("需要提供llm_adapter或llm_router")
 
-        prompt = self._build_prompt(memoir_text, retrieval_result, style=style, length_hint=length_hint)
+        prompt = self._build_prompt(memoir_text, retrieval_result, style=style, length_hint=length_hint, chapter_context=chapter_context)
 
         adapter = self.llm_adapter
         if adapter is None and self.llm_router:
@@ -277,10 +279,11 @@ class LiteraryGenerator:
         retrieval_result: RetrievalResult,
         style: str = "standard",
         length_hint: str = "200-500字",
+        chapter_context: str = "",
     ) -> str:
         """构建生成提示词"""
         context = retrieval_result.context
-        
+
         template = PromptTemplates.get_template(style=style)
         return template.format(
             memoir_text=memoir_text,
@@ -288,6 +291,7 @@ class LiteraryGenerator:
             location=context.location or "未知",
             context=retrieval_result.get_context_text() or "暂无相关历史信息",
             length_hint=length_hint,
+            chapter_context=chapter_context,
         )
     
     async def enhance_memoir(
