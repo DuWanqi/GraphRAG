@@ -425,6 +425,8 @@ def process_memoir_stream(
     retrieval_mode: str = "keyword",
     use_rule_decompose: bool = False,
     enable_safe_check: bool = False,
+    enable_retrieval_quality: bool = True,
+    enable_llm_judge: bool = True,
     chapter_mode: bool = False,
 ):
     """
@@ -547,18 +549,21 @@ def process_memoir_stream(
         yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
         # ── 2. 检索质量评估 (LLM-as-a-Judge) ──
-        try:
-            eval_result = loop.run_until_complete(asyncio.wait_for(
-                evaluate_retrieval_quality(
-                    query_text=memoir_text,
-                    text_units=retrieval_result.text_units,
-                    llm_adapter=_make_llm(provider, model),
-                ),
-                timeout=30.0,
-            ))
-            retrieval_q_md = _format_retrieval_quality(eval_result)
-        except Exception as e:
-            retrieval_q_md = f"检索质量评估失败: {e}"
+        if enable_retrieval_quality:
+            try:
+                eval_result = loop.run_until_complete(asyncio.wait_for(
+                    evaluate_retrieval_quality(
+                        query_text=memoir_text,
+                        text_units=retrieval_result.text_units,
+                        llm_adapter=_make_llm(provider, model),
+                    ),
+                    timeout=30.0,
+                ))
+                retrieval_q_md = _format_retrieval_quality(eval_result)
+            except Exception as e:
+                retrieval_q_md = f"检索质量评估失败: {e}"
+        else:
+            retrieval_q_md = "_未启用_"
         yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
         # ── 3. 流式生成 ──
@@ -591,8 +596,9 @@ def process_memoir_stream(
             content += delta
             yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
-        # ── 4. 综合评估（事实准确性 + 相关性 + 文学性 + 合规性 + SAFE独立验证） ──
-        if (enable_fact_check or enable_safe_check) and content:
+        # ── 4. 综合评估（事实准确性 + SAFE + LLM-as-a-Judge） ──
+        any_eval = enable_fact_check or enable_safe_check or enable_llm_judge
+        if any_eval and content:
             try:
                 async def _run_eval():
                     llm = _make_llm(provider, model)
@@ -608,32 +614,36 @@ def process_memoir_stream(
                         use_llm=True,
                         enable_fact_check=enable_fact_check,
                         enable_safe_check=enable_safe_check,
+                        enable_llm_judge=enable_llm_judge,
                     )
 
                 eval_res = loop.run_until_complete(asyncio.wait_for(_run_eval(), timeout=180.0))
 
-                # 事实准确性（KB FActScore）
                 if eval_res.fact_check:
                     accuracy_md = _format_accuracy(eval_res.fact_check, 0)
-
-                # SAFE 独立知识验证
                 if eval_res.safe_check:
                     safe_md = _format_safe_check(eval_res.safe_check)
-
-                # 相关性
                 if "relevance" in eval_res.scores:
                     relevance_md = _format_dimension(eval_res.scores["relevance"])
-
-                # 文学性
                 if "literary" in eval_res.scores:
                     literary_md = _format_dimension(eval_res.scores["literary"])
-
-                # 合规性
                 if "compliance" in eval_res.scores:
                     compliance_md = _format_compliance(eval_res.scores["compliance"])
 
             except Exception as e:
                 accuracy_md = f"评估失败: {e}"
+
+        if not enable_fact_check and not accuracy_md:
+            accuracy_md = "_未启用_"
+        if not enable_safe_check and not safe_md:
+            safe_md = "_未启用_"
+        if not enable_llm_judge:
+            if not relevance_md:
+                relevance_md = "_未启用_"
+            if not literary_md:
+                literary_md = "_未启用_"
+            if not compliance_md:
+                compliance_md = "_未启用_"
 
         yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
     finally:
@@ -856,23 +866,33 @@ def create_ui():
                             info="选择知识图谱检索策略",
                         )
 
-                        fact_check_checkbox = gr.Checkbox(
-                            value=True,
-                            label="\U0001f50d 启用评估",
-                            info="检测生成内容的事实准确性、相关性、文学性和合规性",
-                        )
-
-                        rule_decompose_checkbox = gr.Checkbox(
-                            value=False,
-                            label="\u26a1 使用规则拆分",
-                            info="使用规则而非LLM进行原子事实拆分，大幅提高速度",
-                        )
-
-                        safe_check_checkbox = gr.Checkbox(
-                            value=False,
-                            label="\U0001f310 独立知识验证 (SAFE)",
-                            info="使用LLM自身知识独立验证事实，不依赖知识库，帮助评估知识库完整性",
-                        )
+                        with gr.Group():
+                            gr.Markdown("**\U0001f50d 评估模块**（可独立开关）")
+                            retrieval_quality_checkbox = gr.Checkbox(
+                                value=True,
+                                label="\U0001f3af 检索质量",
+                                info="LLM 评判检索到的实体/关系与回忆录的契合度",
+                            )
+                            fact_check_checkbox = gr.Checkbox(
+                                value=True,
+                                label="\u2705 事实准确性 (KB FActScore)",
+                                info="基于知识库逐条核查原子事实",
+                            )
+                            safe_check_checkbox = gr.Checkbox(
+                                value=False,
+                                label="\U0001f310 独立知识验证 (SAFE)",
+                                info="使用 LLM 自身知识独立验证事实，不依赖知识库",
+                            )
+                            llm_judge_checkbox = gr.Checkbox(
+                                value=True,
+                                label="\u270d\ufe0f LLM-as-a-Judge（相关性 / 文学性 / 合规性）",
+                                info="由 LLM 对生成内容进行多维度打分",
+                            )
+                            rule_decompose_checkbox = gr.Checkbox(
+                                value=False,
+                                label="\u26a1 使用规则拆分（事实检查加速）",
+                                info="使用规则而非 LLM 进行原子事实拆分；仅在事实准确性/SAFE 启用时生效",
+                            )
 
                         chapter_mode_checkbox = gr.Checkbox(
                             value=False,
@@ -943,6 +963,8 @@ def create_ui():
                         retrieval_mode_select,
                         rule_decompose_checkbox,
                         safe_check_checkbox,
+                        retrieval_quality_checkbox,
+                        llm_judge_checkbox,
                         chapter_mode_checkbox,
                     ],
                     outputs=[

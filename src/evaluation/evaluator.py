@@ -214,6 +214,7 @@ class Evaluator:
         enable_fact_check: bool = True,
         enable_safe_check: bool = False,
         use_safe_search: bool = False,
+        enable_llm_judge: bool = True,
     ) -> EvaluationResult:
         """
         评估生成的历史背景文本
@@ -226,24 +227,27 @@ class Evaluator:
             enable_fact_check: 是否启用事实性检查（基于知识库）
             enable_safe_check: 是否启用独立知识验证（SAFE，不依赖知识库）
             use_safe_search: SAFE 验证是否使用网络搜索（否则使用 LLM 自身知识）
+            enable_llm_judge: 是否启用 LLM-as-a-Judge（相关性/文学性/合规性）
 
         Returns:
             EvaluationResult: 评估结果
         """
-        if not self.llm_adapter:
+        if (enable_llm_judge or enable_fact_check or enable_safe_check) and not self.llm_adapter:
             raise RuntimeError(
-                "相关性、文学性等评估维度必须使用 LLM-as-a-Judge，"
-                "但未配置 LLM 适配器。请提供有效的 llm_provider。"
+                "评估依赖 LLM-as-a-Judge / 事实检查器，但未配置 LLM 适配器。"
+                "请提供有效的 llm_provider。"
             )
-        result = await self._evaluate_with_llm(
-            memoir_text, generated_text, retrieval_result
-        )
 
-        # 合规性检查
-        compliance_score = await self._evaluate_compliance(
-            generated_text, use_llm and self.llm_adapter is not None
-        )
-        result.scores["compliance"] = compliance_score
+        if enable_llm_judge:
+            result = await self._evaluate_with_llm(
+                memoir_text, generated_text, retrieval_result
+            )
+            compliance_score = await self._evaluate_compliance(
+                generated_text, use_llm and self.llm_adapter is not None
+            )
+            result.scores["compliance"] = compliance_score
+        else:
+            result = EvaluationResult(scores={}, overall_score=0.0)
 
         if enable_fact_check:
             fact_check_result = await self.fact_checker.check(
@@ -280,7 +284,7 @@ class Evaluator:
             )
             result.safe_check = safe_result
 
-        if compliance_score.score < 8:
+        if enable_llm_judge and compliance_score.score < 8:
             result.suggestions.append(
                 f"⚠️ 合规性警告：{compliance_score.explanation}"
             )
