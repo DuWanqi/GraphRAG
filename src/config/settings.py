@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     
     # Google Gemini配置
     google_api_key: Optional[str] = Field(default=None, alias="GOOGLE_API_KEY")
+    # Google Custom Search（用于 SAFE 独立事实验证的网络搜索，可选）
+    google_cse_id: Optional[str] = Field(default=None, alias="GOOGLE_CSE_ID")
     
     # 智谱GLM配置
     glm_api_key: Optional[str] = Field(default=None, alias="GLM_API_KEY")

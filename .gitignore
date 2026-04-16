@@ -60,3 +60,7 @@ secrets.json
 
 # Benchmark results
 benchmark_results/
+
+# Claude Code local config / instructions
+.claude/
+CLAUDE.md
