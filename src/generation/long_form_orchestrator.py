@@ -91,17 +91,31 @@ async def run_long_form_generation(
     budgets: List[SegmentBudget] = allocate_segment_budgets(segments, length_bucket)
     chapter_ctx = ChapterContext(total_chapters=len(segments)) if enable_cross_chapter_context else None
 
+    import asyncio
+
     chapters: List[ChapterGenerationResult] = []
     parts: List[str] = []
 
-    for seg, budget in zip(segments, budgets):
-        # 1) 检索
-        rr = await retriever.retrieve(
-            seg.text,
-            top_k=top_k,
-            use_llm_parsing=use_llm_parsing,
-            mode=retrieval_mode,
+    # 预取第一章的检索结果
+    next_retrieval: Optional[asyncio.Task] = asyncio.create_task(
+        retriever.retrieve(
+            segments[0].text, top_k=top_k,
+            use_llm_parsing=use_llm_parsing, mode=retrieval_mode,
         )
+    )
+
+    for i, (seg, budget) in enumerate(zip(segments, budgets)):
+        # 1) 获取当前章的检索结果（已经在上一轮预取）
+        rr = await next_retrieval
+
+        # 预取下一章的检索（与当前章的生成并行）
+        if i + 1 < len(segments):
+            next_retrieval = asyncio.create_task(
+                retriever.retrieve(
+                    segments[i + 1].text, top_k=top_k,
+                    use_llm_parsing=use_llm_parsing, mode=retrieval_mode,
+                )
+            )
 
         # 2) 构建跨章上下文
         cross_ctx = ""
@@ -126,7 +140,6 @@ async def run_long_form_generation(
             if rep_warning:
                 logger.warning("[Orchestrator] 第%d章 %s", seg.index + 1, rep_warning)
 
-            # 可选：自动重试（加强反重复指令）
             if rep_warning and max_retry_chapters > 0:
                 stronger_ctx = cross_ctx + "\n\n⚠️ 严格要求：上一次生成的内容与前文高度重叠，请务必从不同角度切入，避免重复。"
                 gr = await generator.generate(
@@ -167,6 +180,79 @@ async def run_long_form_generation(
         segmentation_report=seg_report,
         chapter_context=chapter_ctx,
     )
+
+
+async def regenerate_chapters(
+    result: LongFormGenerationResult,
+    retriever: MemoirRetriever,
+    generator: LiteraryGenerator,
+    chapters_to_regenerate: List[int],
+    prompt_adjustments: Optional[dict[int, str]] = None,
+    *,
+    style: str = "standard",
+    temperature: float = 0.7,
+    retrieval_mode: str = "keyword",
+    use_llm_parsing: bool = False,
+    top_k: int = 10,
+    chapter_separator: str = "\n\n---\n\n",
+) -> LongFormGenerationResult:
+    """
+    对指定章节重新生成，返回更新后的 LongFormGenerationResult。
+
+    利用 RemediationPlan 中的 prompt_adjustments 加强对应章节的 prompt，
+    其余章节保持不变。
+    """
+    adjustments = prompt_adjustments or {}
+
+    for ch_idx in chapters_to_regenerate:
+        if ch_idx < 0 or ch_idx >= len(result.chapters):
+            logger.warning("[Regenerate] 章节索引 %d 超出范围，跳过", ch_idx)
+            continue
+
+        old_ch = result.chapters[ch_idx]
+        seg_text = old_ch.segment_text
+
+        rr = await retriever.retrieve(
+            seg_text, top_k=top_k,
+            use_llm_parsing=use_llm_parsing, mode=retrieval_mode,
+        )
+
+        cross_ctx = ""
+        if result.chapter_context is not None:
+            cross_ctx = result.chapter_context.build_prompt_section(ch_idx)
+
+        adj = adjustments.get(ch_idx, "")
+        if adj:
+            cross_ctx += f"\n\n【修复指令】{adj}"
+
+        gr = await generator.generate(
+            memoir_text=seg_text,
+            retrieval_result=rr,
+            style=style,
+            length_hint=old_ch.length_hint,
+            temperature=min(temperature + 0.05, 1.0),
+            max_tokens=old_ch.generation.max_tokens if hasattr(old_ch.generation, "max_tokens") else 1024,
+            chapter_context=cross_ctx,
+        )
+
+        if result.chapter_context is not None:
+            entities = [e.get("name", "") for e in (rr.entities or [])[:10] if e.get("name")]
+            result.chapter_context.record_chapter(ch_idx, gr.content, entities)
+
+        result.chapters[ch_idx] = ChapterGenerationResult(
+            segment_index=old_ch.segment_index,
+            segment_text=seg_text,
+            retrieval_result=rr,
+            generation=gr,
+            length_hint=old_ch.length_hint,
+            repetition_warning=f"[质量门控重试]",
+        )
+        logger.info("[Regenerate] 第%d章已重新生成 (%d字)", ch_idx + 1, len(gr.content))
+
+    parts = [ch.generation.content.strip() for ch in result.chapters]
+    result.merged_content = chapter_separator.join(p for p in parts if p)
+
+    return result
 
 
 def format_chapter_progress(prefix: str, chapter_idx: int, total: int) -> str:

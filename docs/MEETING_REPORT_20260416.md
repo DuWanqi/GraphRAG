@@ -478,13 +478,228 @@ class RemediationPlan:
 
 ---
 
-## 六、总结
+## 六、对回忆录生成所需事件的优化
 
-本次改进从**分段正确性、生成质量保障、评估与门控**三个层面对系统进行了系统性升级：
+在完成上述系统架构改进并进行端到端 pipeline 测试后，发现了五类需要进一步优化的实际问题。以下逐一说明问题现象、定位分析和具体修复。
 
-| 公司关注的问题 | 先前状态 | 现在 |
+### 6.1 生成结果不可见——输出链路补全
+
+**问题**：运行完整 pipeline 后，评估报告 JSON 中仅有评分指标，**不包含生成的文本内容**，用户无法直接查看或审阅生成结果。
+
+**修复**（`scripts/run_long_form_e2e.py`）：
+
+- 新增 `_save_generated_text()`：将各章生成内容按 `===== 第 N 章 =====` 分隔，写入 `data/long_form_e2e_output.txt`。
+- 新增 `_enrich_report_with_content()`：在 JSON 报告的每个 `segments[i]` 下嵌入 `generated_text` 字段，顶层嵌入 `merged_content`。
+
+### 6.2 质量门控失败无修复——自动重试机制
+
+**问题**：某章 FActScore 低于阈值 60% 时，门控仅输出"未通过"，**无任何修复动作**，pipeline 不具备实际可用性。
+
+**修复**：
+
+**① 编排器层**（`src/generation/long_form_orchestrator.py`）：
+
+新增 `regenerate_chapters()` 函数，接受 `RemediationPlan` 中的 `chapters_to_regenerate` 和 `prompt_adjustments`，对指定章节重新检索 + 重新生成，将修复指令注入跨章上下文：
+
+```python
+async def regenerate_chapters(
+    result, retriever, generator,
+    chapters_to_regenerate, prompt_adjustments, ...
+):
+    for ch_idx in chapters_to_regenerate:
+        cross_ctx = result.chapter_context.build_prompt_section(ch_idx)
+        adj = adjustments.get(ch_idx, "")
+        if adj:
+            cross_ctx += f"\n\n【修复指令】{adj}"
+        gr = await generator.generate(..., chapter_context=cross_ctx)
+        result.chapters[ch_idx] = ChapterGenerationResult(...)
+```
+
+**② 脚本层**（`scripts/run_long_form_e2e.py`）：
+
+在"生成→评估"后增加 while 循环，最多重试 `--max-gate-retries` 轮（默认 2）。每轮仅对失败章节调用 `regenerate_chapters()`，并记录 `gate_retry_log` 到 JSON 报告中。
+
+### 6.3 生成内容千篇一律——Prompt 与预算重构
+
+**问题**：生成的各章内容以"那年……"开头，风格模板化，更像"历史背景描述"而非回忆录润色改写；字数也明显不足。
+
+**根因**：
+1. Prompt 模板的核心指令是"生成历史背景描述"，而非"对回忆录进行文学润色和改写"。
+2. 字数预算按固定的全书总量平均分配，与原文段落长度无关。
+
+**修复**：
+
+**① Prompt 模板重构**（`src/generation/prompts.json`）：
+
+将 `standard`、`nostalgic`、`narrative` 三个模板的核心指令从"生成历史背景"改为"文学润色和改写回忆录"，要求保留原文中的人物、事件、对话、细节，将历史背景作为"调料"自然编织进叙事。新增约束：
+
+```
+- 禁止以「那年」「那时」开头——用具体的场景、动作或细节开篇
+- 只做叙事性描写，不要概括或评论
+```
+
+系统提示词（`system_prompts.default`）同步调整为"回忆录润色作家"角色定位。
+
+**② 字数预算改为扩展系数**（`src/generation/chapter_budget.py`）：
+
+多段模式不再从固定全书总量按比例分摊，而是基于**各段原文字数**乘以扩展系数：
+
+| length_bucket | 扩展系数 | 含义 |
+|---|---|---|
+| 200-400 | 0.8× | 精简润色 |
+| 400-800 | 1.2× | 略扩写 |
+| 800-1200 | 1.6× | 丰富扩写 |
+| 1200+ | 2.0× | 大幅扩写 |
+
+例如原文段落 500 字、选择 "400-800" bucket，目标字数 = 500 × 1.2 = 600 字（±15%）。
+
+### 6.4 FActScore 持续偏低——事实检查策略优化
+
+**问题**：优化 Prompt 后 FActScore 仍频繁在 58% 左右，低于 60% 阈值。分析发现两个原因：
+1. 事实验证时**只用检索到的历史背景**作为证据上下文，而润色改写的内容大部分来自**回忆录原文**本身——原文中的人名、事件、对话被判定为"缺乏证据支持"。
+2. 原子事实列表中包含大量**纯文学修辞**（比喻、拟人、感官描写），这些不是可验证的事实，却被送入 LLM 验证，拉低通过率。
+
+**修复**（`src/evaluation/factscore_adapter.py`）：
+
+**① 验证上下文扩展**：将 `_factscore_check()` 的上下文从仅"检索历史背景"改为"回忆录原文 + 检索历史背景"双证据源：
+
+```python
+context_parts = []
+if memoir_text:
+    context_parts.append(f"【回忆录原文】\n{memoir_text}")
+if retrieval_context:
+    context_parts.append(f"【历史背景】\n{retrieval_context}")
+context = "\n\n".join(context_parts)
+```
+
+**② 文学修辞过滤**：新增 `_filter_literary_sentences()`，在 LLM 验证前过滤不含数字、时间、地名或事实性动词的纯文学句：
+
+```python
+has_verifiable = bool(re.search(
+    r"[\d一二三四五六七八九十百千万亿]"
+    r"|[年月日号]"
+    r"|(?:省|市|县|区|镇|村|塬|河|山)"
+    r"|(?:叫|姓|名|是|在|从|到|去|来|做|当|任)", s
+))
+```
+
+**③ 规则预匹配**：新增 `_rule_match_against_source()`，对每个原子事实提取关键实词，若 ≥50% 能在原文中直接找到，跳过 LLM 验证直接标记为"支持"，减少 LLM 调用量。
+
+**④ Prompt 显式要求保留具体细节**：在 `prompts.json` 所有润色模板中新增：
+
+```
+必须保留原文中的具体年份（如一九七二年、1992年）、数字（如两百块、三千台）和地名，不得模糊化
+```
+
+### 6.5 Pipeline 耗时过长——并行化优化
+
+**问题**：端到端一次执行需约 131 秒，对实际应用场景预期超过十倍。分析发现：
+- 6 章评估（每章含 FActScore LLM 调用）是**串行**执行的。
+- 每章的"检索→生成"也是完全串行，检索等待生成后才开始下一章。
+
+**修复**：
+
+**① 评估并行化**（`src/evaluation/long_form_eval.py`）：
+
+将逐章评估 `for ch in chapters: await _eval(ch)` 重构为并发执行：
+
+```python
+records = list(await asyncio.gather(
+    *[_eval_one_chapter(ch) for ch in long_form.chapters]
+))
+```
+
+各章的指标计算、evaluator 调用、FActScore 检查相互独立，可安全并发。
+
+**② 检索预取**（`src/generation/long_form_orchestrator.py`）：
+
+在第 k 章的 LLM 生成期间，提前发起第 k+1 章的检索任务：
+
+```python
+next_retrieval = asyncio.create_task(
+    retriever.retrieve(segments[i + 1].text, ...)
+)
+```
+
+生成是 pipeline 中耗时最长的环节（LLM 调用），与检索（知识图谱查询）重叠后，检索等待时间几乎被完全隐藏。
+
+**③ 细粒度计时**（`scripts/run_long_form_e2e.py`）：
+
+新增 `[生成] elapsed=...s` 和 `[评估] elapsed=...s` 日志，方便后续定位瓶颈。
+
+### 6.6 章末软性总结泛滥——反感悟收尾机制
+
+**问题**：每章末尾出现抒情性感悟或人生哲理式收尾（如"这段日子教会了我……""那是最难忘的岁月"），但现有 `summary_sentence_ratio` 指标仅检测"总之""综上"等硬性关键词，对这类语义性总结无感知。回忆录应仅在**最后一章**才有收束感。
+
+**修复**（三处协同）：
+
+**① Prompt 模板**（`src/generation/prompts.json`）：
+
+在 `standard`、`nostalgic`、`narrative` 模板中新增规则：
+
+```
+禁止在末尾添加抒情感悟或人生哲理式收尾（如「这是我最美好的回忆」
+「见证了我的成长」「教会了我……」），每章应在叙事的自然节点戛然而止，
+像连载小说的分章一样，把余韵留给下一章
+```
+
+系统提示词禁止事项新增：
+
+```
+绝不在章节末尾添加抒情性感悟、人生哲理或回望式总结；唯有全书最后一章可以带有收束感
+```
+
+**② 章节位置指令**（`src/generation/chapter_context.py`）：
+
+差异化三种角色的 `role_instruction`：
+
+| 角色 | 指令 |
+|---|---|
+| opening（开篇） | 自然引入时代背景，铺垫基调。不要在末尾写总结或感悟 |
+| body（中间） | 与前文衔接，推进叙事。**禁止末尾感悟/哲理/回顾式收尾——在叙事自然节点戛然而止** |
+| closing（收尾） | 可以带有适度的收束感与回望意味 |
+
+**③ 质量门控检测**（`src/evaluation/quality_gate.py`）：
+
+新增 `_EPILOGUE_PATTERNS` 正则和 `_detect_epilogue()` 函数，对非末章的**最后 3 句**做模式匹配，匹配到时生成 `epilogue` 维度的 warning。检测模式覆盖以下几类常见感悟结尾：
+
+- "这段日子/岁月/经历……教会/让我/使我……"
+- "那是最美好/难忘/珍贵的……"
+- "见证/承载/记录了……成长/变迁……"
+- "在我心中/记忆里……留下/刻下/种下……"
+- "多年以后/许多年后……才明白/懂得……"
+- "也许/或许……正是……成就/塑造……"
+- "这一切/所有这些……构成/编织成……底色/篇章……"
+
+---
+
+## 七、变更文件清单（第六章优化部分）
+
+| 文件 | 改动说明 |
+|---|---|
+| `scripts/run_long_form_e2e.py` | 生成文本输出、报告内容嵌入、质量门控重试循环、细粒度计时 |
+| `src/generation/prompts.json` | Prompt 模板重构（润色改写定位）、反模板开头、保留具体细节、反感悟收尾规则 |
+| `src/generation/chapter_budget.py` | 字数预算从固定分摊改为扩展系数 |
+| `src/generation/long_form_orchestrator.py` | `regenerate_chapters()` 函数、检索预取 |
+| `src/generation/chapter_context.py` | 三种章节角色的差异化位置指令 |
+| `src/generation/__init__.py` | 导出 `regenerate_chapters` |
+| `src/evaluation/factscore_adapter.py` | 双证据源、文学修辞过滤、规则预匹配 |
+| `src/evaluation/long_form_eval.py` | 各章评估并行化 (`asyncio.gather`) |
+| `src/evaluation/quality_gate.py` | 新增 `_EPILOGUE_PATTERNS` + `_detect_epilogue()` + 非末章感悟检测 |
+
+---
+
+## 八、总结
+
+本次改进从**分段正确性、生成质量保障、评估与门控**三个层面对系统进行了系统性升级，并在端到端测试中发现和修复了六类实际问题：
+
+| 关注的问题 | 先前状态 | 现在 |
 |---|---|---|
 | 长文本能否分章生成？ | 可以，但切分仅凭空行 | 以**时间边界**为第一优先级切分，每段带**元数据**（年份/地点/人物），并有**校验报告**可审计 |
 | 如何保证各章不重复、保持回忆录风格？ | 各章独立生成，无任何协调 | 通过 **ChapterContext** 注入前文概要 + 反重复要点 + 章节位置指令；Prompt 显式禁止总结句和套话；生成后即时检测重复率并可自动重试 |
 | 如何评估整体质量和真实性？ | 仅段级指标 + 布尔事实检查，无"能否交付"的判定 | 新增 3 项**跨章指标**；事实检查输出 **FActScore 数值**；全自动**质量门控**给出通过/不通过判定 + **修复计划**指明"哪几章需重新生成、为什么、怎么调" |
+| 生成内容不可见 | 仅有 JSON 评分 | 同时输出可读文本文件 + 报告内嵌原文 |
+| FActScore 持续偏低（58%） | 仅用检索背景验证 | 回忆录原文 + 检索背景双证据源 + 文学修辞过滤 + 规则预匹配 |
+| 生成内容模板化（"那年"开头、感悟收尾） | 无针对性约束 | Prompt + 系统提示 + 章节位置指令三层禁止；质量门控新增 epilogue 感悟检测 |
+| Pipeline 耗时过长（131s） | 全串行 | 评估并行化 + 检索预取 |
 

@@ -114,6 +114,17 @@ _BOILERPLATE_PATTERNS = re.compile(
     r"正是在这样的|值得一提的是|不可否认的是|众所周知)"
 )
 
+# 章末抒情感悟/人生哲理式收尾模式（"软性总结"）
+_EPILOGUE_PATTERNS = re.compile(
+    r"(?:这(?:段|些)(?:日子|岁月|经历|时光).*?(?:教会|让我|使我|改变|影响|塑造|成就|成长|明白|懂得|铭记|难忘)|"
+    r"(?:那|这)是.*?(?:最(?:美好|难忘|珍贵|宝贵|深刻|温暖)的|一生中)|"
+    r"(?:见证|承载|记录)了.*?(?:成长|变迁|变化|岁月|青春|我的)|"
+    r"(?:在我|在那|从此).*?(?:心中|心底|记忆里|脑海中).*?(?:留下|刻下|种下|埋下|烙下|扎根)|"
+    r"(?:多年以后|许多年后|后来我才).*?(?:才(?:明白|懂得|知道|理解)|回想|回忆|想起)|"
+    r"(?:也许|或许).*?正是.*?(?:成就|塑造|造就|奠定)|"
+    r"(?:这一切|所有这些).*?(?:构成|汇成|编织成|成为).*?(?:底色|篇章|画卷|一部分))"
+)
+
 
 def _detect_summary_sentences(text: str) -> float:
     """检测文本中总结性语句的比率。"""
@@ -127,6 +138,23 @@ def _detect_summary_sentences(text: str) -> float:
 def _detect_boilerplate(text: str) -> List[str]:
     """检测套话。"""
     return _BOILERPLATE_PATTERNS.findall(text)
+
+
+def _detect_epilogue(text: str, tail_sentences: int = 3) -> Optional[str]:
+    """
+    检测章节末尾是否有抒情性感悟/哲理式收尾（"软性总结"）。
+
+    只检查末尾 tail_sentences 句；若匹配则返回匹配到的原句片段，
+    否则返回 None。
+    """
+    sentences = [s.strip() for s in re.split(r"[。！？]", text) if s.strip()]
+    if not sentences:
+        return None
+    for s in sentences[-tail_sentences:]:
+        m = _EPILOGUE_PATTERNS.search(s)
+        if m:
+            return s[:60]
+    return None
 
 
 def _cross_chapter_ngram_overlap(
@@ -246,6 +274,17 @@ def check_quality_gate(
                 f"检测到 {len(boilerplate)} 处套话: {', '.join(boilerplate[:3])}",
                 "在 prompt 中要求「避免使用空泛的过渡语」",
             ))
+
+        # 1f) 非末章软性感悟结尾检查
+        is_last_chapter = (idx == n - 1)
+        if not is_last_chapter:
+            epilogue_hit = _detect_epilogue(content)
+            if epilogue_hit:
+                issues.append(ChapterIssue(
+                    "epilogue", "warning",
+                    f"非末章出现感悟式收尾: 「{epilogue_hit}」",
+                    "在 prompt 中要求章节在叙事自然节点戛然而止，不要添加抒情性感悟",
+                ))
 
         passed = not any(iss.severity == "error" for iss in issues)
         chapter_results.append(ChapterGateResult(idx, passed, issues))

@@ -46,10 +46,10 @@ class ChapterPosition:
     @property
     def role_instruction(self) -> str:
         if self.is_opening:
-            return "本章是全文开篇，请自然引入时代背景，为后续叙事铺垫基调。"
+            return "本章是全文开篇，请自然引入时代背景，为后续叙事铺垫基调。不要在末尾写总结或感悟。"
         if self.is_closing:
-            return "本章是全文收尾，请在呈现历史背景时带有收束感与回望意味。"
-        return "本章位于全文中段，请与前文自然衔接，推进叙事节奏。"
+            return "本章是全文收尾，可以在叙事结束时带有适度的收束感与回望意味。"
+        return "本章位于全文中段，请与前文自然衔接，推进叙事节奏。禁止在末尾添加感悟、哲理或回顾式收尾——在叙事的自然节点戛然而止，像连载小说分章一样留给下一章衔接。"
 
 
 @dataclass

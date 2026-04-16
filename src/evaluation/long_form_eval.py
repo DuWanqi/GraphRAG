@@ -142,18 +142,9 @@ async def evaluate_long_form(
             use_rule_decompose=use_rule_decompose,
         )
 
-    records: List[SegmentEvalRecord] = []
-    weights: List[float] = []
-    seg_scores: List[float] = []
-    fact_scores_list: List[Optional[float]] = []
-    chapters_content: List[str] = []
-    target_chars_list: List[int] = []
-
-    for ch in long_form.chapters:
+    async def _eval_one_chapter(ch: Any) -> SegmentEvalRecord:
+        """评估单章（指标 + evaluator + fact_check），可并发。"""
         gen_text = ch.generation.content
-        chapters_content.append(gen_text)
-        w = max(1, len(gen_text))
-        weights.append(float(w))
 
         ref_entities: List[str] = []
         for e in (ch.retrieval_result.entities or [])[:15]:
@@ -164,14 +155,8 @@ async def evaluate_long_form(
         ctx = ch.retrieval_result.context
         hint = ch.length_hint or f"{max(80, len(gen_text) // 2)}-{max(100, len(gen_text) + 100)}字"
 
-        # 从 hint 中解析目标字数中位数（用于质量门控）
-        lo, hi = _parse_length_hint_range(hint)
-        target_chars_list.append((lo + hi) // 2)
-
         metrics = _metrics_for_segment(
-            ch.segment_text,
-            gen_text,
-            hint,
+            ch.segment_text, gen_text, hint,
             retrieval_entities=ref_entities,
             reference_year=ctx.year,
             keywords=ctx.keywords,
@@ -188,12 +173,6 @@ async def evaluate_long_form(
             )
         except Exception:
             eval_result = None
-
-        seg_agg = aggregate_scores(metrics)
-        if eval_result:
-            seg_scores.append(eval_result.overall_score)
-        else:
-            seg_scores.append(seg_agg)
 
         fc: Optional[Any] = None
         skip_reason: Optional[str] = None
@@ -223,19 +202,39 @@ async def evaluate_long_form(
                 max_atomic_facts=max_atomic_facts_per_segment,
             )
 
-        fact_scores_list.append(fc.factscore if fc else None)
-
-        records.append(
-            SegmentEvalRecord(
-                segment_index=ch.segment_index,
-                memoir_snippet=ch.segment_text[:200] + ("…" if len(ch.segment_text) > 200 else ""),
-                generated_snippet=gen_text[:200] + ("…" if len(gen_text) > 200 else ""),
-                evaluation=eval_result,
-                metrics=metrics,
-                fact_check=fc,
-                fact_check_skipped_reason=skip_reason,
-            )
+        return SegmentEvalRecord(
+            segment_index=ch.segment_index,
+            memoir_snippet=ch.segment_text[:200] + ("…" if len(ch.segment_text) > 200 else ""),
+            generated_snippet=gen_text[:200] + ("…" if len(gen_text) > 200 else ""),
+            evaluation=eval_result,
+            metrics=metrics,
+            fact_check=fc,
+            fact_check_skipped_reason=skip_reason,
         )
+
+    # ---- 并发评估所有章节 ----
+    records: List[SegmentEvalRecord] = list(
+        await asyncio.gather(*[_eval_one_chapter(ch) for ch in long_form.chapters])
+    )
+
+    weights: List[float] = []
+    seg_scores: List[float] = []
+    fact_scores_list: List[Optional[float]] = []
+    chapters_content: List[str] = []
+    target_chars_list: List[int] = []
+
+    for ch, rec in zip(long_form.chapters, records):
+        gen_text = ch.generation.content
+        chapters_content.append(gen_text)
+        weights.append(float(max(1, len(gen_text))))
+
+        hint = ch.length_hint or f"{max(80, len(gen_text) // 2)}-{max(100, len(gen_text) + 100)}字"
+        lo, hi = _parse_length_hint_range(hint)
+        target_chars_list.append((lo + hi) // 2)
+
+        seg_agg = aggregate_scores(rec.metrics)
+        seg_scores.append(rec.evaluation.overall_score if rec.evaluation else seg_agg)
+        fact_scores_list.append(rec.fact_check.factscore if rec.fact_check else None)
 
     # ---- 段级加权综合分 ----
     wsum = sum(weights) or 1.0

@@ -43,6 +43,7 @@ __all__ = [
     "ChapterGenerationResult",
     "LongFormGenerationResult",
     "run_long_form_generation",
+    "regenerate_chapters",
     "format_chapter_progress",
     "PromptTemplates",
     "SYSTEM_PROMPTS",
@@ -67,6 +68,7 @@ def __getattr__(name: str) -> Any:
         "ChapterGenerationResult",
         "LongFormGenerationResult",
         "run_long_form_generation",
+        "regenerate_chapters",
         "format_chapter_progress",
     ):
         from . import long_form_orchestrator as lfo

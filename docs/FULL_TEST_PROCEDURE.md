@@ -255,7 +255,21 @@ cd /data/jiabao/tempRAG/GraphRAG
     --input tests/fixtures/long_memoir_sample.txt \
     --provider openai \
     --length-bucket "400-800" \
-    --retrieval-mode keyword
+    --retrieval-mode keyword \
+    --max-gate-retries 2
+```
+
+`--max-gate-retries N`：质量门控未通过时，自动对失败章节重新生成，最多重试 N 轮（默认 2）。
+设为 0 则不重试（旧行为）。
+
+### 运行流程
+
+```
+阶段 A: 初次生成 6 章
+阶段 B: 评估 + 质量门控
+阶段 C: 若门控未通过 → 根据 RemediationPlan 重新生成失败章节 → 重新评估（最多 N 轮）
+阶段 D: 保存生成文本 → data/long_form_e2e_output.txt
+阶段 E: 保存评估报告 → data/long_form_e2e_report.json
 ```
 
 ### 检查点
@@ -268,13 +282,18 @@ cd /data/jiabao/tempRAG/GraphRAG
 | 跨章指标 | inter_chapter_repetition ≥ 0.7 | 各章不重复 |
 | | style_consistency ≥ 0.6 | 风格一致 |
 | | summary_sentence_ratio ≥ 0.8 | 总结句极少 |
-| 质量门控 | `通过` | 达到交付标准 |
+| 质量门控 | `通过`（可能经过重试） | 达到交付标准 |
 | 事实检查 | ≥ 4/6 通过 | 内容基本可信 |
-| 报告文件 | `data/long_form_e2e_report.json` 已生成 | — |
+| 生成文本 | `data/long_form_e2e_output.txt` 已生成 | 可直接阅读各章内容 |
+| 报告文件 | `data/long_form_e2e_report.json` 已生成 | 含生成内容 + 评估 + 重试记录 |
 
-### 查看报告
+### 查看生成结果
 
 ```bash
+# 查看生成的完整文本
+cat data/long_form_e2e_output.txt
+
+# 查看报告摘要
 /data/jiabao/miniconda3/bin/python -m json.tool data/long_form_e2e_report.json | head -80
 ```
 
@@ -286,6 +305,7 @@ cd /data/jiabao/tempRAG/GraphRAG
   "segment_count": 6,
   "segments": [{                 // 每章明细
     "segment_index": 0,
+    "generated_text": "...",     // 该章生成的完整文本
     "metrics": {                 // 8 个段级指标
       "entity_coverage": {...},
       "time_consistency": {...},
@@ -300,6 +320,7 @@ cd /data/jiabao/tempRAG/GraphRAG
     "fact_is_factual": true,
     "fact_score": 0.83           // FActScore 原子事实支持率
   }],
+  "merged_content": "...",       // 所有章合并后的完整文本
   "cross_chapter": {             // 跨章指标
     "inter_chapter_repetition": {"value": 0.92, ...},
     "style_consistency": {"value": 0.85, ...},
@@ -309,16 +330,24 @@ cd /data/jiabao/tempRAG/GraphRAG
     "passed": true,
     "overall_score": 7.85,
     "chapters_to_regenerate": [] // 需重新生成的章节（空=全部通过）
-  }
+  },
+  "gate_retry_rounds": 1,       // 实际重试轮数（0=初次即通过）
+  "gate_retry_log": [{          // 每轮重试的记录（仅有重试时存在）
+    "round": 1,
+    "chapters_regenerated": [1],
+    "reasons": {"1": ["FActScore 50% 低于阈值 60%"]}
+  }]
 }
 ```
 
-**本步做什么：** 完整端到端验收——真实调 LLM、真实检索、真实评估。
+**本步做什么：** 完整端到端验收——真实调 LLM、真实检索、真实评估、质量门控闭环。
 **说明什么：**
 - `aggregated_score` 回答「生成质量如何」
 - `cross_chapter` 回答「各章之间是否有不当重复/风格割裂/过度总结」
 - `quality_gate.passed` 回答「是否达到交付标准」
 - `quality_gate.chapters_to_regenerate` 回答「如果不达标，应该重新生成哪几章」
+- `gate_retry_log` 回答「重试了几轮、每轮修了什么」
+- `data/long_form_e2e_output.txt` 回答「最终生成了什么内容」
 
 ---
 
@@ -393,7 +422,7 @@ curl -X POST http://localhost:8000/generate \
 阶段二  检查 .env / pip list / adapter            [配置检查]
 阶段三  验证索引就绪 + 统计                       [需 Ollama]
 阶段四  分段 + 预算 + 校验报告                    [无外部依赖]
-阶段五  python scripts/run_long_form_e2e.py      [需 Ollama + LLM]
+阶段五  python scripts/run_long_form_e2e.py      [需 Ollama + LLM，含质量门控重试]
 阶段六  python run_web.py + curl / 浏览器         [需 Ollama + LLM]
 ```
 
