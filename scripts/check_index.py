@@ -2,7 +2,7 @@
 import pandas as pd
 from pathlib import Path
 
-output_dir = Path("data/output/output")
+output_dir = Path("data/graphrag_output/output")
 
 entities_file = output_dir / "entities.parquet"
 if entities_file.exists():

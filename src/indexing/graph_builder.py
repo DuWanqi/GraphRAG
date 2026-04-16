@@ -141,6 +141,26 @@ class GraphBuilder:
                 "embedding_model": "text-embedding-3-small",
                 "embedding_provider": "openai",
             },
+            "glm": {
+                "api_key": settings.glm_api_key,
+                "env_var_name": "GLM_API_KEY",
+                "model_provider": "openai",
+                "api_base": "https://open.bigmodel.cn/api/paas/v4/",
+                "chat_model": self.llm_model or "glm-4-flash",
+                "embedding_model": "embedding-3",
+                "embedding_provider": "openai",
+            },
+            # Ollama 本地模型不需要真实 API key；这里给一个非空占位值，
+            # 主要是让 GraphBuilder 通过“必须配置 API key”的校验，并让 GraphRAG 在 YAML 中获得 api_key 字段。
+            # 注意：GraphRAG 是否需要 api_base 取决于它的 ollama adapter 实现；本文件保持最小改动，不在 YAML 中强制写 api_base。
+            "ollama": {
+                "api_key": "ollama",
+                "env_var_name": "GRAPHRAG_API_KEY",
+                "model_provider": "ollama",
+                "chat_model": self.llm_model or "qwen3:32b",
+                "embedding_model": self.embedding_model,
+                "embedding_provider": "ollama",
+            },
         }
         
         return provider_configs.get(self.llm_provider, provider_configs["gemini"])
@@ -250,7 +270,7 @@ embed_text:
 
 extract_graph:
   completion_model_id: default_completion_model
-  entity_types: [organization, person, geo, event]
+  entity_types: [organization, person, geo, event, 历史事件, 人物, 地点, 时间, 组织]
   max_gleanings: 1
 
 summarize_descriptions:

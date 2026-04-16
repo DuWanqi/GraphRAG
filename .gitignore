@@ -40,8 +40,8 @@ data/input/*.json
 logs/
 *.log
 
-# GraphRAG outputs
-output/
+# GraphRAG outputs - 允许提交构建好的索引，但缓存不需要
+# output/
 cache/
 
 # Sensitive files - API keys and secrets
@@ -57,6 +57,7 @@ secrets.json
 
 # Trae IDE documents
 .trae/documents/
+.trae/rules/
 
 # Benchmark results
 benchmark_results/

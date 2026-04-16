@@ -7,10 +7,15 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any, AsyncIterator
+from typing import Optional, List, Dict, Any, AsyncIterator, TYPE_CHECKING
 
-from ..llm import LLMAdapter, LLMRouter, MultiLLMResponse, create_llm_adapter
+from ..llm import LLMAdapter, LLMRouter, create_llm_adapter
 from ..retrieval import RetrievalResult, MemoirContext
+
+if TYPE_CHECKING:
+    from ..retrieval import MemoirRetriever
+    from .long_form_orchestrator import LongFormGenerationResult
+
 from .prompts import PromptTemplates, get_system_prompt
 
 
@@ -215,7 +220,7 @@ class LiteraryGenerator:
         multi_response = await self.llm_router.generate_parallel(
             prompt=prompt,
             providers=providers,
-            system_prompt=self.SYSTEM_PROMPT,
+            system_prompt=get_system_prompt(self.DEFAULT_SYSTEM_PROMPT_KEY),
             temperature=temperature,
             max_tokens=max_tokens,
         )
@@ -240,7 +245,23 @@ class LiteraryGenerator:
             errors=multi_response.errors,
             memoir_context=retrieval_result.context,
         )
-    
+
+    async def generate_long_form(
+        self,
+        memoir_text: str,
+        retriever: "MemoirRetriever",
+        **kwargs: Any,
+    ) -> "LongFormGenerationResult":
+        """分章检索与生成；参数见 run_long_form_generation。"""
+        from .long_form_orchestrator import run_long_form_generation
+
+        return await run_long_form_generation(
+            memoir_text,
+            retriever,
+            self,
+            **kwargs,
+        )
+
     def generate_sync(
         self,
         memoir_text: str,

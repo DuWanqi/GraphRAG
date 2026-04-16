@@ -17,8 +17,25 @@ from src.llm import (
 )
 from src.indexing import GraphBuilder, DataLoader
 from src.retrieval import MemoirRetriever
-from src.generation import LiteraryGenerator, PromptTemplates
-from src.evaluation import Evaluator, EvaluationDimension, FActScoreChecker, SAFECheckResult, evaluate_retrieval_quality
+from src.generation import (
+    LiteraryGenerator,
+    PromptTemplates,
+    segment_memoir,
+    run_long_form_generation,
+    single_segment_generation_config,
+    estimate_long_form_generation_timeout,
+    estimate_long_form_evaluation_timeout,
+    build_long_form_eval_options,
+)
+from src.evaluation import (
+    Evaluator,
+    EvaluationDimension,
+    FActScoreChecker,
+    SAFECheckResult,
+    evaluate_retrieval_quality,
+    evaluate_long_form,
+    long_form_eval_to_json,
+)
 
 
 # 全局变量
@@ -134,6 +151,269 @@ def _format_safe_check(safe_result: SAFECheckResult) -> str:
     return md
 
 
+async def process_memoir_async(
+    memoir_text: str,
+    provider: str,
+    model: Optional[str],
+    style: str,
+    length_bucket: str,
+    temperature: float,
+    enable_fact_check: bool = True,
+    retrieval_mode: str = "keyword",
+    use_rule_decompose: bool = False,
+    chapter_mode: bool = False,
+) -> Tuple[str, str, str, str]:
+    """
+    异步处理回忆录
+    
+    Returns:
+        (生成的历史背景, 提取的信息, 检索结果, 事实性检查结果)
+    """
+    global retriever, generator, current_provider, current_model
+    
+    if not memoir_text.strip():
+        return "请输入回忆录文本", "", "", ""
+
+    if not provider:
+        return "请先选择 LLM 模型（供应商）", "", "", ""
+    
+    if (
+        retriever is None
+        or generator is None
+        or current_provider != provider
+        or (provider == "ollama" and current_model != model)
+    ):
+        init_result = init_components(provider, model=model)
+        if "失败" in init_result:
+            return init_result, "", "", ""
+    
+    try:
+        start_time = time.time()
+        
+        print(f"[DEBUG] 开始处理回忆录，长度: {len(memoir_text)} 字符")
+
+        if chapter_mode:
+            segs = segment_memoir(memoir_text)
+            n_ch = max(1, len(segs))
+            budget_timeout = estimate_long_form_generation_timeout(n_ch)
+            lf = await asyncio.wait_for(
+                run_long_form_generation(
+                    memoir_text,
+                    retriever,
+                    generator,
+                    length_bucket=length_bucket,
+                    style=style,
+                    temperature=temperature,
+                    retrieval_mode=retrieval_mode,
+                    use_llm_parsing=False,
+                ),
+                timeout=budget_timeout,
+            )
+            gen_time = time.time() - start_time
+            lines = [f"**分章模式** 共 {len(lf.chapters)} 章（输入约 {len(memoir_text)} 字）"]
+            for i, ch in enumerate(lf.chapters):
+                ctx = ch.retrieval_result.context
+                lines.append(
+                    f"- 第{i + 1}章: 查询 `{ch.retrieval_result.query}` | "
+                    f"年 {ctx.year or '—'} 地 {ctx.location or '—'}"
+                )
+            extracted_info = "\n".join(lines)
+            rent = [len(ch.retrieval_result.entities) for ch in lf.chapters]
+            retrieval_info = (
+                f"**分章检索**: 各章实体数 {rent}；"
+                f"关系总计 {sum(len(ch.retrieval_result.relationships) for ch in lf.chapters)}"
+            )
+            fact_check_info = f"**生成总耗时**: {gen_time:.2f} 秒\n"
+            if enable_fact_check:
+                try:
+                    llm_adapter = create_llm_adapter(
+                        provider=provider, model=(model if provider == "ollama" else None)
+                    )
+                    eval_kwargs = build_long_form_eval_options(
+                        llm_adapter=llm_adapter,
+                        use_llm_eval=False,
+                        enable_fact_check=True,
+                        max_atomic_facts_per_segment=12,
+                        fact_check_timeout_per_segment=45.0,
+                        use_rule_decompose=use_rule_decompose,
+                    )
+                    ev = await asyncio.wait_for(
+                        evaluate_long_form(lf, **eval_kwargs),
+                        timeout=estimate_long_form_evaluation_timeout(len(lf.chapters)),
+                    )
+                    fact_check_info += "### 长文评估汇总\n\n" + ev.summary_text
+                    fact_check_info += "\n\n<details><summary>JSON 摘要</summary>\n\n```json\n"
+                    fact_check_info += long_form_eval_to_json(ev)[:8000]
+                    fact_check_info += "\n```\n</details>\n"
+                except Exception as e:
+                    fact_check_info += f"\n长文评估未完成: {e}"
+            total_time = time.time() - start_time
+            fact_check_info += f"\n**总耗时**: {total_time:.2f} 秒"
+            return lf.merged_content, extracted_info, retrieval_info, fact_check_info
+        
+        # 检索相关内容（包含实体提取）
+        retrieve_start = time.time()
+        print("[DEBUG] 开始检索相关内容...")
+        retrieval_result = await asyncio.wait_for(
+            retriever.retrieve(
+                memoir_text,
+                top_k=10,
+                use_llm_parsing=False,
+                mode=retrieval_mode,
+            ),
+            timeout=45.0,
+        )
+        retrieve_time = time.time() - retrieve_start
+        print(f"[DEBUG] 检索完成，耗时: {retrieve_time:.2f} 秒")
+        
+        context = retrieval_result.context
+        extracted_info = f"""**提取的时间**: {context.year or '未识别'}
+**提取的地点**: {context.location or '未识别'}
+**关键词**: {', '.join(context.keywords) if context.keywords else '无'}
+**生成的查询**: {retrieval_result.query}
+**提取+检索耗时**: {retrieve_time:.2f} 秒"""
+        
+        retrieval_info = f"""**找到实体**: {len(retrieval_result.entities)} 个
+**找到关系**: {len(retrieval_result.relationships)} 个
+**社区报告**: {len(retrieval_result.communities)} 个
+**相关文本**: {len(retrieval_result.text_units)} 段"""
+        
+        if retrieval_result.entities:
+            retrieval_info += "\n\n**主要实体**:\n"
+            for entity in retrieval_result.entities[:5]:
+                retrieval_info += f"- {entity.get('name', '未知')}: {entity.get('description', '')[:100]}...\n"
+        
+        # 生成文本
+        gen_start = time.time()
+        print("[DEBUG] 开始生成文本...")
+        single_cfg = single_segment_generation_config(length_bucket)
+
+        gen_result = await asyncio.wait_for(
+            generator.generate(
+                memoir_text=memoir_text,
+                retrieval_result=retrieval_result,
+                temperature=temperature,
+                max_tokens=single_cfg["max_tokens"],
+                style=style,
+                length_hint=single_cfg["length_hint"],
+            ),
+            timeout=90.0,
+        )
+        gen_time = time.time() - gen_start
+        print(f"[DEBUG] 生成完成，耗时: {gen_time:.2f} 秒")
+        
+        # 先生成基本的事实性检查信息
+        fact_check_info = f"**生成耗时**: {gen_time:.2f} 秒\n"
+        
+        # 如果不需要事实性检查，直接返回
+        if not enable_fact_check:
+            total_time = time.time() - start_time
+            fact_check_info += f"\n**总耗时**: {total_time:.2f} 秒"
+            print(f"[DEBUG] 处理完成，总耗时: {total_time:.2f} 秒")
+            return gen_result.content, extracted_info, retrieval_info, fact_check_info
+        
+        # 事实性检查（带超时处理）
+        print("[DEBUG] 开始事实性检查...")
+        
+        async def run_fact_check():
+            """运行事实性检查"""
+            check_start = time.time()
+            try:
+                llm_adapter = create_llm_adapter(provider=provider, model=(model if provider == "ollama" else None))
+                # 使用FActScoreChecker替代原来的FactChecker
+                fact_checker = FActScoreChecker(llm_adapter=llm_adapter)
+                
+                # 带超时的事实性检查
+                async def check_with_timeout():
+                    return await fact_checker.check(
+                        memoir_text=memoir_text,
+                        generated_text=gen_result.content,
+                        retrieval_result=retrieval_result,
+                        use_llm=True,
+                        use_rule_decompose=use_rule_decompose,
+                    )
+                
+                # 设置90秒超时（宽限超时时间）
+                fact_result = await asyncio.wait_for(check_with_timeout(), timeout=90.0)
+                check_time = time.time() - check_start
+                print(f"[DEBUG] 事实性检查完成，耗时: {check_time:.2f} 秒")
+                
+                status_icon = "✅" if fact_result.is_factual else "⚠️"
+                return f"""**生成耗时**: {gen_time:.2f} 秒
+
+### {status_icon} 事实性检查结果
+
+**一致性判定**: {'事实一致' if fact_result.is_factual else '存在潜在问题'}
+**置信度**: {fact_result.confidence:.2%}
+**实体覆盖率**: {fact_result.entity_coverage:.2%}
+**证据支持度**: {fact_result.evidence_support:.2%}
+**检查耗时**: {check_time:.2f} 秒
+
+**总结**: {fact_result.summary}
+
+"""
+                
+            except asyncio.TimeoutError:
+                check_time = time.time() - check_start
+                print(f"[DEBUG] 事实性检查超时，耗时: {check_time:.2f} 秒")
+                return f"**生成耗时**: {gen_time:.2f} 秒\n**检查耗时**: {check_time:.2f} 秒\n事实性检查超时，请稍后重试"
+            except Exception as e:
+                check_time = time.time() - check_start
+                print(f"[DEBUG] 事实性检查失败: {str(e)}")
+                return f"**生成耗时**: {gen_time:.2f} 秒\n**检查耗时**: {check_time:.2f} 秒\n事实性检查失败: {str(e)}"
+        
+        # 优化：不再使用后台任务，而是直接同步执行事实性检查
+        # 这样可以确保结果能够正确返回给Gradio
+        print("[DEBUG] 开始事实性检查...")
+        
+        # 运行事实性检查（带超时）
+        try:
+            fact_check_info = await run_fact_check()
+            print("[DEBUG] 事实性检查完成")
+        except Exception as e:
+            print(f"[DEBUG] 事实性检查失败: {e}")
+            fact_check_info = fact_check_info + f"\n**事实性检查失败**: {str(e)}"
+        
+        total_time = time.time() - start_time
+        fact_check_info += f"\n**总耗时**: {total_time:.2f} 秒"
+        print(f"[DEBUG] 处理完成，总耗时: {total_time:.2f} 秒")
+        
+        return gen_result.content, extracted_info, retrieval_info, fact_check_info
+        
+    except Exception as e:
+        print(f"[DEBUG] 处理失败: {str(e)}")
+        return f"处理失败: {str(e)}", "", "", ""
+
+
+def process_memoir(
+    memoir_text: str,
+    provider: str,
+    model: Optional[str],
+    style: str,
+    length_bucket: str,
+    temperature: float,
+    enable_fact_check: bool = True,
+    retrieval_mode: str = "keyword",
+    use_rule_decompose: bool = False,
+    chapter_mode: bool = False,
+) -> Tuple[str, str, str, str]:
+    """处理回忆录（同步包装）"""
+    return asyncio.run(
+        process_memoir_async(
+            memoir_text,
+            provider,
+            model,
+            style,
+            length_bucket,
+            temperature,
+            enable_fact_check,
+            retrieval_mode,
+            use_rule_decompose,
+            chapter_mode,
+        )
+    )
+
+
 def process_memoir_stream(
     memoir_text: str,
     provider: str,
@@ -145,6 +425,7 @@ def process_memoir_stream(
     retrieval_mode: str = "keyword",
     use_rule_decompose: bool = False,
     enable_safe_check: bool = False,
+    chapter_mode: bool = False,
 ):
     """
     Gradio 流式生成。
@@ -170,20 +451,7 @@ def process_memoir_stream(
             yield (init_result,) + ("",) * 7
             return
 
-    length_hint_map = {
-        "200-400": "200-400字",
-        "400-800": "400-800字",
-        "800-1200": "800-1200字",
-        "1200+": "1200字以上",
-    }
-    max_tokens_map = {
-        "200-400": 800,
-        "400-800": 1400,
-        "800-1200": 2200,
-        "1200+": 3200,
-    }
-    length_hint = length_hint_map.get(length_bucket, "200-500字")
-    max_tokens = max_tokens_map.get(length_bucket, 2048)
+    single_cfg = single_segment_generation_config(length_bucket)
 
     # 各栏目状态
     extracted_md = ""
@@ -196,6 +464,65 @@ def process_memoir_stream(
 
     loop = asyncio.new_event_loop()
     try:
+        if chapter_mode:
+            segs = segment_memoir(memoir_text)
+            n_ch = max(1, len(segs))
+            yield (f"[分章] 共 {len(segs)} 段，依次检索与生成…", "", "", "", "", "", "", "")
+
+            async def _long_form():
+                return await run_long_form_generation(
+                    memoir_text,
+                    retriever,
+                    generator,
+                    length_bucket=length_bucket,
+                    style=style,
+                    temperature=temperature,
+                    retrieval_mode=retrieval_mode,
+                    use_llm_parsing=False,
+                )
+
+            budget_timeout = estimate_long_form_generation_timeout(n_ch)
+            lf = loop.run_until_complete(asyncio.wait_for(_long_form(), timeout=budget_timeout))
+            lines_md = [f"**分章模式** 共 {len(lf.chapters)} 章"]
+            for i, ch in enumerate(lf.chapters):
+                ctx = ch.retrieval_result.context
+                lines_md.append(
+                    f"- 第{i + 1}章: 查询 `{ch.retrieval_result.query}` | "
+                    f"年 {ctx.year or '—'} 地 {ctx.location or '—'}"
+                )
+            extracted_md = "\n".join(lines_md)
+            rent = [len(ch.retrieval_result.entities) for ch in lf.chapters]
+            retrieval_q_md = f"**分章检索**: 各章实体数 {rent}"
+            content = lf.merged_content
+            yield (content, extracted_md, retrieval_q_md, "", "", "", "", "")
+
+            accuracy_md = ""
+            if enable_fact_check:
+                try:
+                    llm_adapter = create_llm_adapter(
+                        provider=provider, model=(model if provider == "ollama" else None)
+                    )
+                    eval_kwargs = build_long_form_eval_options(
+                        llm_adapter=llm_adapter,
+                        use_llm_eval=False,
+                        enable_fact_check=True,
+                        max_atomic_facts_per_segment=12,
+                        fact_check_timeout_per_segment=45.0,
+                        use_rule_decompose=use_rule_decompose,
+                    )
+                    ev = loop.run_until_complete(
+                        asyncio.wait_for(
+                            evaluate_long_form(lf, **eval_kwargs),
+                            timeout=estimate_long_form_evaluation_timeout(len(lf.chapters)),
+                        )
+                    )
+                    accuracy_md = "### 长文评估汇总\n\n" + ev.summary_text
+                    accuracy_md += "\n\n```json\n" + long_form_eval_to_json(ev)[:8000] + "\n```\n"
+                except Exception as e:
+                    accuracy_md = f"长文评估未完成: {e}"
+            yield (content, extracted_md, retrieval_q_md, accuracy_md, "", "", "", "")
+            return
+
         yield ("\u23f3 正在检索相关历史背景，请稍候\u2026", "", "", "", "", "", "", "")
 
         # ── 1. 检索 ──
@@ -240,9 +567,9 @@ def process_memoir_stream(
                 memoir_text=memoir_text,
                 retrieval_result=retrieval_result,
                 style=style,
-                length_hint=length_hint,
+                length_hint=single_cfg["length_hint"],
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=single_cfg["max_tokens"],
             ):
                 yield delta
 
@@ -547,6 +874,12 @@ def create_ui():
                             info="使用LLM自身知识独立验证事实，不依赖知识库，帮助评估知识库完整性",
                         )
 
+                        chapter_mode_checkbox = gr.Checkbox(
+                            value=False,
+                            label="分章/长文模式",
+                            info="数千字长文：分段检索与生成后合并；默认仍为整篇单段",
+                        )
+
                         generate_btn = gr.Button("\U0001f680 生成历史背景", variant="primary")
                         refresh_ollama_models_btn = gr.Button("\U0001f504 刷新 Ollama 模型列表", variant="secondary")
 
@@ -599,8 +932,29 @@ def create_ui():
 
                 generate_btn.click(
                     fn=process_memoir_stream,
-                    inputs=[memoir_input, provider_select, ollama_model_select, style_select, length_bucket_select, temperature_slider, fact_check_checkbox, retrieval_mode_select, rule_decompose_checkbox, safe_check_checkbox],
-                    outputs=[output_text, extracted_info, retrieval_quality_output, accuracy_output, safe_check_output, relevance_output, literary_output, compliance_output],
+                    inputs=[
+                        memoir_input,
+                        provider_select,
+                        ollama_model_select,
+                        style_select,
+                        length_bucket_select,
+                        temperature_slider,
+                        fact_check_checkbox,
+                        retrieval_mode_select,
+                        rule_decompose_checkbox,
+                        safe_check_checkbox,
+                        chapter_mode_checkbox,
+                    ],
+                    outputs=[
+                        output_text,
+                        extracted_info,
+                        retrieval_quality_output,
+                        accuracy_output,
+                        safe_check_output,
+                        relevance_output,
+                        literary_output,
+                        compliance_output,
+                    ],
                 )
 
                 def _update_ollama_model_ui(provider: str):
