@@ -4,8 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from .memoir_segmenter import MemoirSegment, segment_memoir
+from .memoir_segmenter import (
+    MemoirSegment,
+    SegmentMeta,
+    SegmentationReport,
+    SegmentationIssue,
+    segment_memoir,
+    validate_segmentation,
+    extract_years,
+)
 from .chapter_budget import SegmentBudget, allocate_segment_budgets, legacy_maps_for_single_segment
+from .chapter_context import ChapterContext, ChapterPosition, ChapterRecord
 from .prompts import PromptTemplates, get_system_prompt
 from .runtime_options import (
     single_segment_generation_config,
@@ -19,10 +28,18 @@ __all__ = [
     "GenerationResult",
     "MultiGenerationResult",
     "MemoirSegment",
+    "SegmentMeta",
+    "SegmentationReport",
+    "SegmentationIssue",
     "segment_memoir",
+    "validate_segmentation",
+    "extract_years",
     "SegmentBudget",
     "allocate_segment_budgets",
     "legacy_maps_for_single_segment",
+    "ChapterContext",
+    "ChapterPosition",
+    "ChapterRecord",
     "ChapterGenerationResult",
     "LongFormGenerationResult",
     "run_long_form_generation",

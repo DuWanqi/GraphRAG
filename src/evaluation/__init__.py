@@ -10,6 +10,7 @@ from .metrics import (
     AccuracyMetrics,
     RelevanceMetrics,
     LiteraryMetrics,
+    CrossChapterMetrics,
     MetricResult,
     calculate_all_metrics,
     aggregate_scores,
@@ -33,6 +34,15 @@ from .long_form_eval import (
     long_form_eval_to_json,
     document_year_diversity,
 )
+from .quality_gate import (
+    QualityGateResult,
+    QualityThresholds,
+    ChapterGateResult,
+    ChapterIssue,
+    CrossChapterIssue,
+    RemediationPlan,
+    check_quality_gate,
+)
 
 __all__ = [
     "Evaluator",
@@ -43,6 +53,7 @@ __all__ = [
     "AccuracyMetrics",
     "RelevanceMetrics",
     "LiteraryMetrics",
+    "CrossChapterMetrics",
     "MetricResult",
     "calculate_all_metrics",
     "aggregate_scores",
@@ -59,4 +70,11 @@ __all__ = [
     "SegmentEvalRecord",
     "long_form_eval_to_json",
     "document_year_diversity",
+    "QualityGateResult",
+    "QualityThresholds",
+    "ChapterGateResult",
+    "ChapterIssue",
+    "CrossChapterIssue",
+    "RemediationPlan",
+    "check_quality_gate",
 ]

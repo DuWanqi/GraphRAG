@@ -1,5 +1,9 @@
 """
-长文分章结果的评估聚合：段级指标 + 可选段级事实检查 + 篇级轻量指标。
+长文分章结果的评估聚合：
+- 段级指标（准确性、相关性、文学性）
+- 段级事实检查（可选，带超时保护）
+- 篇级跨章指标（重复度、风格一致性、总结句比率）
+- 质量门控 + 可执行修复建议
 """
 
 from __future__ import annotations
@@ -10,7 +14,18 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from .metrics import MetricResult, calculate_all_metrics, aggregate_scores, LiteraryMetrics
+from .metrics import (
+    MetricResult,
+    calculate_all_metrics,
+    aggregate_scores,
+    LiteraryMetrics,
+    CrossChapterMetrics,
+)
+from ..evaluation.quality_gate import (
+    QualityGateResult,
+    QualityThresholds,
+    check_quality_gate,
+)
 
 
 def _parse_length_hint_range(length_hint: str) -> tuple[int, int]:
@@ -67,8 +82,10 @@ class SegmentEvalRecord:
 class LongFormEvalResult:
     segments: List[SegmentEvalRecord]
     document_metrics: Dict[str, MetricResult]
+    cross_chapter_metrics: Dict[str, MetricResult]
     aggregated_score: float
     summary_text: str
+    quality_gate: Optional[QualityGateResult] = None
     raw_json_ready: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -105,9 +122,14 @@ async def evaluate_long_form(
     max_atomic_facts_per_segment: int = 12,
     fact_check_timeout_per_segment: float = 60.0,
     use_rule_decompose: bool = True,
+    quality_thresholds: Optional[QualityThresholds] = None,
+    enable_quality_gate: bool = True,
 ) -> LongFormEvalResult:
     """
-    对分章生成结果跑通评估 pipeline（默认规则评估；事实检查可超时跳过单段）。
+    对分章生成结果跑通评估 pipeline：
+    1. 段级指标 + 可选 LLM-as-Judge + 可选事实检查
+    2. 篇级跨章指标（重复度、风格一致性、总结句比率）
+    3. 质量门控（通过/不通过 + 修复建议）
     """
     from .evaluator import Evaluator
     from .factscore_adapter import FActScoreChecker
@@ -123,9 +145,13 @@ async def evaluate_long_form(
     records: List[SegmentEvalRecord] = []
     weights: List[float] = []
     seg_scores: List[float] = []
+    fact_scores_list: List[Optional[float]] = []
+    chapters_content: List[str] = []
+    target_chars_list: List[int] = []
 
     for ch in long_form.chapters:
         gen_text = ch.generation.content
+        chapters_content.append(gen_text)
         w = max(1, len(gen_text))
         weights.append(float(w))
 
@@ -137,6 +163,11 @@ async def evaluate_long_form(
 
         ctx = ch.retrieval_result.context
         hint = ch.length_hint or f"{max(80, len(gen_text) // 2)}-{max(100, len(gen_text) + 100)}字"
+
+        # 从 hint 中解析目标字数中位数（用于质量门控）
+        lo, hi = _parse_length_hint_range(hint)
+        target_chars_list.append((lo + hi) // 2)
+
         metrics = _metrics_for_segment(
             ch.segment_text,
             gen_text,
@@ -192,6 +223,8 @@ async def evaluate_long_form(
                 max_atomic_facts=max_atomic_facts_per_segment,
             )
 
+        fact_scores_list.append(fc.factscore if fc else None)
+
         records.append(
             SegmentEvalRecord(
                 segment_index=ch.segment_index,
@@ -204,9 +237,11 @@ async def evaluate_long_form(
             )
         )
 
+    # ---- 段级加权综合分 ----
     wsum = sum(weights) or 1.0
     aggregated = sum(s * (weights[i] / wsum) for i, s in enumerate(seg_scores))
 
+    # ---- 篇级指标 ----
     merged = long_form.merged_content
     doc_metrics: Dict[str, MetricResult] = {}
     doc_metrics["year_diversity"] = document_year_diversity(merged)
@@ -220,6 +255,28 @@ async def evaluate_long_form(
             optimal_max=om,
         )
 
+    # ---- 跨章指标 ----
+    cross_metrics: Dict[str, MetricResult] = {}
+    if len(chapters_content) >= 2:
+        cross_metrics["inter_chapter_repetition"] = \
+            CrossChapterMetrics.inter_chapter_repetition(chapters_content)
+        cross_metrics["style_consistency"] = \
+            CrossChapterMetrics.style_consistency(chapters_content)
+        cross_metrics["summary_sentence_ratio"] = \
+            CrossChapterMetrics.summary_sentence_ratio(chapters_content)
+
+    # ---- 质量门控 ----
+    gate_result: Optional[QualityGateResult] = None
+    if enable_quality_gate:
+        gate_result = check_quality_gate(
+            chapters_content,
+            segment_scores=seg_scores,
+            fact_scores=fact_scores_list,
+            target_chars_per_chapter=target_chars_list,
+            thresholds=quality_thresholds,
+        )
+
+    # ---- 摘要文本 ----
     summary_lines = [
         f"分章数: {len(records)}",
         f"加权综合分(段级): {aggregated:.2f}",
@@ -230,10 +287,28 @@ async def evaluate_long_form(
             line += f" | Evaluator {r.evaluation.overall_score:.2f}"
         if r.fact_check is not None:
             line += f" | 事实检查 {'通过' if r.fact_check.is_factual else '待核'}"
+            line += f" (FActScore {r.fact_check.factscore:.0%})"
         elif r.fact_check_skipped_reason:
             line += f" | 事实检查({r.fact_check_skipped_reason})"
         summary_lines.append(line)
 
+    # 跨章指标摘要
+    if cross_metrics:
+        summary_lines.append("跨章指标:")
+        for name, mr in cross_metrics.items():
+            summary_lines.append(f"  {name}: {mr.value:.2f} ({mr.explanation})")
+
+    # 质量门控摘要
+    if gate_result:
+        summary_lines.append(f"质量门控: {'通过' if gate_result.passed else '未通过'}")
+        if gate_result.remediation:
+            regen_ids = gate_result.remediation.chapters_to_regenerate
+            summary_lines.append(f"  建议重新生成: 第 {', '.join(str(c+1) for c in regen_ids)} 章")
+            for ch_idx, reasons in gate_result.remediation.reasons.items():
+                for reason in reasons:
+                    summary_lines.append(f"    第{ch_idx+1}章: {reason}")
+
+    # ---- 构建 JSON ----
     raw: Dict[str, Any] = {
         "aggregated_score": aggregated,
         "segment_count": len(records),
@@ -246,18 +321,33 @@ async def evaluate_long_form(
                 },
                 "eval_overall": r.evaluation.overall_score if r.evaluation else None,
                 "fact_is_factual": r.fact_check.is_factual if r.fact_check else None,
+                "fact_score": r.fact_check.factscore if r.fact_check else None,
                 "fact_skip": r.fact_check_skipped_reason,
             }
             for r in records
         ],
         "document": {k: {"value": v.value, "max": v.max_value} for k, v in doc_metrics.items()},
+        "cross_chapter": {
+            k: {"value": v.value, "max": v.max_value, "explanation": v.explanation}
+            for k, v in cross_metrics.items()
+        },
+        "quality_gate": {
+            "passed": gate_result.passed if gate_result else None,
+            "overall_score": gate_result.overall_score if gate_result else None,
+            "chapters_to_regenerate": (
+                gate_result.remediation.chapters_to_regenerate
+                if gate_result and gate_result.remediation else []
+            ),
+        },
     }
 
     return LongFormEvalResult(
         segments=records,
         document_metrics=doc_metrics,
+        cross_chapter_metrics=cross_metrics,
         aggregated_score=aggregated,
         summary_text="\n".join(summary_lines),
+        quality_gate=gate_result,
         raw_json_ready=raw,
     )
 
