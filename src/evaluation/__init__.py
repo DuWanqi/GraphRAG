@@ -19,6 +19,10 @@ from .factscore_adapter import (
     FActScoreChecker,
     FactCheckResult,
 )
+from .safe_checker import (
+    SAFEFactChecker,
+    SAFECheckResult,
+)
 from .retrieval_benchmark import (
     RetrievalBenchmark,
     TestCase,
@@ -59,6 +63,8 @@ __all__ = [
     "aggregate_scores",
     "FActScoreChecker",
     "FactCheckResult",
+    "SAFEFactChecker",
+    "SAFECheckResult",
     "RetrievalBenchmark",
     "TestCase",
     "RetrievalMetrics",
