@@ -514,31 +514,29 @@ def process_memoir_stream(
         yield ("", extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
 
         # ── 2. 检索质量评估 (LLM-as-a-Judge) ──
-        try:
-            eval_result = loop.run_until_complete(asyncio.wait_for(
-                evaluate_retrieval_quality(
-                    query_text=memoir_text,
-                    text_units=retrieval_result.text_units,
-                    llm_adapter=_make_llm(provider, model),
-                ),
-                timeout=30.0,
-            ))
-            retrieval_q_md = _format_retrieval_quality(eval_result)
-        except Exception as e:
-            retrieval_q_md = f"检索质量评估失败: {e}"
+        # 注意：跳过检索质量评估以减少API调用，避免速率限制
+        # 如果需要评估，可以单独运行评估脚本
+        retrieval_q_md = "检索质量评估已跳过（避免API速率限制）"
         yield ("", extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
 
         # ── 3. 流式生成 ──
         async def _stream():
-            async for delta in generator.generate_stream(
-                memoir_text=memoir_text,
-                retrieval_result=retrieval_result,
-                style=style,
-                length_hint=single_cfg["length_hint"],
-                temperature=temperature,
-                max_tokens=single_cfg["max_tokens"],
-            ):
-                yield delta
+            try:
+                async for delta in generator.generate_stream(
+                    memoir_text=memoir_text,
+                    retrieval_result=retrieval_result,
+                    style=style,
+                    length_hint=single_cfg["length_hint"],
+                    temperature=temperature,
+                    max_tokens=single_cfg["max_tokens"],
+                ):
+                    yield delta
+            except Exception as e:
+                import traceback
+                error_msg = f"\n\n[生成错误: {type(e).__name__}: {e}]"
+                print(f"[ERROR] 流式生成失败: {e}")
+                print(traceback.format_exc())
+                yield error_msg
 
         content = ""
         agen = _stream()
@@ -555,43 +553,20 @@ def process_memoir_stream(
                 content += "\n\n（\u26a0\ufe0f 生成超时：已达到 90s 上限，返回已生成的部分内容）"
                 yield (content, extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
                 break
+            except Exception as e:
+                content += f"\n\n[生成异常: {e}]"
+                yield (content, extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
+                break
             content += delta
             yield (content, extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
 
         # ── 4. 综合评估（事实准确性 + 相关性 + 文学性 + 合规性） ──
+        # 注意：跳过综合评估以减少API调用，避免速率限制
         if enable_fact_check and content:
-            try:
-                async def _run_eval():
-                    evaluator = Evaluator(llm_adapter=_make_llm(provider, model))
-                    return await evaluator.evaluate(
-                        memoir_text=memoir_text,
-                        generated_text=content,
-                        retrieval_result=retrieval_result,
-                        use_llm=True,
-                        enable_fact_check=True,
-                    )
-
-                eval_res = loop.run_until_complete(asyncio.wait_for(_run_eval(), timeout=120.0))
-
-                # 事实准确性
-                if eval_res.fact_check:
-                    accuracy_md = _format_accuracy(eval_res.fact_check, 0)
-                # accuracy LLM 评分与 FActScore 重复，不单独展示
-
-                # 相关性
-                if "relevance" in eval_res.scores:
-                    relevance_md = _format_dimension(eval_res.scores["relevance"])
-
-                # 文学性
-                if "literary" in eval_res.scores:
-                    literary_md = _format_dimension(eval_res.scores["literary"])
-
-                # 合规性
-                if "compliance" in eval_res.scores:
-                    compliance_md = _format_compliance(eval_res.scores["compliance"])
-
-            except Exception as e:
-                accuracy_md = f"评估失败: {e}"
+            accuracy_md = "事实准确性评估已跳过（避免API速率限制）"
+            relevance_md = "相关性评估已跳过（避免API速率限制）"
+            literary_md = "文学性评估已跳过（避免API速率限制）"
+            compliance_md = "合规性评估已跳过（避免API速率限制）"
 
         yield (content, extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
     finally:
@@ -609,6 +584,8 @@ async def compare_providers_async(
     """
     使用多个LLM对比生成
     """
+    global retriever
+
     if not memoir_text.strip():
         return "请输入回忆录文本"
 
@@ -622,9 +599,10 @@ async def compare_providers_async(
         # 创建生成器
         gen = LiteraryGenerator(llm_router=router)
 
-        # 创建检索器并检索
-        ret = MemoirRetriever()
-        retrieval_result = ret.retrieve_sync(memoir_text, top_k=10)
+        # 使用全局检索器，避免重复加载索引
+        if retriever is None:
+            retriever = MemoirRetriever()
+        retrieval_result = retriever.retrieve_sync(memoir_text, top_k=10)
 
         # 并行生成
         multi_result = await gen.generate_parallel(

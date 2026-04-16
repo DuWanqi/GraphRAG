@@ -168,11 +168,12 @@ class LLMAdapter(ABC):
         litellm_model = self._get_litellm_model_name()
         
         # 配置API密钥和基础URL
+        # LiteLLM 使用 base_url 参数（不是 api_base）
         extra_params = {}
         if self.api_key:
             extra_params["api_key"] = self.api_key
         if self.api_base:
-            extra_params["api_base"] = self.api_base
+            extra_params["base_url"] = self.api_base
         
         response = await acompletion(
             model=litellm_model,
@@ -203,11 +204,12 @@ class LLMAdapter(ABC):
         """
         litellm_model = self._get_litellm_model_name()
 
+        # LiteLLM 使用 base_url 参数（不是 api_base）
         extra_params = {}
         if self.api_key:
             extra_params["api_key"] = self.api_key
         if self.api_base:
-            extra_params["api_base"] = self.api_base
+            extra_params["base_url"] = self.api_base
 
         stream = await acompletion(
             model=litellm_model,
@@ -268,11 +270,12 @@ class LLMAdapter(ABC):
         """
         litellm_model = self._get_litellm_model_name()
         
+        # LiteLLM 使用 base_url 参数（不是 api_base）
         extra_params = {}
         if self.api_key:
             extra_params["api_key"] = self.api_key
         if self.api_base:
-            extra_params["api_base"] = self.api_base
+            extra_params["base_url"] = self.api_base
         
         response = completion(
             model=litellm_model,
@@ -498,11 +501,12 @@ class GeminiAdapter(LLMAdapter):
         litellm_model = self._get_litellm_model_name()
         
         # 配置API密钥和基础URL
+        # LiteLLM 使用 base_url 参数（不是 api_base）
         extra_params = {}
         if self.api_key:
             extra_params["api_key"] = self.api_key
         if self.api_base:
-            extra_params["api_base"] = self.api_base
+            extra_params["base_url"] = self.api_base
         
         # 添加安全设置，避免内容被截断
         extra_params["safety_settings"] = self._get_safety_settings()
@@ -536,11 +540,12 @@ class GeminiAdapter(LLMAdapter):
         """
         litellm_model = self._get_litellm_model_name()
         
+        # LiteLLM 使用 base_url 参数（不是 api_base）
         extra_params = {}
         if self.api_key:
             extra_params["api_key"] = self.api_key
         if self.api_base:
-            extra_params["api_base"] = self.api_base
+            extra_params["base_url"] = self.api_base
         
         # 添加安全设置，避免内容被截断
         extra_params["safety_settings"] = self._get_safety_settings()
@@ -576,7 +581,7 @@ class GLMAdapter(LLMAdapter):
     
     def _get_litellm_model_name(self) -> str:
         model = self._get_model()
-        # LiteLLM 使用 openai/ 前缀调用智谱API
+        # LiteLLM 使用 openai/ 前缀 + 自定义 api_base 调用智谱API
         return f"openai/{model}"
     
     @property
@@ -597,11 +602,12 @@ class GLMAdapter(LLMAdapter):
         litellm_model = self._get_litellm_model_name()
         
         # 配置API密钥和基础URL
+        # LiteLLM 使用 base_url 参数（不是 api_base）
         extra_params = {}
         if self.api_key:
             extra_params["api_key"] = self.api_key
         if self.api_base:
-            extra_params["api_base"] = self.api_base
+            extra_params["base_url"] = self.api_base
         
         # 关闭GLM的thinking模式
         # 智谱API通过extra_body参数传递额外配置
@@ -627,6 +633,75 @@ class GLMAdapter(LLMAdapter):
             usage=dict(response.usage) if response.usage else None,
             finish_reason=response.choices[0].finish_reason
         )
+
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **kwargs
+    ) -> AsyncIterator[str]:
+        """
+        流式聊天接口（GLM专用，关闭thinking模式）
+        """
+        litellm_model = self._get_litellm_model_name()
+
+        # LiteLLM 使用 base_url 参数（不是 api_base）
+        extra_params = {}
+        if self.api_key:
+            extra_params["api_key"] = self.api_key
+        if self.api_base:
+            extra_params["base_url"] = self.api_base
+
+        # 关闭GLM的thinking模式
+        extra_params["extra_body"] = {
+            "thinking": {
+                "type": "disabled"
+            }
+        }
+
+        stream = await acompletion(
+            model=litellm_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+            **extra_params,
+            **kwargs
+        )
+
+        async for chunk in stream:
+            delta = None
+            try:
+                if isinstance(chunk, dict):
+                    choices = chunk.get("choices") or []
+                    choice = choices[0] if choices else {}
+                    if isinstance(choice, dict):
+                        d = choice.get("delta")
+                        if isinstance(d, dict):
+                            delta = d.get("content")
+                        if delta is None:
+                            m = choice.get("message")
+                            if isinstance(m, dict):
+                                delta = m.get("content")
+                    if delta is None:
+                        m = chunk.get("message")
+                        if isinstance(m, dict):
+                            delta = m.get("content")
+                else:
+                    choice = chunk.choices[0]
+                    delta = getattr(choice, "delta", None)
+                    if delta is not None:
+                        delta = getattr(delta, "content", None)
+                    if delta is None:
+                        msg = getattr(choice, "message", None)
+                        if msg is not None:
+                            delta = getattr(msg, "content", None)
+            except Exception:
+                delta = None
+
+            if isinstance(delta, str) and delta:
+                yield delta
 
 
 class OpenAIAdapter(LLMAdapter):
