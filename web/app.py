@@ -428,6 +428,7 @@ def process_memoir_stream(
     enable_retrieval_quality: bool = True,
     enable_llm_judge: bool = True,
     chapter_mode: bool = False,
+    batch_size: int = 5,
 ):
     """
     Gradio 流式生成。
@@ -511,6 +512,7 @@ def process_memoir_stream(
                         max_atomic_facts_per_segment=12,
                         fact_check_timeout_per_segment=45.0,
                         use_rule_decompose=use_rule_decompose,
+                        batch_size=int(batch_size),
                     )
                     ev = loop.run_until_complete(
                         asyncio.wait_for(
@@ -615,6 +617,7 @@ def process_memoir_stream(
                         enable_fact_check=enable_fact_check,
                         enable_safe_check=enable_safe_check,
                         enable_llm_judge=enable_llm_judge,
+                        batch_size=int(batch_size),
                     )
 
                 eval_res = loop.run_until_complete(asyncio.wait_for(_run_eval(), timeout=180.0))
@@ -893,6 +896,14 @@ def create_ui():
                                 label="\u26a1 使用规则拆分（事实检查加速）",
                                 info="使用规则而非 LLM 进行原子事实拆分；仅在事实准确性/SAFE 启用时生效",
                             )
+                            batch_size_slider = gr.Slider(
+                                minimum=1,
+                                maximum=20,
+                                value=5,
+                                step=1,
+                                label="\U0001f9ee 事实验证批次大小 (batch_size)",
+                                info="每次 LLM 调用同时验证的原子事实数；越大调用越少但单次响应更长。仅在事实准确性/SAFE 启用时生效",
+                            )
 
                         chapter_mode_checkbox = gr.Checkbox(
                             value=False,
@@ -966,6 +977,7 @@ def create_ui():
                         retrieval_quality_checkbox,
                         llm_judge_checkbox,
                         chapter_mode_checkbox,
+                        batch_size_slider,
                     ],
                     outputs=[
                         output_text,

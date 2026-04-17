@@ -105,6 +105,7 @@ async def evaluate_long_form(
     max_atomic_facts_per_segment: int = 12,
     fact_check_timeout_per_segment: float = 60.0,
     use_rule_decompose: bool = True,
+    batch_size: int = 5,
 ) -> LongFormEvalResult:
     """
     对分章生成结果跑通评估 pipeline（默认规则评估；事实检查可超时跳过单段）。
@@ -176,6 +177,7 @@ async def evaluate_long_form(
                         use_llm=True,
                         use_rule_decompose=use_rule_decompose,
                         max_atomic_facts=max_atomic_facts_per_segment,
+                        batch_size=batch_size,
                     ),
                     timeout=fact_check_timeout_per_segment,
                 )
@@ -190,6 +192,7 @@ async def evaluate_long_form(
                 retrieval_result=ch.retrieval_result,
                 use_llm=False,
                 max_atomic_facts=max_atomic_facts_per_segment,
+                batch_size=batch_size,
             )
 
         records.append(

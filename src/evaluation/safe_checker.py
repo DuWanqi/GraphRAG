@@ -166,6 +166,7 @@ class SAFEFactChecker:
         kb_supported_facts: Optional[int] = None,
         kb_total_facts: Optional[int] = None,
         use_search: bool = False,
+        batch_size: int = 5,
     ) -> SAFECheckResult:
         """
         执行独立知识验证
@@ -201,7 +202,7 @@ class SAFEFactChecker:
         if use_search and self.search_enabled:
             details = await self._verify_batch_search(atomic_facts)
         else:
-            details = await self._verify_batch_llm(atomic_facts)
+            details = await self._verify_batch_llm(atomic_facts, batch_size=batch_size)
 
         # 3. 统计
         supported = sum(1 for d in details if d["verdict"] == "SUPPORTED")
@@ -320,10 +321,13 @@ class SAFEFactChecker:
             facts_str = "\n".join(f"{j+1}. {fact}" for j, fact in enumerate(batch))
             prompt = _BATCH_LLM_VERIFY_PROMPT.format(facts=facts_str)
 
+            # SAFE 结果含 explanation，每条 ~130 tokens
+            dyn_max_tokens = max(1024, len(batch) * 130)
+            dyn_timeout = max(30, len(batch) * 3)
             try:
                 resp = await self.llm_adapter.chat(
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1, max_tokens=1024, timeout=30,
+                    temperature=0.1, max_tokens=dyn_max_tokens, timeout=dyn_timeout,
                 )
                 batch_details = self._parse_batch_response(resp.content, batch)
                 all_details.extend(batch_details)

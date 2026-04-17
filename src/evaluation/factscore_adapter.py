@@ -43,6 +43,7 @@ class FactCheckResult:
     entity_coverage: float = 0.0
     evidence_support: float = 0.0
     summary: str = ""
+    atomic_facts: List[str] = field(default_factory=list)
 
 
 class FActScoreChecker:
@@ -166,6 +167,7 @@ class FActScoreChecker:
         use_llm: bool = True,
         use_rule_decompose: Optional[bool] = None,
         max_atomic_facts: Optional[int] = None,
+        batch_size: int = 5,
     ) -> FactCheckResult:
         """
         执行事实性检查（使用FActScore方法）
@@ -200,15 +202,17 @@ class FActScoreChecker:
             inconsistencies = []
             total_facts = 0
             supported_facts = 0
+            atomic_facts: List[str] = []
 
             # FActScore原子化检查
             if use_llm and self.llm_adapter:
                 logger.info("[FActScore] 执行原子化检查")
-                factscore_issues, total_facts, supported_facts = await self._factscore_check(
+                factscore_issues, total_facts, supported_facts, atomic_facts = await self._factscore_check(
                     memoir_text,
                     generated_text,
                     retrieval_result,
                     max_atomic_facts=max_atomic_facts,
+                    batch_size=batch_size,
                 )
                 inconsistencies.extend(factscore_issues)
 
@@ -235,6 +239,7 @@ class FActScoreChecker:
                 entity_coverage=entity_coverage,
                 evidence_support=evidence_support,
                 summary=summary,
+                atomic_facts=atomic_facts,
             )
             
             # 缓存结果
@@ -253,6 +258,7 @@ class FActScoreChecker:
         generated_text: str,
         retrieval_result: Optional[RetrievalResult],
         max_atomic_facts: Optional[int] = None,
+        batch_size: int = 5,
     ) -> tuple:
         """
         FActScore原子化检查
@@ -260,7 +266,7 @@ class FActScoreChecker:
         将生成文本分解为原子事实，逐一验证
 
         Returns:
-            (inconsistencies, total_facts, supported_facts)
+            (inconsistencies, total_facts, supported_facts, atomic_facts)
         """
         logger = logging.getLogger(__name__)
         inconsistencies = []
@@ -272,7 +278,7 @@ class FActScoreChecker:
 
         if not context:
             logger.warning("[FActScore] 无检索结果，跳过原子化检查")
-            return [], 0, 0
+            return [], 0, 0, []
 
         # 分解生成文本为原子事实
         logger.info("[FActScore] 分解生成文本为原子事实...")
@@ -286,11 +292,11 @@ class FActScoreChecker:
         logger.info(f"[FActScore] 分解得到 {total_facts} 个原子事实")
 
         if total_facts == 0:
-            return [], 0, 0
+            return [], 0, 0, []
 
         # 批量验证原子事实
         logger.info(f"[FActScore] 开始批量验证 {total_facts} 个原子事实")
-        verification_results = await self._verify_facts_batch(atomic_facts, context)
+        verification_results = await self._verify_facts_batch(atomic_facts, context, batch_size=batch_size)
 
         # 为不支持的事实创建不一致项
         unsupported_facts = []
@@ -324,7 +330,7 @@ class FActScoreChecker:
             f"[FActScore] 验证完成: {supported_facts}/{total_facts} 事实被支持 "
             f"(FActScore={supported_facts/total_facts:.2%})"
         )
-        return inconsistencies, total_facts, supported_facts
+        return inconsistencies, total_facts, supported_facts, atomic_facts
     
     async def _verify_against_memoir(
         self,
@@ -625,12 +631,15 @@ class FActScoreChecker:
                 facts=facts_str
             )
             
+            # 按 batch_size 动态调整：每条事实约需 ~90 tokens 输出 + 3s
+            dyn_max_tokens = max(512, len(batch) * 90)
+            dyn_timeout = max(20, len(batch) * 3)
             try:
                 response = await self.llm_adapter.chat(
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
-                    max_tokens=512,  # 足够处理5个事实的结果
-                    timeout=20,  # 批量验证的超时时间
+                    max_tokens=dyn_max_tokens,
+                    timeout=dyn_timeout,
                 )
                 
                 # 解析批量结果
