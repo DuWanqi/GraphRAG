@@ -187,6 +187,7 @@ class Evaluator:
         use_safe_search: bool = False,
         enable_llm_judge: bool = True,
         batch_size: int = 5,
+        quick_retry: bool = False,
     ) -> EvaluationResult:
         """
         评估生成的历史背景文本
@@ -200,10 +201,21 @@ class Evaluator:
             enable_safe_check: 是否启用独立知识验证（SAFE，不依赖知识库）
             use_safe_search: SAFE 验证是否使用网络搜索（否则使用 LLM 自身知识）
             enable_llm_judge: 是否启用 LLM-as-a-Judge（相关性/文学性/合规性）
+            quick_retry: 重生成场景下的轻量复评模式。开启后强制：
+                - 禁用 LLM-as-a-Judge 与 SAFE（这两块只在首轮跑）
+                - FActScore 改用规则拆分 + 大 batch，避免 LLM 调用爆炸
+                典型用法：首轮用完整评估；分数不达标触发重生成时，第 2/3
+                轮只调用 quick_retry=True 复评事实性即可。
 
         Returns:
             EvaluationResult: 评估结果
         """
+        if quick_retry:
+            enable_llm_judge = False
+            enable_safe_check = False
+            # 大 batch 让 FActScore 验证 1-2 次调用就能跑完
+            batch_size = max(batch_size, 12)
+
         if (enable_llm_judge or enable_fact_check or enable_safe_check) and not self.llm_adapter:
             raise RuntimeError(
                 "评估依赖 LLM-as-a-Judge / 事实检查器，但未配置 LLM 适配器。"
@@ -231,6 +243,7 @@ class Evaluator:
                 generated_text=generated_text,
                 retrieval_result=retrieval_result,
                 use_llm=use_llm and self.llm_adapter is not None,
+                use_rule_decompose=True if quick_retry else None,
                 batch_size=batch_size,
             )
             result.fact_check = fact_check_result
@@ -302,20 +315,15 @@ class Evaluator:
         )
         
         try:
-            response = await self.llm_adapter.generate(
-                prompt=prompt,
-                system_prompt="你是一位专业的文本质量评估专家。请客观、公正地评估文本质量。",
+            # 使用 chat_json：解析失败自动重试（无退避，上限 2 次）
+            result_data = await self.llm_adapter.chat_json(
+                messages=[
+                    {"role": "system", "content": "你是一位专业的文本质量评估专家。请客观、公正地评估文本质量。"},
+                    {"role": "user", "content": prompt},
+                ],
                 temperature=0.1,
                 max_tokens=1000,
             )
-            
-            # 解析JSON响应（LLM 可能返回 ```json ... ``` 包裹的内容）
-            import re
-            raw = response.content.strip()
-            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-            if not json_match:
-                raise ValueError(f"LLM 返回内容中未找到 JSON: {raw[:200]}")
-            result_data = json.loads(json_match.group(0))
             
             scores = {}
             for dim in ["accuracy", "relevance", "literary"]:
@@ -351,7 +359,7 @@ class Evaluator:
                 overall_score=overall_score,
                 summary=overall_data.get("explanation", ""),
                 suggestions=result_data.get("suggestions", []),
-                raw_response=response.content,
+                raw_response=json.dumps(result_data, ensure_ascii=False),
             )
             
         except Exception as e:

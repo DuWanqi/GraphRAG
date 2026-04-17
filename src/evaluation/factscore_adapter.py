@@ -517,32 +517,27 @@ class FActScoreChecker:
             return []
         
         prompt = self.DECOMPOSE_PROMPT.format(text=text[:1000])
-        
+
         try:
-            response = await self.llm_adapter.chat(
+            # chat_json 内部对解析失败做 2 次重试（无退避），底层 chat 对
+            # transport 错误由 litellm num_retries 处理
+            facts = await self.llm_adapter.chat_json(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
                 max_tokens=1024,
+                json_pattern=r'\[.*\]',  # 原子事实是 JSON 数组
             )
-            
-            result_text = response.content.strip()
-            
-            # 解析JSON结果
-            try:
-                facts = json.loads(result_text)
-                if not isinstance(facts, list):
-                    facts = []
-            except json.JSONDecodeError:
-                # 尝试从文本中提取JSON数组
-                facts = self._extract_json_array(result_text)
-            
-            # 缓存结果
+            if not isinstance(facts, list):
+                facts = []
             self._decompose_cache[cache_key] = facts
             return facts
-            
+
         except Exception as e:
-            logging.getLogger(__name__).error(f"分解文本失败: {e}")
-            return []
+            # 重试全部失败：降级到规则拆分，避免整条 pipeline 崩溃
+            logging.getLogger(__name__).error(f"分解文本失败（已重试），降级到规则拆分: {e}")
+            facts = self._decompose_text_rule_based(text)
+            self._decompose_cache[cache_key] = facts
+            return facts
     
     async def _verify_fact(self, fact: str, context: str) -> bool:
         """

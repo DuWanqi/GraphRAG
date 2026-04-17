@@ -252,21 +252,18 @@ class SAFEFactChecker:
 
         prompt = _DECOMPOSE_PROMPT.format(text=text[:1000])
         try:
-            resp = await self.llm_adapter.chat(
+            # chat_json 自动重试解析失败（最多 2 次），数组模式
+            facts = await self.llm_adapter.chat_json(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1, max_tokens=1024,
+                json_pattern=r'\[.*\]',
             )
-            raw = resp.content.strip()
-            try:
-                facts = json.loads(raw)
-                if not isinstance(facts, list):
-                    facts = []
-            except json.JSONDecodeError:
-                facts = self._extract_json_array(raw)
+            if not isinstance(facts, list):
+                facts = []
             self._decompose_cache[cache_key] = facts
             return facts
         except Exception as e:
-            logger.error(f"[SAFE] 分解文本失败: {e}")
+            logger.error(f"[SAFE] 分解文本失败（已重试），降级到规则拆分: {e}")
             facts = self._decompose_rule_based(text)
             self._decompose_cache[cache_key] = facts
             return facts
