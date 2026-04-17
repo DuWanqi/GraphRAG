@@ -875,17 +875,17 @@ def create_ui():
                             )
                             fact_check_checkbox = gr.Checkbox(
                                 value=True,
-                                label="\u2705 事实准确性 (KB FActScore)",
+                                label="\u2705 事实准确性 (FActScore)",
                                 info="基于知识库逐条核查原子事实",
                             )
                             safe_check_checkbox = gr.Checkbox(
-                                value=False,
-                                label="\U0001f310 独立知识验证 (SAFE)",
-                                info="使用 LLM 自身知识独立验证事实，不依赖知识库",
+                                value=True,
+                                label="\U0001f310 事实准确性 (SAFE独立知识验证)",
+                                info="使用 LLM + SAFE 框架独立验证事实，不依赖知识库",
                             )
                             llm_judge_checkbox = gr.Checkbox(
                                 value=True,
-                                label="\u270d\ufe0f LLM-as-a-Judge（相关性 / 文学性 / 合规性）",
+                                label="\u270d\ufe0f 相关性 / 文学性 / 合规性",
                                 info="由 LLM 对生成内容进行多维度打分",
                             )
                             rule_decompose_checkbox = gr.Checkbox(
@@ -935,16 +935,16 @@ def create_ui():
                         with gr.Accordion("\U0001f3af 检索质量", open=False):
                             retrieval_quality_output = gr.Markdown(label="检索质量")
 
-                        with gr.Accordion("\u2705 事实准确性 (KB)", open=True):
-                            accuracy_output = gr.Markdown(label="事实准确性")
-
-                        with gr.Accordion("\U0001f310 独立知识验证 (SAFE)", open=False):
+                        with gr.Accordion("\u2705 事实准确性", open=True):
+                            gr.Markdown("#### \U0001f4da 基于知识库 (FActScore)")
+                            accuracy_output = gr.Markdown(label="事实准确性 (KB)")
+                            gr.Markdown("---\n#### \U0001f310 独立知识验证 (SAFE)")
                             safe_check_output = gr.Markdown(label="独立知识验证")
 
-                        with gr.Accordion("\U0001f517 相关性 (LLM-as-a-Judge)", open=False):
+                        with gr.Accordion("\U0001f517 相关性", open=False):
                             relevance_output = gr.Markdown(label="相关性")
 
-                        with gr.Accordion("\u270d\ufe0f 文学性 (LLM-as-a-Judge)", open=False):
+                        with gr.Accordion("\u270d\ufe0f 文学性", open=False):
                             literary_output = gr.Markdown(label="文学性")
 
                         with gr.Accordion("\U0001f6e1\ufe0f 合规性", open=False):
