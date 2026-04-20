@@ -41,6 +41,93 @@ def _parse_length_hint_range(length_hint: str) -> tuple[int, int]:
     return (200, 500)
 
 
+def _extract_entities_from_text(text: str) -> List[str]:
+    """从文本中提取实体（简单规则：中文人名、地名等）"""
+    entities = []
+
+    # 提取人名模式
+    # 1. 老X（老张、老王等）- 修复正则，避免匹配"老张是个"
+    old_pattern = r'老[张王李赵刘陈杨黄周吴徐孙马朱胡郭何高林罗郑梁宋谢唐韩曹许邓萧冯曾程蔡彭潘袁于董余苏叶吕魏蒋田杜丁沈姜范江傅钟卢汪戴崔任陆廖姚方金邱夏谭韦贾邹石熊孟秦阎薛侯雷白龙段郝孔邵史毛常万顾赖武康贺严尹钱施牛洪龚]'
+    matches = re.findall(old_pattern, text)
+    entities.extend(matches)
+
+    # 2. X队长、X先生、X老板等（带职位）
+    title_pattern = r'[张王李赵刘陈杨黄周吴徐孙马朱胡郭何高林罗郑梁宋谢唐韩曹许邓萧冯曾程蔡彭潘袁于董余苏叶吕魏蒋田杜丁沈姜范江傅钟卢汪戴崔任陆廖姚方金邱夏谭韦贾邹石熊孟秦阎薛侯雷白龙段郝孔邵史毛常万顾赖武康贺严尹钱施牛洪龚]\w{0,2}(?:队长|先生|老板|师傅|医生|校长)'
+    matches = re.findall(title_pattern, text)
+    entities.extend(matches)
+
+    # 3. 常见双字名（赵德明、张小军等）
+    common_names = ['德明', '小军', '父亲', '母亲', '老婆', '女朋友']
+    for name in common_names:
+        if name in text:
+            # 如果前面有姓氏，提取全名
+            full_name_pattern = f'[张王李赵刘陈杨黄周吴徐孙马朱胡郭何高林罗郑梁宋谢唐韩曹许邓萧冯曾程蔡彭潘袁于董余苏叶吕魏蒋田杜丁沈姜范江傅钟卢汪戴崔任陆廖姚方金邱夏谭韦贾邹石熊孟秦阎薛侯雷白龙段郝孔邵史毛常万顾赖武康贺严尹钱施牛洪龚]{name}'
+            full_matches = re.findall(full_name_pattern, text)
+            if full_matches:
+                entities.extend(full_matches)
+            else:
+                entities.append(name)
+
+    # 4. 历史人物（邓小平等）
+    historical_figures = ['邓小平', '毛泽东', '周恩来']
+    for fig in historical_figures:
+        if fig in text:
+            entities.append(fig)
+
+    # 提取地名（常见地名）
+    location_keywords = [
+        '北京', '上海', '深圳', '广州', '陕北', '延安', '张家塬', '华强北',
+        '武汉', '香港', '兰州', '东南亚', '深圳湾', '窑洞', '公社', '生产队',
+        '省城', '县城', '渭河', '黄土高坡'
+    ]
+    for loc in location_keywords:
+        if loc in text:
+            entities.append(loc)
+
+    # 提取机构/组织
+    org_keywords = ['联想', '海尔', '知青', '研究所']
+    for org in org_keywords:
+        if org in text:
+            entities.append(org)
+
+    # 去重并保持顺序
+    seen = set()
+    unique_entities = []
+    for e in entities:
+        if e not in seen:
+            seen.add(e)
+            unique_entities.append(e)
+
+    return unique_entities
+
+
+def _extract_entities_info(chapter: Any, record: SegmentEvalRecord) -> Dict[str, Any]:
+    """提取实体信息：RAG检索的实体 vs 生成文本中的实体"""
+
+    # 1. RAG 检索到的实体
+    rag_entities = []
+    for e in (chapter.retrieval_result.entities or [])[:15]:
+        name = e.get("name") or e.get("title") or ""
+        if name:
+            rag_entities.append(name)
+
+    # 2. 生成文本中提取的实体
+    generated_text = chapter.generation.content
+    text_entities = _extract_entities_from_text(generated_text)
+
+    # 3. 计算覆盖情况
+    rag_entities_in_text = [e for e in rag_entities if e in generated_text]
+    text_entities_not_in_rag = [e for e in text_entities if e not in rag_entities]
+
+    return {
+        "rag_retrieved": rag_entities,
+        "rag_used_in_text": rag_entities_in_text,
+        "rag_coverage": len(rag_entities_in_text) / len(rag_entities) if rag_entities else 0,
+        "text_extracted": text_entities,
+        "text_only_entities": text_entities_not_in_rag,
+    }
+
+
 def document_year_diversity(merged_text: str) -> MetricResult:
     """篇级轻量：抽取年份，多年代时略降分。"""
     years = re.findall(r"(?:19|20)\d{2}", merged_text)
@@ -322,8 +409,9 @@ async def evaluate_long_form(
                 "fact_is_factual": r.fact_check.is_factual if r.fact_check else None,
                 "fact_score": r.fact_check.factscore if r.fact_check else None,
                 "fact_skip": r.fact_check_skipped_reason,
+                "entities": _extract_entities_info(long_form.chapters[i], r) if i < len(long_form.chapters) else {},
             }
-            for r in records
+            for i, r in enumerate(records)
         ],
         "document": {k: {"value": v.value, "max": v.max_value} for k, v in doc_metrics.items()},
         "cross_chapter": {

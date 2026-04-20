@@ -14,7 +14,35 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
+import jieba
+
 from .memoir_segmenter import extract_years
+
+
+# ---------------------------------------------------------------------------
+# 中文停用词表（2-gram 级别），用于过滤"反重复要点"中的无意义高频词
+# ---------------------------------------------------------------------------
+_STOPWORDS: frozenset[str] = frozenset({
+    # 代词 / 指示词
+    "我们", "他们", "她们", "自己", "大家", "这些", "那些", "这个", "那个",
+    "它们", "别人", "人们", "有人", "谁都", "每个", "各种",
+    # 虚词 / 连词 / 介词
+    "可以", "已经", "还是", "就是", "因为", "所以", "但是", "如果", "虽然",
+    "而且", "或者", "以及", "对于", "关于", "通过", "进行", "没有", "不了",
+    "不过", "于是", "终于", "然后", "并且", "不仅", "只要", "无论",
+    # 趋向补语
+    "起来", "出来", "下来", "过来", "上去", "出去", "下去", "回来",
+    # 泛化时间 / 指示
+    "时候", "当时", "那时", "这时", "之后", "以后", "以前", "之前",
+    "那年", "那天", "后来", "其实", "还有", "只有", "就像",
+    # 泛化量词 / 程度副词
+    "一个", "一些", "一种", "一次", "一点", "一样", "什么", "怎么",
+    "这样", "那样", "非常", "十分", "特别", "比较",
+    # 高频通用动词
+    "觉得", "知道", "开始", "成为", "看到", "听到", "感到", "想到",
+    "说道", "能够", "应该", "需要", "希望", "喜欢", "认为", "发现",
+    "不知道", "那时候", "的时候",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -216,10 +244,44 @@ def _extract_time_period(content: str) -> str:
 
 def _extract_key_phrases(content: str, top_n: int = 8) -> List[str]:
     """
-    提取内容中的高频 2-3 字短语作为要点标识。
-    用于跨章去重检测。
+    提取内容中的高频实义短语作为要点标识，用于跨章去重检测。
+
+    实现：jieba 分词 → 停用词过滤 → 词级 1-gram + 相邻词 2-gram 统计
+    → 频次 ≥ 2 取 top_n。
+
+    相比早期的字符滑窗方案（见 ``_extract_key_phrases_char_sliding``），
+    分词方案能正确切分词边界、天然排除跨词噪声（如"产队""的张"），
+    并通过 ``_STOPWORDS`` 表过滤代词/虚词/泛化时间词等高频但无内容
+    区分度的 token。
     """
-    # 去掉标点，只保留中文
+    # 只保留 ≥2 字的中文词，排除停用词
+    words = [w for w in jieba.cut(content)
+             if re.match(r"[\u4e00-\u9fa5]{2,}", w) and w not in _STOPWORDS]
+
+    if len(words) < 2:
+        return []
+
+    counter: Counter[str] = Counter()
+    # 词级 1-gram（单词本身已 ≥2 字，具备语义）
+    counter.update(words)
+    # 词级 2-gram（相邻词拼接，捕捉搭配短语如"恢复高考""知青下乡"）
+    for i in range(len(words) - 1):
+        counter[words[i] + words[i + 1]] += 1
+
+    # 取频次 ≥ 2 且排名前 top_n 的
+    return [phrase for phrase, cnt in counter.most_common(top_n * 2)
+            if cnt >= 2][:top_n]
+
+
+def _extract_key_phrases_char_sliding(content: str, top_n: int = 8) -> List[str]:
+    """
+    （旧方案，保留备用）字符级滑动窗口提取 2/3-gram。
+
+    缺陷：
+    - 跨词边界噪声（"产队""的张""年春"）
+    - 停用词过滤仅 6 条硬编码，无法有效排除"我们""时候"等高频通用词
+    - "生产队" 会同时产生 "生产""产队""生产队" 三条冗余计数
+    """
     clean = re.sub(r"[^\u4e00-\u9fa5]", "", content)
     if len(clean) < 4:
         return []
@@ -228,12 +290,10 @@ def _extract_key_phrases(content: str, top_n: int = 8) -> List[str]:
     for n in (3, 2):
         for i in range(len(clean) - n + 1):
             gram = clean[i:i + n]
-            # 过滤纯虚词
             if gram in ("的是", "了的", "在了", "是的", "和的", "不是"):
                 continue
             counter[gram] += 1
 
-    # 取频次 ≥ 2 且排名前 top_n 的
     return [phrase for phrase, cnt in counter.most_common(top_n * 2)
             if cnt >= 2][:top_n]
 
