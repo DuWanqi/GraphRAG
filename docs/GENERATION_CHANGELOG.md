@@ -1,120 +1,129 @@
 # 生成模块变更日志（Generation）
 
-本文档用于**直白说明**三件事：  
-1) 生成模块通过什么方式实现升级；  
-2) 具体新增了什么功能；  
-3) 最终对整条产品链路贡献了什么能力。
+## 结论（一句话）
+
+长文模式 = **先按规则把回忆录切成多段（结构优先 + 字数兜底）→ 每段单独检索与生成（提示词字数 + API `max_tokens` 双约束）→ 按段做同一套质量评估后再加权汇总**。默认单段路径不变。
 
 ---
 
-## 一句话结论
+## 你最关心的四件事
 
-本轮不是“加几个散点功能”，而是把生成模块升级为两条可切换链路：  
+### 1. 怎么按「叙事结构」切成多段？
 
-- `chapter_mode=false`：原有单段链路（保持兼容）。  
-- `chapter_mode=true`：长文分章链路（分段检索、分段生成、统一评估聚合）。  
+实现上是**纯规则、不调用 LLM**，用「版式与常见中文标题习惯」近似叙事边界，顺序如下（见 `src/generation/memoir_segmenter.py`）。
 
-这使系统从“适配短输入”扩展到“可稳定处理数千字多年代叙事”。
+1. **按空行拆大块**  
+   用连续空行（`\n` 之间只有空白）把全文切成若干块。用户若习惯「一节一段、段间空行」，天然对应叙事单元。
 
----
+2. **块内再按「像标题的行」拆开**  
+   若一块里有多行，会扫描每一行：行首若匹配「章节标题」式样，则在**新标题行前**截断，前面已积累的内容先成一段，标题行起新段。  
+   识别的式样包括（与正则一致）：`第…章/节/回/…`、行首 `一、` `二、` 这类序号、以及 `（一）` 等形式。
 
-## 通过什么方式实现
+3. **超长块按句再切**  
+   某块若仍超过上限字数（默认单块硬上限约 `target_max_chars`，见下），则按中文句末标点 `。！？` 与换行切成子句，再**贪心拼句**直到接近上限；若几乎没有句读，则**按字符硬切**。
 
-### 1) 用“单一编排中心”组织长文生成
+4. **过短块合并**  
+   相邻块若低于「过短」阈值，会尝试合并，直到达到最小期望长度或再合并会过长为止。
 
-- 入口：`src/generation/long_form_orchestrator.py` 的 `run_long_form_generation`。  
-- 编排顺序：`segment_memoir` -> 每段 `retrieve` -> 每段 `generate` -> 合并为 `LongFormGenerationResult`。  
-- 结果结构化：每章保留 `segment_text`、`retrieval_result`、`generation`、`length_hint`，为评估与追踪提供统一输入。
+5. **极短全文**  
+   整篇长度低于「最小段长」时**不再切**，直接一段，避免无意义碎片。
 
-### 2) 用“预算分配器”控制多段输出规模
-
-- 实现：`src/generation/chapter_budget.py`。  
-- 机制：将 UI/API 的 `length_bucket` 转为全书目标字数，再按段落长度比例分配每段 `length_hint` 和 `max_tokens`。  
-- 兼容：`legacy_maps_for_single_segment` 继续支持单段旧逻辑。
-
-### 3) 用“段级评估 + 文档聚合”替代长文硬套短文规则
-
-- 实现：`src/evaluation/long_form_eval.py` 的 `evaluate_long_form`。  
-- 策略：按章计算 metrics / evaluator，再按段权重聚合总分；事实检查支持分段限流与超时跳过。  
-- 输出：同时产出可读摘要与 JSON，可用于 API 返回和验收记录。
-
-### 4) 用“运行参数集中化”降低入口代码复杂度（本次结构优化）
-
-- 新增：`src/generation/runtime_options.py`。  
-- 统一内容：
-  - `single_segment_generation_config`（单段字数档位映射）  
-  - `estimate_long_form_generation_timeout`（长文生成超时预算）  
-  - `estimate_long_form_evaluation_timeout`（长文评估超时预算）  
-  - `build_long_form_eval_options`（长文评估参数组装）  
-- 结果：`web/app.py`、`web/api.py` 不再重复硬编码映射和预算逻辑，阅读与维护成本明显下降。
+编排侧默认参数（可在 `run_long_form_generation` 里改）：`target_min_chars=300`、`target_max_chars=800`——控制「一块回忆录」在检索/生成时的大致粒度。
 
 ---
 
-## 添加/实现了什么功能（用户可感知）
+### 2. 怎么保证切分「正确且合适」？
 
-### A. 长文分章生成能力
+**需要直说边界**：当前**没有**「读懂故事再切」的语义模型，也**没有**事后自动校验「这一刀是否切在情节转折上」。可靠程度来自**版式约定 + 字数约束**，而不是叙事理解。
 
-- Web 勾选“分章/长文模式”或 API 传 `chapter_mode=true` 后，系统自动切段并逐章生成。  
-- 生成结果按章合并，避免“整篇只做一次检索”导致的后段信息缺失。  
+| 层面 | 实际在做什么 |
+|------|----------------|
+| **结构对齐** | 空行、显式章节标题 → 高概率与作者心里的「节」一致；纯流水账、无空行、无标题的长文 → 主要退化为「按句/按字长」切块。 |
+| **粒度合适** | `target_min_chars` / `target_max_chars` 防止段过碎（检索噪声大）或单段过长（检索主题漂移）。合并短块、拆分长块都是为了**检索与生成负载可控**。 |
+| **可验证性** | 行为由确定性规则决定，可用单测覆盖；例如 `tests/test_memoir_segmenter.py` 对标题行、空行、超长合并等有固定期望。 |
 
-### B. 长文评估可执行、可返回、可验收
-
-- 分章结果可直接进入 `evaluate_long_form`。  
-- API 分章路径可返回 `eval_summary`（摘要 + JSON 片段）。  
-- 脚本 `scripts/run_long_form_e2e.py` 可跑通“生成 + 评估”闭环。
-
-### C. 单段模式保持原体验
-
-- 默认仍是单段；不开 `chapter_mode` 不改变原始用户路径。  
-- 单段输出长度控制仍沿用既有档位行为。
+若产品上要「更懂叙事」的切分，需要额外策略（例如 LLM/结构分析先产出边界，或强制用户插入标记），**不在现实现里**。
 
 ---
 
-## 相关代码结构（优化后推荐认知路径）
+### 3. 生成时怎么约束各章长度？
 
-按“先看入口，再看实现细节”的顺序：
+分两道闸：**用户选的档位决定全书总目标**，再**按各段回忆录长度比例摊到每一章**；每一章生成时同时用**自然语言要求**和**接口硬上限**（见 `src/generation/chapter_budget.py` + `LiteraryGenerator.generate`）。
 
-1. `web/app.py` / `web/api.py`  
-   - 只保留流程选择与参数透传（单段/分章切换）。  
-2. `src/generation/runtime_options.py`  
-   - 集中运行策略：字数档位、超时预算、评估参数。  
-3. `src/generation/long_form_orchestrator.py`  
-   - 长文链路核心编排。  
-4. `src/generation/memoir_segmenter.py` + `src/generation/chapter_budget.py`  
-   - 分段策略与预算分配策略。  
-5. `src/evaluation/long_form_eval.py`  
-   - 分章评估聚合实现。  
-6. `src/generation/literary_generator.py`  
-   - 单段生成核心与 `generate_long_form` 薄封装。
+**（1）全书总目标（来自 UI/API 的 `length_bucket`）**
 
----
+档位对应一个「全书生成正文中位字数」中心值，例如短档约 300、最长档约 2000（具体映射在 `chapter_budget` 的 `_BUCKET_TOTAL_CENTER`）。
 
-## 对整体更新的贡献（Contribute）
+**（2）摊到每一章**
 
-本轮生成模块升级对项目的整体贡献可总结为：
+- 权重 = 该段**回忆录原文**字符数（至少计 1）。  
+- 该章分到的「中心字数」≈ `全书中心 × (本段权重 / 权重和)`。  
+- 再在该中心上下取约 **±15%** 得到区间 `[low, high]`，写成人类可读的 **`length_hint`**（如「约 xxx–yyy 字」）。
 
-- **能力层**：从“短文生成工具”升级为“短文 + 长文双模式生成系统”。  
-- **工程层**：形成可复用的长文编排与评估闭环，支持自动化验收与问题定位。  
-- **产品层**：在不破坏旧体验的前提下，给出长输入场景的稳定路径。  
-- **维护层**：运行配置集中化后，Web/API 的后续迭代成本更低、行为更一致。
+**（3）落到模型调用**
+
+- **`length_hint`**：写入生成提示词，让模型按区间控制篇幅（软约束）。  
+- **`max_tokens`**：按区间上限估算（实现上约为「上限字数 × 2.2」再夹到 `[256, 8000]`），作为 API 的硬上限，减轻「写太长被截断或失控」——中文按字粗估，偏保守。
+
+单段模式不走比例分摊，仍用各档位固定的 `length_hint` + `max_tokens` 表（`legacy_maps_for_single_segment`）。
 
 ---
 
-## 变更清单（文件级）
+### 4. 怎么对各章生成质量做评估？
 
-- 新增：`src/generation/runtime_options.py`（运行参数集中层）。  
-- 更新：`src/generation/__init__.py`（导出统一运行参数 helper）。  
-- 更新：`web/app.py`（去除重复映射，统一调用运行参数 helper）。  
-- 更新：`web/api.py`（统一单段配置与长文超时/评估参数组装）。  
-- 既有长文链路相关：
-  - `src/generation/memoir_segmenter.py`
-  - `src/generation/chapter_budget.py`
-  - `src/generation/long_form_orchestrator.py`
-  - `src/evaluation/long_form_eval.py`
+长文评估是 **「每一章同一套打分逻辑」+「篇级少量补充」**（见 `src/evaluation/long_form_eval.py`）。对第 `i` 章，输入始终是：**该章回忆录原文**、**该章生成正文**、**该章检索结果**（实体、参考年、关键词等）以及 **该章的 `length_hint`**。
+
+**（1）章内必跑：规则指标 → 一个 0–10 的「指标聚合分」**
+
+对每章计算多路指标（再按固定权重合成），主要包括：
+
+- **对齐检索/史料**：实体在生成文中是否出现（覆盖率）、生成中年份与检索参考年是否一致等。  
+- **对齐回忆录**：关键词重叠、与回忆录的语义相似度等。  
+- **可读与篇幅**：生成长度是否落在由 `length_hint` 解析出的合理区间、段落结构（长文用宽松规则）、过渡词、描写丰富度等。
+
+这些都不依赖 LLM，合成 **`aggregate_scores` → 章级 0–10 分**。
+
+**（2）可选：LLM 综合分**
+
+若开启且提供适配器，会再跑 **Evaluator**：多维度（准确性、相关性、文学性等）打分的 **`overall_score`**。长文路径里评估器**不带**内置事实检查，避免与下一步重复。  
+**章级用于后续加权的主分**：有成功的 LLM 综合分就用它，否则**退回**上面的指标聚合分。
+
+**（3）可选：章级事实检查**
+
+每章可单独跑 FActScore 一类核对：原子事实条数有上限、可按章超时；超时或异常只记该章跳过原因，不阻塞其它章。
+
+**（4）篇级汇总**
+
+- **主分数**：各章「主分」（LLM 或规则）按 **该章生成正文长度** 加权平均（长章权重大）。  
+- **补充**：在**合并后的全文**上算少量篇级指标（如年份多样性、合并篇幅合理性），用于摘要展示，**不替代**上述主分。
+
+验收时可看：每章的明细指标、可选 LLM 分、事实检查结论，以及加权后的总分与篇级补充指标（摘要文本 + 可序列化 JSON）。
 
 ---
 
-## 验证方式
+## 两条链路速览
+
+| 模式 | 检索 / 生成 | 评估 |
+|------|-------------|------|
+| `chapter_mode=false` | 整篇一次 | 原有单段评估 |
+| `chapter_mode=true` | 每段一次，结果用分隔符合并 | 每段评估 + 按生成字数加权 + 篇级补充 |
+
+---
+
+## 运行参数集中（维护向）
+
+字数档位、长文生成/评估超时估算、`evaluate_long_form` 的常用开关等收拢在 `src/generation/runtime_options.py`，Web/API 只做模式选择与透传，减少重复硬编码。
+
+---
+
+## 使用侧能感知到的变化
+
+- Web 勾选分章/长文或 API `chapter_mode=true` → 走分段检索与生成。  
+- 分章结果可跑长文评估；可配合 `scripts/run_long_form_e2e.py` 做端到端自测（需 LLM 与索引）。
+
+---
+
+## 验证
 
 ```bash
 cd tempRAG/GraphRAG
@@ -127,4 +136,13 @@ pytest tests/test_basic.py tests/test_memoir_segmenter.py tests/test_chapter_bud
 
 ## 备注
 
-- 并行生成路径已与单次生成对齐使用 `get_system_prompt("default")`，避免系统提示词不一致。
+- 并行生成路径已与单次生成对齐使用同一套默认系统提示词。
+
+## 变更触及的主要文件（便于 code review）
+
+- `src/generation/runtime_options.py`（运行参数集中）
+- `src/generation/memoir_segmenter.py`（分段）
+- `src/generation/chapter_budget.py`（长度预算）
+- `src/generation/long_form_orchestrator.py`（编排）
+- `src/evaluation/long_form_eval.py`（长文评估聚合）
+- `web/app.py`、`web/api.py`、`src/generation/__init__.py`

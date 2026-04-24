@@ -1,9 +1,9 @@
 """
 评估指标计算
-提供自动化的评估指标计算
+提供自动化的评估指标计算，含段级指标与跨章指标
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from dataclasses import dataclass
 import re
 
@@ -151,42 +151,41 @@ class RelevanceMetrics:
         memoir_text: str,
     ) -> MetricResult:
         """
-        语义相似度（简化版，基于词频）
-        如需精确计算，应使用embedding模型
+        语义相似度（基于 2-gram 词频余弦相似度）。
+        如需精确计算，应使用 embedding 模型。
         """
-        # 简单的词袋模型
-        def get_words(text: str) -> Dict[str, int]:
-            words = re.findall(r'[\u4e00-\u9fa5]+', text)
-            word_freq = {}
-            for word in words:
-                for char in word:
-                    word_freq[char] = word_freq.get(char, 0) + 1
-            return word_freq
-        
-        memoir_freq = get_words(memoir_text)
-        generated_freq = get_words(generated_text)
-        
+        def get_ngram_freq(text: str, n: int = 2) -> Dict[str, int]:
+            chars = re.findall(r'[\u4e00-\u9fa5]', text)
+            freq: Dict[str, int] = {}
+            for i in range(len(chars) - n + 1):
+                gram = "".join(chars[i:i + n])
+                freq[gram] = freq.get(gram, 0) + 1
+            return freq
+
+        memoir_freq = get_ngram_freq(memoir_text)
+        generated_freq = get_ngram_freq(generated_text)
+
         # 计算余弦相似度
-        all_chars = set(memoir_freq.keys()) | set(generated_freq.keys())
-        
+        all_grams = set(memoir_freq.keys()) | set(generated_freq.keys())
+
         dot_product = sum(
-            memoir_freq.get(c, 0) * generated_freq.get(c, 0)
-            for c in all_chars
+            memoir_freq.get(g, 0) * generated_freq.get(g, 0)
+            for g in all_grams
         )
-        
+
         norm_memoir = sum(v**2 for v in memoir_freq.values()) ** 0.5
         norm_generated = sum(v**2 for v in generated_freq.values()) ** 0.5
-        
+
         if norm_memoir == 0 or norm_generated == 0:
-            similarity = 0
+            similarity = 0.0
         else:
             similarity = dot_product / (norm_memoir * norm_generated)
-        
+
         return MetricResult(
             name="semantic_similarity",
             value=similarity,
             max_value=1.0,
-            explanation=f"语义相似度 {similarity:.2%}"
+            explanation=f"2-gram 余弦相似度 {similarity:.2%}"
         )
 
 
@@ -426,3 +425,139 @@ def aggregate_scores(
     
     # 归一化到 0-10 分
     return (weighted_sum / total_weight) * 10 if total_weight > 0 else 0
+
+
+# ---------------------------------------------------------------------------
+# 跨章指标
+# ---------------------------------------------------------------------------
+
+class CrossChapterMetrics:
+    """多章维度的评估指标——衡量全文整体质量。"""
+
+    @staticmethod
+    def inter_chapter_repetition(
+        chapters: List[str],
+        ngram_n: int = 6,
+    ) -> MetricResult:
+        """
+        跨章 n-gram 重叠率。值越低越好 (0=无重复, 1=完全重复)。
+        最终评分 = 1 - avg_overlap，即评分越高越好。
+        """
+        if len(chapters) < 2:
+            return MetricResult(
+                name="inter_chapter_repetition",
+                value=1.0,
+                max_value=1.0,
+                explanation="单章或无章，无需检测",
+            )
+
+        def _ngrams(text: str, n: int) -> Set[str]:
+            clean = re.sub(r"\s+", "", text)
+            if len(clean) < n:
+                return set()
+            return {clean[i:i + n] for i in range(len(clean) - n + 1)}
+
+        ratios = []
+        for i in range(len(chapters) - 1):
+            a = _ngrams(chapters[i], ngram_n)
+            b = _ngrams(chapters[i + 1], ngram_n)
+            if a and b:
+                overlap = len(a & b) / min(len(a), len(b))
+                ratios.append(overlap)
+
+        avg_overlap = sum(ratios) / len(ratios) if ratios else 0.0
+        score = max(0.0, 1.0 - avg_overlap)
+
+        return MetricResult(
+            name="inter_chapter_repetition",
+            value=score,
+            max_value=1.0,
+            explanation=f"平均跨章 {ngram_n}-gram 重叠率 {avg_overlap:.1%}，"
+                        f"去重评分 {score:.2f}",
+        )
+
+    @staticmethod
+    def style_consistency(
+        chapters: List[str],
+    ) -> MetricResult:
+        """
+        风格一致性：基于平均句长方差衡量。
+        各章平均句长越接近，一致性越高。
+        """
+        if len(chapters) < 2:
+            return MetricResult(
+                name="style_consistency",
+                value=1.0,
+                max_value=1.0,
+                explanation="单章，无需检测",
+            )
+
+        avg_lens = []
+        for ch in chapters:
+            sents = [s.strip() for s in re.split(r"[。！？]", ch) if s.strip()]
+            if sents:
+                avg_lens.append(sum(len(s) for s in sents) / len(sents))
+
+        if len(avg_lens) < 2:
+            return MetricResult(
+                name="style_consistency",
+                value=1.0,
+                max_value=1.0,
+                explanation="有效章节不足",
+            )
+
+        mean = sum(avg_lens) / len(avg_lens)
+        variance = sum((x - mean) ** 2 for x in avg_lens) / len(avg_lens)
+        cv = (variance ** 0.5) / mean if mean > 0 else 0  # 变异系数
+
+        # cv ≤ 0.2 → 1.0; cv ≥ 0.6 → 0.3
+        if cv <= 0.2:
+            score = 1.0
+        elif cv >= 0.6:
+            score = 0.3
+        else:
+            score = 1.0 - (cv - 0.2) / 0.4 * 0.7
+
+        return MetricResult(
+            name="style_consistency",
+            value=score,
+            max_value=1.0,
+            explanation=f"各章平均句长变异系数 {cv:.2f}，一致性评分 {score:.2f}",
+        )
+
+    @staticmethod
+    def summary_sentence_ratio(
+        chapters: List[str],
+    ) -> MetricResult:
+        """
+        总结性语句占比：检测「总之」「综上」等总结句，占比越低越好。
+        """
+        _SUMMARY_RE = re.compile(
+            r"(?:总之|综上|总而言之|总的来说|总体而言|概括地说|简而言之|"
+            r"由此可见|可以看出|不难看出|归根结底|一言以蔽之)"
+        )
+        total_sents = 0
+        summary_sents = 0
+        for ch in chapters:
+            sents = [s.strip() for s in re.split(r"[。！？]", ch) if s.strip()]
+            total_sents += len(sents)
+            summary_sents += sum(1 for s in sents if _SUMMARY_RE.search(s))
+
+        if total_sents == 0:
+            return MetricResult(
+                name="summary_sentence_ratio",
+                value=1.0,
+                max_value=1.0,
+                explanation="无句子",
+            )
+
+        ratio = summary_sents / total_sents
+        score = max(0.0, 1.0 - ratio * 5)  # ratio=0 → 1.0, ratio=0.2 → 0.0
+
+        return MetricResult(
+            name="summary_sentence_ratio",
+            value=score,
+            max_value=1.0,
+            explanation=f"总结性语句 {summary_sents}/{total_sents} "
+                        f"(占比 {ratio:.1%})，评分 {score:.2f}",
+        )

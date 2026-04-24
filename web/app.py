@@ -31,6 +31,7 @@ from src.evaluation import (
     Evaluator,
     EvaluationDimension,
     FActScoreChecker,
+    SAFECheckResult,
     evaluate_retrieval_quality,
     evaluate_long_form,
     long_form_eval_to_json,
@@ -44,8 +45,8 @@ generator: Optional[LiteraryGenerator] = None
 current_provider: Optional[str] = None  # 跟踪当前使用的 provider
 current_model: Optional[str] = None  # 跟踪当前使用的模型（目前仅用于 ollama）
 
-# 7 个输出的空元组，用于错误/提前返回
-_EMPTY_7 = ("", "", "", "", "", "", "")
+# 8 个输出的空元组，用于错误/提前返回
+_EMPTY_8 = ("", "", "", "", "", "", "", "")
 
 
 def init_components(provider: str = "gemini", model: Optional[str] = None):
@@ -117,6 +118,36 @@ def _format_compliance(dim_score):
     md = f"### {icon} 合规检查\n\n"
     md += f"**合规评分**: {dim_score.score:.1f} / 10\n\n"
     md += f"**结果**: {dim_score.explanation}\n"
+    return md
+
+
+def _format_safe_check(safe_result: SAFECheckResult) -> str:
+    """格式化 SAFE 独立知识验证结果为 Markdown"""
+    icon = "\u2705" if safe_result.safe_score >= 0.7 else "\u26a0\ufe0f"
+    md = f"### {icon} SAFE 独立验证\n\n"
+    md += f"**SAFE Score**: {safe_result.safe_score:.1%} ({safe_result.supported_facts}/{safe_result.total_facts} 事实被支持)\n\n"
+    if safe_result.unsupported_facts:
+        md += f"**不支持**: {safe_result.unsupported_facts} 条\n"
+    if safe_result.irrelevant_facts:
+        md += f"**无法判断**: {safe_result.irrelevant_facts} 条\n"
+    md += "\n"
+
+    # KB 对比
+    if safe_result.kb_comparison:
+        cmp = safe_result.kb_comparison
+        md += "---\n#### 知识库对比\n\n"
+        md += f"| 指标 | KB FActScore | SAFE Score |\n"
+        md += f"|------|-------------|------------|\n"
+        md += f"| 得分 | {cmp['kb_factscore']:.1%} | {cmp['safe_score']:.1%} |\n\n"
+        md += f"**评估**: {cmp['assessment']}\n\n"
+
+    # 不支持的事实详情
+    unsupported = [d for d in safe_result.fact_details if d.get("verdict") == "NOT_SUPPORTED"]
+    if unsupported:
+        md += "---\n#### 不支持的事实\n\n"
+        for d in unsupported[:5]:
+            md += f"- {d.get('fact', '')[:80]}  \n  *{d.get('explanation', '')}*\n"
+
     return md
 
 
@@ -393,19 +424,20 @@ def process_memoir_stream(
     enable_fact_check: bool = True,
     retrieval_mode: str = "keyword",
     use_rule_decompose: bool = False,
+    enable_safe_check: bool = False,
     chapter_mode: bool = False,
 ):
     """
     Gradio 流式生成。
-    yields: (output_text, extracted_info, retrieval_quality, accuracy, relevance, literary, compliance)
+    yields: (output_text, extracted_info, retrieval_quality, accuracy, safe_check, relevance, literary, compliance)
     """
     global retriever, generator, current_provider, current_model
 
     if not memoir_text.strip():
-        yield ("请输入回忆录文本",) + ("",) * 6
+        yield ("请输入回忆录文本",) + ("",) * 7
         return
     if not provider:
-        yield ("请先选择 LLM 模型（供应商）",) + ("",) * 6
+        yield ("请先选择 LLM 模型（供应商）",) + ("",) * 7
         return
 
     if (
@@ -416,7 +448,7 @@ def process_memoir_stream(
     ):
         init_result = init_components(provider, model=model)
         if "失败" in init_result:
-            yield (init_result,) + ("",) * 6
+            yield (init_result,) + ("",) * 7
             return
 
     single_cfg = single_segment_generation_config(length_bucket)
@@ -425,6 +457,7 @@ def process_memoir_stream(
     extracted_md = ""
     retrieval_q_md = ""
     accuracy_md = ""
+    safe_md = ""
     relevance_md = ""
     literary_md = ""
     compliance_md = ""
@@ -434,7 +467,7 @@ def process_memoir_stream(
         if chapter_mode:
             segs = segment_memoir(memoir_text)
             n_ch = max(1, len(segs))
-            yield (f"[分章] 共 {len(segs)} 段，依次检索与生成…", "", "", "", "", "", "")
+            yield (f"[分章] 共 {len(segs)} 段，依次检索与生成…", "", "", "", "", "", "", "")
 
             async def _long_form():
                 return await run_long_form_generation(
@@ -461,7 +494,7 @@ def process_memoir_stream(
             rent = [len(ch.retrieval_result.entities) for ch in lf.chapters]
             retrieval_q_md = f"**分章检索**: 各章实体数 {rent}"
             content = lf.merged_content
-            yield (content, extracted_md, retrieval_q_md, "", "", "", "")
+            yield (content, extracted_md, retrieval_q_md, "", "", "", "", "")
 
             accuracy_md = ""
             if enable_fact_check:
@@ -487,10 +520,10 @@ def process_memoir_stream(
                     accuracy_md += "\n\n```json\n" + long_form_eval_to_json(ev)[:8000] + "\n```\n"
                 except Exception as e:
                     accuracy_md = f"长文评估未完成: {e}"
-            yield (content, extracted_md, retrieval_q_md, accuracy_md, "", "", "")
+            yield (content, extracted_md, retrieval_q_md, accuracy_md, "", "", "", "")
             return
 
-        yield ("\u23f3 正在检索相关历史背景，请稍候\u2026", "", "", "", "", "", "")
+        yield ("\u23f3 正在检索相关历史背景，请稍候\u2026", "", "", "", "", "", "", "")
 
         # ── 1. 检索 ──
         retrieval_result = loop.run_until_complete(asyncio.wait_for(
@@ -511,13 +544,13 @@ def process_memoir_stream(
             f"**社区报告**: {len(retrieval_result.communities)} 个  "
             f"**相关文本**: {len(retrieval_result.text_units)} 段"
         )
-        yield ("", extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
+        yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
         # ── 2. 检索质量评估 (LLM-as-a-Judge) ──
         # 注意：跳过检索质量评估以减少API调用，避免速率限制
         # 如果需要评估，可以单独运行评估脚本
         retrieval_q_md = "检索质量评估已跳过（避免API速率限制）"
-        yield ("", extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
+        yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
         # ── 3. 流式生成 ──
         async def _stream():
@@ -551,24 +584,25 @@ def process_memoir_stream(
                 break
             except asyncio.TimeoutError:
                 content += "\n\n（\u26a0\ufe0f 生成超时：已达到 90s 上限，返回已生成的部分内容）"
-                yield (content, extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
+                yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
                 break
             except Exception as e:
                 content += f"\n\n[生成异常: {e}]"
                 yield (content, extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
                 break
             content += delta
-            yield (content, extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
+            yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
-        # ── 4. 综合评估（事实准确性 + 相关性 + 文学性 + 合规性） ──
+        # ── 4. 综合评估（事实准确性 + 相关性 + 文学性 + 合规性 + SAFE独立验证） ──
         # 注意：跳过综合评估以减少API调用，避免速率限制
-        if enable_fact_check and content:
+        if (enable_fact_check or enable_safe_check) and content:
             accuracy_md = "事实准确性评估已跳过（避免API速率限制）"
+            safe_md = "SAFE验证已跳过（避免API速率限制）"
             relevance_md = "相关性评估已跳过（避免API速率限制）"
             literary_md = "文学性评估已跳过（避免API速率限制）"
             compliance_md = "合规性评估已跳过（避免API速率限制）"
 
-        yield (content, extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
+        yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
     finally:
         try:
             loop.close()
@@ -804,12 +838,18 @@ def create_ui():
                             info="使用规则而非LLM进行原子事实拆分，大幅提高速度",
                         )
 
+                        safe_check_checkbox = gr.Checkbox(
+                            value=False,
+                            label="\U0001f310 独立知识验证 (SAFE)",
+                            info="使用LLM自身知识独立验证事实，不依赖知识库，帮助评估知识库完整性",
+                        )
 
                         chapter_mode_checkbox = gr.Checkbox(
                             value=False,
                             label="分章/长文模式",
                             info="数千字长文：分段检索与生成后合并；默认仍为整篇单段",
                         )
+
                         generate_btn = gr.Button("\U0001f680 生成历史背景", variant="primary")
                         refresh_ollama_models_btn = gr.Button("\U0001f504 刷新 Ollama 模型列表", variant="secondary")
 
@@ -845,8 +885,11 @@ def create_ui():
                         with gr.Accordion("\U0001f3af 检索质量", open=False):
                             retrieval_quality_output = gr.Markdown(label="检索质量")
 
-                        with gr.Accordion("\u2705 事实准确性", open=True):
+                        with gr.Accordion("\u2705 事实准确性 (KB)", open=True):
                             accuracy_output = gr.Markdown(label="事实准确性")
+
+                        with gr.Accordion("\U0001f310 独立知识验证 (SAFE)", open=False):
+                            safe_check_output = gr.Markdown(label="独立知识验证")
 
                         with gr.Accordion("\U0001f517 相关性 (LLM-as-a-Judge)", open=False):
                             relevance_output = gr.Markdown(label="相关性")
@@ -869,6 +912,7 @@ def create_ui():
                         fact_check_checkbox,
                         retrieval_mode_select,
                         rule_decompose_checkbox,
+                        safe_check_checkbox,
                         chapter_mode_checkbox,
                     ],
                     outputs=[
@@ -876,6 +920,7 @@ def create_ui():
                         extracted_info,
                         retrieval_quality_output,
                         accuracy_output,
+                        safe_check_output,
                         relevance_output,
                         literary_output,
                         compliance_output,

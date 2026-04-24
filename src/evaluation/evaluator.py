@@ -12,6 +12,7 @@ import json
 from ..llm import LLMAdapter, create_llm_adapter
 from ..retrieval import RetrievalResult
 from .factscore_adapter import FActScoreChecker, FactCheckResult
+from .safe_checker import SAFEFactChecker, SAFECheckResult
 
 
 class EvaluationDimension(Enum):
@@ -42,7 +43,8 @@ class EvaluationResult:
     suggestions: List[str] = field(default_factory=list)
     raw_response: Optional[str] = None
     fact_check: Optional[FactCheckResult] = None
-    
+    safe_check: Optional[SAFECheckResult] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         result = {
@@ -60,6 +62,8 @@ class EvaluationResult:
         }
         if self.fact_check:
             result["fact_check"] = self.fact_check.to_dict()
+        if self.safe_check:
+            result["safe_check"] = self.safe_check.to_dict()
         return result
     
     def get_score(self, dimension: str) -> float:
@@ -178,16 +182,28 @@ class Evaluator:
         },
     }
     
-    def __init__(self, llm_adapter: Optional[LLMAdapter] = None):
+    def __init__(
+        self,
+        llm_adapter: Optional[LLMAdapter] = None,
+        google_api_key: Optional[str] = None,
+        google_cse_id: Optional[str] = None,
+    ):
         """
         初始化评估器
-        
+
         Args:
             llm_adapter: LLM适配器（用于深度评估）
+            google_api_key: Google API 密钥（用于 SAFE 网络搜索验证，可选）
+            google_cse_id: Google Custom Search Engine ID（可选）
         """
         self.llm_adapter = llm_adapter
         # 使用 FActScoreChecker 替代原来的 FactChecker
         self.fact_checker = FActScoreChecker(llm_adapter)
+        self.safe_checker = SAFEFactChecker(
+            llm_adapter=llm_adapter,
+            google_api_key=google_api_key,
+            google_cse_id=google_cse_id,
+        )
     
     async def evaluate(
         self,
@@ -196,17 +212,21 @@ class Evaluator:
         retrieval_result: Optional[RetrievalResult] = None,
         use_llm: bool = True,
         enable_fact_check: bool = True,
+        enable_safe_check: bool = False,
+        use_safe_search: bool = False,
     ) -> EvaluationResult:
         """
         评估生成的历史背景文本
-        
+
         Args:
             memoir_text: 原始回忆录文本
             generated_text: 生成的历史背景文本
             retrieval_result: 检索结果（可选，用于准确性评估）
             use_llm: 是否使用LLM进行评估
-            enable_fact_check: 是否启用事实性检查
-            
+            enable_fact_check: 是否启用事实性检查（基于知识库）
+            enable_safe_check: 是否启用独立知识验证（SAFE，不依赖知识库）
+            use_safe_search: SAFE 验证是否使用网络搜索（否则使用 LLM 自身知识）
+
         Returns:
             EvaluationResult: 评估结果
         """
@@ -218,7 +238,7 @@ class Evaluator:
         result = await self._evaluate_with_llm(
             memoir_text, generated_text, retrieval_result
         )
-        
+
         # 合规性检查
         compliance_score = await self._evaluate_compliance(
             generated_text, use_llm and self.llm_adapter is not None
@@ -239,6 +259,26 @@ class Evaluator:
                     0,
                     f"⚠️ 事实性警告：{fact_check_result.summary}"
                 )
+
+        # SAFE 独立知识验证
+        if enable_safe_check:
+            kb_factscore = None
+            kb_supported = None
+            kb_total = None
+            if result.fact_check:
+                kb_factscore = result.fact_check.factscore
+                kb_supported = result.fact_check.supported_facts
+                kb_total = result.fact_check.total_facts
+
+            safe_result = await self.safe_checker.check(
+                generated_text=generated_text,
+                memoir_text=memoir_text,
+                use_search=use_safe_search,
+                kb_factscore=kb_factscore,
+                kb_supported_facts=kb_supported,
+                kb_total_facts=kb_total,
+            )
+            result.safe_check = safe_result
 
         if compliance_score.score < 8:
             result.suggestions.append(

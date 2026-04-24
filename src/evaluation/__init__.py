@@ -10,6 +10,7 @@ from .metrics import (
     AccuracyMetrics,
     RelevanceMetrics,
     LiteraryMetrics,
+    CrossChapterMetrics,
     MetricResult,
     calculate_all_metrics,
     aggregate_scores,
@@ -17,6 +18,10 @@ from .metrics import (
 from .factscore_adapter import (
     FActScoreChecker,
     FactCheckResult,
+)
+from .safe_checker import (
+    SAFEFactChecker,
+    SAFECheckResult,
 )
 from .retrieval_benchmark import (
     RetrievalBenchmark,
@@ -33,6 +38,15 @@ from .long_form_eval import (
     long_form_eval_to_json,
     document_year_diversity,
 )
+from .quality_gate import (
+    QualityGateResult,
+    QualityThresholds,
+    ChapterGateResult,
+    ChapterIssue,
+    CrossChapterIssue,
+    RemediationPlan,
+    check_quality_gate,
+)
 
 __all__ = [
     "Evaluator",
@@ -43,11 +57,14 @@ __all__ = [
     "AccuracyMetrics",
     "RelevanceMetrics",
     "LiteraryMetrics",
+    "CrossChapterMetrics",
     "MetricResult",
     "calculate_all_metrics",
     "aggregate_scores",
     "FActScoreChecker",
     "FactCheckResult",
+    "SAFEFactChecker",
+    "SAFECheckResult",
     "RetrievalBenchmark",
     "TestCase",
     "RetrievalMetrics",
@@ -59,4 +76,11 @@ __all__ = [
     "SegmentEvalRecord",
     "long_form_eval_to_json",
     "document_year_diversity",
+    "QualityGateResult",
+    "QualityThresholds",
+    "ChapterGateResult",
+    "ChapterIssue",
+    "CrossChapterIssue",
+    "RemediationPlan",
+    "check_quality_gate",
 ]
