@@ -145,13 +145,35 @@ class VectorRetriever:
             
             entities = []
             for _, row in results.iterrows():
-                # LanceDB返回的列名是text，不是title/name
+                # LanceDB返回的列名是text，包含实体名称和描述
                 text = row.get("text", "")
-                name = text.split(":")[0] if ":" in text else text[:50]
+                
+                # 尝试多种方式解析实体名称
+                name = ""
+                description = text
+                
+                if ":" in text:
+                    # 格式: "实体名称: 描述"
+                    parts = text.split(":", 1)
+                    name = parts[0].strip()
+                    description = parts[1].strip() if len(parts) > 1 else text
+                elif "\n" in text:
+                    # 格式: "实体名称\n描述"
+                    parts = text.split("\n", 1)
+                    name = parts[0].strip()
+                    description = parts[1].strip() if len(parts) > 1 else text
+                else:
+                    # 取前50个字符作为名称
+                    name = text[:50].strip()
+                
+                # 如果名称为空，使用默认值
+                if not name:
+                    name = "未知实体"
+                
                 entities.append({
                     "name": name,
-                    "description": text,
-                    "type": "unknown",
+                    "description": description if description else text,
+                    "type": row.get("type", "unknown"),
                     "score": float(row.get("_distance", 1.0)),
                     "source": "vector",
                 })

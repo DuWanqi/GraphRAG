@@ -535,15 +535,53 @@ def process_memoir_stream(
 
         context = retrieval_result.context
         extracted_md = (
-            f"**提取的时间**: {context.year or '未识别'}\n"
-            f"**提取的地点**: {context.location or '未识别'}\n"
-            f"**关键词**: {', '.join(context.keywords) if context.keywords else '无'}\n"
-            f"**生成的查询**: {retrieval_result.query}\n\n"
-            f"**找到实体**: {len(retrieval_result.entities)} 个  "
-            f"**找到关系**: {len(retrieval_result.relationships)} 个  "
-            f"**社区报告**: {len(retrieval_result.communities)} 个  "
-            f"**相关文本**: {len(retrieval_result.text_units)} 段"
+            f"### 📋 提取的上下文信息\n\n"
+            f"| 字段 | 值 |\n"
+            f"|------|-----|\n"
+            f"| **时间** | {context.year or '未识别'} |\n"
+            f"| **地点** | {context.location or '未识别'} |\n"
+            f"| **关键词** | {', '.join(context.keywords) if context.keywords else '无'} |\n"
+            f"| **查询** | `{retrieval_result.query}` |\n\n"
+            f"### 🔍 检索结果统计\n\n"
+            f"| 类型 | 数量 |\n"
+            f"|------|------|\n"
+            f"| **实体** | {len(retrieval_result.entities)} 个 |\n"
+            f"| **关系** | {len(retrieval_result.relationships)} 个 |\n"
+            f"| **社区报告** | {len(retrieval_result.communities)} 个 |\n"
+            f"| **相关文本** | {len(retrieval_result.text_units)} 段 |"
         )
+        
+        # 添加检索到的实体详情
+        if retrieval_result.entities:
+            extracted_md += "\n\n### 📌 检索到的实体\n\n"
+            for i, entity in enumerate(retrieval_result.entities[:5], 1):
+                name = entity.get('name', '未知')
+                desc = entity.get('description', '')[:100]
+                entity_type = entity.get('type', '未知类型')
+                extracted_md += f"**{i}. {name}** ({entity_type})\n\n{desc}...\n\n"
+        
+        # 添加检索到的关系详情
+        if retrieval_result.relationships:
+            extracted_md += "\n### 🔗 检索到的关系\n\n"
+            for i, rel in enumerate(retrieval_result.relationships[:5], 1):
+                source = rel.get('source', '未知')
+                target = rel.get('target', '未知')
+                rel_type = rel.get('type', '关联')
+                desc = rel.get('description', '')[:80]
+                extracted_md += f"**{i}. {source} → {target}** ({rel_type})\n\n{desc}...\n\n"
+        
+        # 添加检索到的文本单元详情
+        if retrieval_result.text_units:
+            extracted_md += "\n### 📝 相关文本片段\n\n"
+            for i, text_unit in enumerate(retrieval_result.text_units[:3], 1):
+                # text_unit 可能是字符串或字典
+                if isinstance(text_unit, dict):
+                    content = text_unit.get('content', '')[:200]
+                else:
+                    content = str(text_unit)[:200]
+                extracted_md += f"**片段 {i}:** {content}...\n\n"
+        
+        print(f"[DEBUG] extracted_md length: {len(extracted_md)} chars")
         yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
         # ── 2. 检索质量评估 (LLM-as-a-Judge) ──

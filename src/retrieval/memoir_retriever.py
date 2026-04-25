@@ -187,11 +187,14 @@ class MemoirRetriever:
         
         # 根据模式选择检索策略
         if mode == "vector" and self.vector_retriever.is_ready():
-            # 纯向量检索
+            # 纯向量检索（实体、社区、文本单元用向量，关系用关键词）
             t_v0 = time.perf_counter()
             result.entities = await self.vector_retriever.search_entities(query, top_k)
             result.communities = await self.vector_retriever.search_communities(query, top_k // 2)
             result.text_units = await self.vector_retriever.search_text_units(query, top_k)
+            # 关系检索使用关键词（向量索引中没有关系）
+            if self._relationships_df is not None:
+                result.relationships = self._search_relationships(context, top_k)
             if timing:
                 print(f"[TEMP_TIMING] retriever.vector_search={time.perf_counter()-t_v0:.3f}s")
             
