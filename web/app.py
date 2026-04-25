@@ -551,29 +551,29 @@ def process_memoir_stream(
             f"| **相关文本** | {len(retrieval_result.text_units)} 段 |"
         )
         
-        # 添加检索到的实体详情
+        # 添加检索到的实体详情（展示所有）
         if retrieval_result.entities:
             extracted_md += "\n\n### 📌 检索到的实体\n\n"
-            for i, entity in enumerate(retrieval_result.entities[:5], 1):
+            for i, entity in enumerate(retrieval_result.entities, 1):
                 name = entity.get('name', '未知')
                 desc = entity.get('description', '')[:100]
                 entity_type = entity.get('type', '未知类型')
                 extracted_md += f"**{i}. {name}** ({entity_type})\n\n{desc}...\n\n"
         
-        # 添加检索到的关系详情
+        # 添加检索到的关系详情（展示所有）
         if retrieval_result.relationships:
             extracted_md += "\n### 🔗 检索到的关系\n\n"
-            for i, rel in enumerate(retrieval_result.relationships[:5], 1):
+            for i, rel in enumerate(retrieval_result.relationships, 1):
                 source = rel.get('source', '未知')
                 target = rel.get('target', '未知')
                 rel_type = rel.get('type', '关联')
                 desc = rel.get('description', '')[:80]
                 extracted_md += f"**{i}. {source} → {target}** ({rel_type})\n\n{desc}...\n\n"
         
-        # 添加检索到的文本单元详情
+        # 添加检索到的文本单元详情（展示所有）
         if retrieval_result.text_units:
             extracted_md += "\n### 📝 相关文本片段\n\n"
-            for i, text_unit in enumerate(retrieval_result.text_units[:3], 1):
+            for i, text_unit in enumerate(retrieval_result.text_units, 1):
                 # text_unit 可能是字符串或字典
                 if isinstance(text_unit, dict):
                     content = text_unit.get('content', '')[:200]

@@ -67,11 +67,42 @@ class VectorRetriever:
         self._community_table = None
         self._text_unit_table = None
         
+        # 加载实体和关系数据（用于关联向量检索结果）
+        self._entities_df = None
+        self._relationships_df = None
+        self._load_graph_data()
+        
         # 使用Ollama embedding
         if use_ollama_embedding:
             self._embedding = OllamaEmbedding()
         else:
             self._embedding = None
+    
+    def _load_graph_data(self):
+        """加载图谱数据（实体、关系等）用于关联向量检索结果"""
+        import pandas as pd
+        
+        output_dir = self.index_dir / "output"
+        if not output_dir.exists():
+            return
+        
+        # 加载实体数据
+        entities_path = output_dir / "entities.parquet"
+        if entities_path.exists():
+            try:
+                self._entities_df = pd.read_parquet(entities_path)
+                print(f"[VectorRetriever] 加载 {len(self._entities_df)} 个实体")
+            except Exception as e:
+                print(f"[VectorRetriever] 加载实体数据失败: {e}")
+        
+        # 加载关系数据
+        relationships_path = output_dir / "relationships.parquet"
+        if relationships_path.exists():
+            try:
+                self._relationships_df = pd.read_parquet(relationships_path)
+                print(f"[VectorRetriever] 加载 {len(self._relationships_df)} 个关系")
+            except Exception as e:
+                print(f"[VectorRetriever] 加载关系数据失败: {e}")
     
     def _connect(self):
         """连接LanceDB"""
@@ -145,43 +176,36 @@ class VectorRetriever:
             
             entities = []
             for _, row in results.iterrows():
-                # LanceDB返回的列名是text，包含实体名称和描述
-                text = row.get("text", "")
+                entity_id = row.get("id", "")
+                score = float(row.get("_distance", 1.0))
                 
-                # 尝试多种方式解析实体名称
-                name = ""
-                description = text
+                # 通过ID关联实体数据
+                entity_name = "未知实体"
+                entity_desc = ""
+                entity_type = "unknown"
                 
-                if ":" in text:
-                    # 格式: "实体名称: 描述"
-                    parts = text.split(":", 1)
-                    name = parts[0].strip()
-                    description = parts[1].strip() if len(parts) > 1 else text
-                elif "\n" in text:
-                    # 格式: "实体名称\n描述"
-                    parts = text.split("\n", 1)
-                    name = parts[0].strip()
-                    description = parts[1].strip() if len(parts) > 1 else text
-                else:
-                    # 取前50个字符作为名称
-                    name = text[:50].strip()
-                
-                # 如果名称为空，使用默认值
-                if not name:
-                    name = "未知实体"
+                if self._entities_df is not None and entity_id:
+                    entity_row = self._entities_df[self._entities_df['id'] == entity_id]
+                    if not entity_row.empty:
+                        entity_name = entity_row.iloc[0].get('title', '未知实体')
+                        entity_desc = entity_row.iloc[0].get('description', '')
+                        entity_type = entity_row.iloc[0].get('type', 'unknown')
                 
                 entities.append({
-                    "name": name,
-                    "description": description if description else text,
-                    "type": row.get("type", "unknown"),
-                    "score": float(row.get("_distance", 1.0)),
+                    "name": entity_name,
+                    "description": entity_desc,
+                    "type": entity_type,
+                    "score": score,
                     "source": "vector",
+                    "id": entity_id,
                 })
             
             return entities
             
         except Exception as e:
             print(f"[VectorRetriever] 实体检索失败: {e}")
+            import traceback
+            print(traceback.format_exc())
             return []
     
     async def search_communities(
