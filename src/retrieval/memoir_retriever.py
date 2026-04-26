@@ -46,11 +46,21 @@ class RetrievalResult:
                 desc = entity.get("description", "")
                 parts.append(f"- {name}: {desc[:200]}")
         
+        # 优先使用社区报告，如果没有则使用关系
         if self.communities:
             parts.append("\n## 相关历史背景")
             for comm in self.communities[:3]:
                 summary = comm.get("summary", comm.get("full_content", ""))
                 parts.append(summary[:500])
+        elif self.relationships:
+            # 社区报告为空时，使用关系作为历史背景补充
+            parts.append("\n## 相关历史事件关联")
+            for rel in self.relationships[:5]:
+                source = rel.get("source", "")
+                target = rel.get("target", "")
+                rel_type = rel.get("type", "关联")
+                desc = rel.get("description", "")
+                parts.append(f"- {source} → {target} ({rel_type}): {desc[:200]}")
         
         if self.text_units:
             parts.append("\n## 相关历史文本")
@@ -204,6 +214,10 @@ class MemoirRetriever:
             keyword_entities = self._search_entities(context, top_k)
             vector_entities = await self.vector_retriever.search_entities(query, top_k)
             result.entities = self._merge_results(keyword_entities, vector_entities, top_k)
+            
+            # 关系检索使用关键词（向量索引中没有关系）
+            if self._relationships_df is not None:
+                result.relationships = self._search_relationships(context, top_k)
             
             keyword_communities = self._search_communities(context, top_k // 2)
             vector_communities = await self.vector_retriever.search_communities(query, top_k // 2)

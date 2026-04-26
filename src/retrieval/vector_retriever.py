@@ -173,6 +173,7 @@ class VectorRetriever:
             query_vector = np.array(embedding, dtype=np.float32)
             
             results = self._entity_table.search(query_vector).limit(top_k).to_pandas()
+            print(f"[VectorRetriever] 向量检索返回 {len(results)} 个实体")
             
             entities = []
             for _, row in results.iterrows():
@@ -190,6 +191,13 @@ class VectorRetriever:
                         entity_name = entity_row.iloc[0].get('title', '未知实体')
                         entity_desc = entity_row.iloc[0].get('description', '')
                         entity_type = entity_row.iloc[0].get('type', 'unknown')
+                    else:
+                        print(f"[VectorRetriever] 警告: 找不到ID为 {entity_id[:20]}... 的实体")
+                else:
+                    if self._entities_df is None:
+                        print(f"[VectorRetriever] 警告: 实体数据未加载")
+                    if not entity_id:
+                        print(f"[VectorRetriever] 警告: 实体ID为空")
                 
                 entities.append({
                     "name": entity_name,
@@ -200,6 +208,7 @@ class VectorRetriever:
                     "id": entity_id,
                 })
             
+            print(f"[VectorRetriever] 成功解析 {len(entities)} 个实体")
             return entities
             
         except Exception as e:
