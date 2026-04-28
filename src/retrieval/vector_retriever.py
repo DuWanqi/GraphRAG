@@ -18,6 +18,14 @@ from ..llm import LLMAdapter
 from ..llm.ollama_embedding import OllamaEmbedding, OllamaEmbeddingConfig
 
 
+class EmbeddingError(Exception):
+    """Embedding 获取失败异常"""
+    def __init__(self, message: str, is_ollama_error: bool = False):
+        self.message = message
+        self.is_ollama_error = is_ollama_error
+        super().__init__(self.message)
+
+
 class RetrievalMode(Enum):
     """检索模式"""
     KEYWORD = "keyword"
@@ -142,8 +150,16 @@ class VectorRetriever:
                 return await self._embedding.embed(query)
             return None
         except Exception as e:
+            error_msg = str(e)
             print(f"[VectorRetriever] 获取embedding失败: {e}")
-            return None
+            # 检测是否是 Ollama 连接错误
+            if "Cannot connect to host" in error_msg or "远程计算机拒绝网络连接" in error_msg:
+                raise EmbeddingError(
+                    "Ollama 服务未运行，请启动 Ollama 服务后再试。\n"
+                    "启动命令: ollama serve",
+                    is_ollama_error=True
+                )
+            raise EmbeddingError(f"获取 embedding 失败: {e}", is_ollama_error=False)
     
     async def search_entities(
         self,

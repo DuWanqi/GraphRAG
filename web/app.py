@@ -273,7 +273,46 @@ async def process_memoir_async(
 **生成的查询**: {retrieval_result.query}
 **提取+检索耗时**: {retrieve_time:.2f} 秒"""
         
-        retrieval_info = f"""**找到实体**: {len(retrieval_result.entities)} 个
+        # 检查检索结果质量
+        quality_warning = ""
+        if retrieval_result.entities:
+            # 检查是否有与查询相关的实体
+            query_terms = set(context.keywords + [context.year, context.location])
+            query_terms = {t.lower() for t in query_terms if t}
+            
+            relevant_count = 0
+            for entity in retrieval_result.entities[:10]:
+                entity_text = f"{entity.get('name', '')} {entity.get('description', '')}".lower()
+                if any(term in entity_text for term in query_terms):
+                    relevant_count += 1
+            
+            # 如果相关实体少于3个，提示知识图谱覆盖度问题
+            if relevant_count < 3:
+                quality_warning = f"""⚠️ **检索质量提示**
+
+当前知识图谱中缺乏与查询高度相关的实体（如：{', '.join(context.keywords[:3])}）。
+检索结果主要基于年份匹配，可能无法提供细粒度的历史背景。
+
+建议：
+1. 使用更通用的查询词
+2. 或者依赖 LLM 基于已有信息生成合理的历史背景
+
+---
+
+"""
+        
+        # 如果有错误信息，显示在检索信息顶部
+        error_section = ""
+        if retrieval_result.error_message:
+            error_section = f"""⚠️ **检索警告**
+
+{retrieval_result.error_message}
+
+---
+
+"""
+        
+        retrieval_info = f"""{quality_warning}{error_section}**找到实体**: {len(retrieval_result.entities)} 个
 **找到关系**: {len(retrieval_result.relationships)} 个
 **社区报告**: {len(retrieval_result.communities)} 个
 **相关文本**: {len(retrieval_result.text_units)} 段"""
@@ -553,22 +592,42 @@ def process_memoir_stream(
         
         # 添加检索到的实体详情（展示所有）
         if retrieval_result.entities:
-            extracted_md += "\n\n### 📌 检索到的实体\n\n"
+            extracted_md += "\n\n### 📌 检索到的实体（已重排序）\n\n"
             for i, entity in enumerate(retrieval_result.entities, 1):
                 name = entity.get('name', '未知')
                 desc = entity.get('description', '')[:100]
                 entity_type = entity.get('type', '未知类型')
-                extracted_md += f"**{i}. {name}** ({entity_type})\n\n{desc}...\n\n"
-        
+                # 显示混合分数和详细分数
+                hybrid_score = entity.get('hybrid_score')
+                original_score = entity.get('original_score')
+                rerank_score = entity.get('rerank_score')
+                if hybrid_score is not None:
+                    score_text = f" [混合得分: {hybrid_score:.3f} | 原始: {original_score:.3f} | 重排序: {rerank_score:.3f}]"
+                elif rerank_score:
+                    score_text = f" [重排序得分: {rerank_score:.3f}]"
+                else:
+                    score_text = ""
+                extracted_md += f"**{i}. {name}** ({entity_type}){score_text}\n\n{desc}...\n\n"
+
         # 添加检索到的关系详情（展示所有）
         if retrieval_result.relationships:
-            extracted_md += "\n### 🔗 检索到的关系\n\n"
+            extracted_md += "\n### 🔗 检索到的关系（已重排序）\n\n"
             for i, rel in enumerate(retrieval_result.relationships, 1):
                 source = rel.get('source', '未知')
                 target = rel.get('target', '未知')
                 rel_type = rel.get('type', '关联')
                 desc = rel.get('description', '')[:80]
-                extracted_md += f"**{i}. {source} → {target}** ({rel_type})\n\n{desc}...\n\n"
+                # 显示混合分数和详细分数
+                hybrid_score = rel.get('hybrid_score')
+                original_score = rel.get('original_score')
+                rerank_score = rel.get('rerank_score')
+                if hybrid_score is not None:
+                    score_text = f" [混合得分: {hybrid_score:.3f} | 原始: {original_score:.3f} | 重排序: {rerank_score:.3f}]"
+                elif rerank_score:
+                    score_text = f" [重排序得分: {rerank_score:.3f}]"
+                else:
+                    score_text = ""
+                extracted_md += f"**{i}. {source} → {target}** ({rel_type}){score_text}\n\n{desc}...\n\n"
         
         # 添加检索到的文本单元详情（展示所有）
         if retrieval_result.text_units:

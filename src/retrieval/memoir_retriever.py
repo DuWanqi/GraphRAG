@@ -15,7 +15,8 @@ from enum import Enum
 import pandas as pd
 
 from .memoir_parser import MemoirParser, MemoirContext
-from .vector_retriever import VectorRetriever, RetrievalMode
+from .vector_retriever import VectorRetriever, RetrievalMode, EmbeddingError
+from .reranker import get_reranker
 from ..config import get_settings
 from ..llm import LLMAdapter, create_llm_adapter
 
@@ -29,6 +30,7 @@ class RetrievalResult:
     relationships: List[Dict[str, Any]] = field(default_factory=list)
     communities: List[Dict[str, Any]] = field(default_factory=list)
     text_units: List[str] = field(default_factory=list)
+    error_message: Optional[str] = None  # 错误信息（如 Ollama 未运行）
     
     @property
     def has_results(self) -> bool:
@@ -196,12 +198,18 @@ class MemoirRetriever:
         result = RetrievalResult(query=query, context=context)
         
         # 根据模式选择检索策略
+        vector_error = None
+        
         if mode == "vector" and self.vector_retriever.is_ready():
             # 纯向量检索（实体、社区、文本单元用向量，关系用关键词）
             t_v0 = time.perf_counter()
-            result.entities = await self.vector_retriever.search_entities(query, top_k)
-            result.communities = await self.vector_retriever.search_communities(query, top_k // 2)
-            result.text_units = await self.vector_retriever.search_text_units(query, top_k)
+            try:
+                result.entities = await self.vector_retriever.search_entities(query, top_k)
+                result.communities = await self.vector_retriever.search_communities(query, top_k // 2)
+                result.text_units = await self.vector_retriever.search_text_units(query, top_k)
+            except EmbeddingError as e:
+                vector_error = e.message
+                result.error_message = f"⚠️ {e.message}"
             # 关系检索使用关键词（向量索引中没有关系）
             if self._relationships_df is not None:
                 result.relationships = self._search_relationships(context, top_k)
@@ -212,20 +220,32 @@ class MemoirRetriever:
             # 混合检索：关键词 + 向量融合
             t_h0 = time.perf_counter()
             keyword_entities = self._search_entities(context, top_k)
-            vector_entities = await self.vector_retriever.search_entities(query, top_k)
-            result.entities = self._merge_results(keyword_entities, vector_entities, top_k)
+            try:
+                vector_entities = await self.vector_retriever.search_entities(query, top_k)
+                result.entities = self._merge_results(keyword_entities, vector_entities, top_k)
+            except EmbeddingError as e:
+                vector_error = e.message
+                result.error_message = f"⚠️ {e.message}"
+                result.entities = keyword_entities  # 降级为关键词检索结果
             
             # 关系检索使用关键词（向量索引中没有关系）
             if self._relationships_df is not None:
                 result.relationships = self._search_relationships(context, top_k)
             
             keyword_communities = self._search_communities(context, top_k // 2)
-            vector_communities = await self.vector_retriever.search_communities(query, top_k // 2)
-            result.communities = self._merge_results(keyword_communities, vector_communities, top_k // 2)
+            try:
+                vector_communities = await self.vector_retriever.search_communities(query, top_k // 2)
+                result.communities = self._merge_results(keyword_communities, vector_communities, top_k // 2)
+            except EmbeddingError:
+                result.communities = keyword_communities
             
             keyword_texts = self._search_text_units(context, top_k)
-            vector_texts = await self.vector_retriever.search_text_units(query, top_k)
-            result.text_units = self._merge_text_results(keyword_texts, vector_texts, top_k)
+            try:
+                vector_texts = await self.vector_retriever.search_text_units(query, top_k)
+                result.text_units = self._merge_text_results(keyword_texts, vector_texts, top_k)
+            except EmbeddingError:
+                result.text_units = keyword_texts
+            
             if timing:
                 print(f"[TEMP_TIMING] retriever.hybrid_search={time.perf_counter()-t_h0:.3f}s")
             
@@ -242,6 +262,25 @@ class MemoirRetriever:
                 result.text_units = self._search_text_units(context, top_k)
             if timing:
                 print(f"[TEMP_TIMING] retriever.keyword_search={time.perf_counter()-t_k0:.3f}s")
+        
+        # ── 重排序（如果可用）──
+        reranker = get_reranker()
+        if reranker.is_ready():
+            t_r0 = time.perf_counter()
+            if result.entities:
+                result.entities = reranker.rerank_entities(query, result.entities, top_k)
+            if result.relationships:
+                result.relationships = reranker.rerank_relationships(query, result.relationships, top_k)
+            if timing:
+                print(f"[TEMP_TIMING] retriever.rerank={time.perf_counter()-t_r0:.3f}s")
+        else:
+            # 重排序器未就绪，添加错误信息
+            reranker_error = reranker.get_error_message()
+            if reranker_error:
+                if result.error_message:
+                    result.error_message += f"\n\n📝 {reranker_error}"
+                else:
+                    result.error_message = f"📝 {reranker_error}"
         
         if timing:
             total = time.perf_counter() - t0
@@ -318,6 +357,7 @@ class MemoirRetriever:
     ) -> List[Dict[str, Any]]:
         """搜索相关实体"""
         if self._entities_df is None or self._entities_df.empty:
+            print(f"[_search_entities] 实体数据为空")
             return []
         
         results = []
@@ -337,6 +377,9 @@ class MemoirRetriever:
             if context.location in location_map:
                 search_terms.append(location_map[context.location])
         search_terms.extend(context.keywords)
+        
+        print(f"[_search_entities] 搜索词: {search_terms}")
+        print(f"[_search_entities] 实体总数: {len(self._entities_df)}")
         
         for _, row in self._entities_df.iterrows():
             # GraphRAG 2.x 使用 title 字段
@@ -360,6 +403,9 @@ class MemoirRetriever:
         
         # 按分数排序
         results.sort(key=lambda x: x["score"], reverse=True)
+        print(f"[_search_entities] 匹配结果数: {len(results)}")
+        if results:
+            print(f"[_search_entities] 前3个结果: {[(r['name'], r['score']) for r in results[:3]]}")
         return results[:top_k]
     
     def _search_relationships(
