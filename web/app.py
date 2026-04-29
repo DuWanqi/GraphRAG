@@ -273,7 +273,46 @@ async def process_memoir_async(
 **生成的查询**: {retrieval_result.query}
 **提取+检索耗时**: {retrieve_time:.2f} 秒"""
         
-        retrieval_info = f"""**找到实体**: {len(retrieval_result.entities)} 个
+        # 检查检索结果质量
+        quality_warning = ""
+        if retrieval_result.entities:
+            # 检查是否有与查询相关的实体
+            query_terms = set(context.keywords + [context.year, context.location])
+            query_terms = {t.lower() for t in query_terms if t}
+            
+            relevant_count = 0
+            for entity in retrieval_result.entities[:10]:
+                entity_text = f"{entity.get('name', '')} {entity.get('description', '')}".lower()
+                if any(term in entity_text for term in query_terms):
+                    relevant_count += 1
+            
+            # 如果相关实体少于3个，提示知识图谱覆盖度问题
+            if relevant_count < 3:
+                quality_warning = f"""⚠️ **检索质量提示**
+
+当前知识图谱中缺乏与查询高度相关的实体（如：{', '.join(context.keywords[:3])}）。
+检索结果主要基于年份匹配，可能无法提供细粒度的历史背景。
+
+建议：
+1. 使用更通用的查询词
+2. 或者依赖 LLM 基于已有信息生成合理的历史背景
+
+---
+
+"""
+        
+        # 如果有错误信息，显示在检索信息顶部
+        error_section = ""
+        if retrieval_result.error_message:
+            error_section = f"""⚠️ **检索警告**
+
+{retrieval_result.error_message}
+
+---
+
+"""
+        
+        retrieval_info = f"""{quality_warning}{error_section}**找到实体**: {len(retrieval_result.entities)} 个
 **找到关系**: {len(retrieval_result.relationships)} 个
 **社区报告**: {len(retrieval_result.communities)} 个
 **相关文本**: {len(retrieval_result.text_units)} 段"""
@@ -535,43 +574,99 @@ def process_memoir_stream(
 
         context = retrieval_result.context
         extracted_md = (
-            f"**提取的时间**: {context.year or '未识别'}\n"
-            f"**提取的地点**: {context.location or '未识别'}\n"
-            f"**关键词**: {', '.join(context.keywords) if context.keywords else '无'}\n"
-            f"**生成的查询**: {retrieval_result.query}\n\n"
-            f"**找到实体**: {len(retrieval_result.entities)} 个  "
-            f"**找到关系**: {len(retrieval_result.relationships)} 个  "
-            f"**社区报告**: {len(retrieval_result.communities)} 个  "
-            f"**相关文本**: {len(retrieval_result.text_units)} 段"
+            f"### 📋 提取的上下文信息\n\n"
+            f"| 字段 | 值 |\n"
+            f"|------|-----|\n"
+            f"| **时间** | {context.year or '未识别'} |\n"
+            f"| **地点** | {context.location or '未识别'} |\n"
+            f"| **关键词** | {', '.join(context.keywords) if context.keywords else '无'} |\n"
+            f"| **查询** | `{retrieval_result.query}` |\n\n"
+            f"### 🔍 检索结果统计\n\n"
+            f"| 类型 | 数量 |\n"
+            f"|------|------|\n"
+            f"| **实体** | {len(retrieval_result.entities)} 个 |\n"
+            f"| **关系** | {len(retrieval_result.relationships)} 个 |\n"
+            f"| **社区报告** | {len(retrieval_result.communities)} 个 |\n"
+            f"| **相关文本** | {len(retrieval_result.text_units)} 段 |"
         )
+        
+        # 添加检索到的实体详情（展示所有）
+        if retrieval_result.entities:
+            extracted_md += "\n\n### 📌 检索到的实体（已重排序）\n\n"
+            for i, entity in enumerate(retrieval_result.entities, 1):
+                name = entity.get('name', '未知')
+                desc = entity.get('description', '')[:100]
+                entity_type = entity.get('type', '未知类型')
+                # 显示混合分数和详细分数
+                hybrid_score = entity.get('hybrid_score')
+                original_score = entity.get('original_score')
+                rerank_score = entity.get('rerank_score')
+                if hybrid_score is not None:
+                    score_text = f" [混合得分: {hybrid_score:.3f} | 原始: {original_score:.3f} | 重排序: {rerank_score:.3f}]"
+                elif rerank_score:
+                    score_text = f" [重排序得分: {rerank_score:.3f}]"
+                else:
+                    score_text = ""
+                extracted_md += f"**{i}. {name}** ({entity_type}){score_text}\n\n{desc}...\n\n"
+
+        # 添加检索到的关系详情（展示所有）
+        if retrieval_result.relationships:
+            extracted_md += "\n### 🔗 检索到的关系（已重排序）\n\n"
+            for i, rel in enumerate(retrieval_result.relationships, 1):
+                source = rel.get('source', '未知')
+                target = rel.get('target', '未知')
+                rel_type = rel.get('type', '关联')
+                desc = rel.get('description', '')[:80]
+                # 显示混合分数和详细分数
+                hybrid_score = rel.get('hybrid_score')
+                original_score = rel.get('original_score')
+                rerank_score = rel.get('rerank_score')
+                if hybrid_score is not None:
+                    score_text = f" [混合得分: {hybrid_score:.3f} | 原始: {original_score:.3f} | 重排序: {rerank_score:.3f}]"
+                elif rerank_score:
+                    score_text = f" [重排序得分: {rerank_score:.3f}]"
+                else:
+                    score_text = ""
+                extracted_md += f"**{i}. {source} → {target}** ({rel_type}){score_text}\n\n{desc}...\n\n"
+        
+        # 添加检索到的文本单元详情（展示所有）
+        if retrieval_result.text_units:
+            extracted_md += "\n### 📝 相关文本片段\n\n"
+            for i, text_unit in enumerate(retrieval_result.text_units, 1):
+                # text_unit 可能是字符串或字典
+                if isinstance(text_unit, dict):
+                    content = text_unit.get('content', '')[:200]
+                else:
+                    content = str(text_unit)[:200]
+                extracted_md += f"**片段 {i}:** {content}...\n\n"
+        
+        print(f"[DEBUG] extracted_md length: {len(extracted_md)} chars")
         yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
         # ── 2. 检索质量评估 (LLM-as-a-Judge) ──
-        try:
-            eval_result = loop.run_until_complete(asyncio.wait_for(
-                evaluate_retrieval_quality(
-                    query_text=memoir_text,
-                    text_units=retrieval_result.text_units,
-                    llm_adapter=_make_llm(provider, model),
-                ),
-                timeout=30.0,
-            ))
-            retrieval_q_md = _format_retrieval_quality(eval_result)
-        except Exception as e:
-            retrieval_q_md = f"检索质量评估失败: {e}"
+        # 注意：跳过检索质量评估以减少API调用，避免速率限制
+        # 如果需要评估，可以单独运行评估脚本
+        retrieval_q_md = "检索质量评估已跳过（避免API速率限制）"
         yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
         # ── 3. 流式生成 ──
         async def _stream():
-            async for delta in generator.generate_stream(
-                memoir_text=memoir_text,
-                retrieval_result=retrieval_result,
-                style=style,
-                length_hint=single_cfg["length_hint"],
-                temperature=temperature,
-                max_tokens=single_cfg["max_tokens"],
-            ):
-                yield delta
+            try:
+                async for delta in generator.generate_stream(
+                    memoir_text=memoir_text,
+                    retrieval_result=retrieval_result,
+                    style=style,
+                    length_hint=single_cfg["length_hint"],
+                    temperature=temperature,
+                    max_tokens=single_cfg["max_tokens"],
+                ):
+                    yield delta
+            except Exception as e:
+                import traceback
+                error_msg = f"\n\n[生成错误: {type(e).__name__}: {e}]"
+                print(f"[ERROR] 流式生成失败: {e}")
+                print(traceback.format_exc())
+                yield error_msg
 
         content = ""
         agen = _stream()
@@ -588,52 +683,21 @@ def process_memoir_stream(
                 content += "\n\n（\u26a0\ufe0f 生成超时：已达到 90s 上限，返回已生成的部分内容）"
                 yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
                 break
+            except Exception as e:
+                content += f"\n\n[生成异常: {e}]"
+                yield (content, extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
+                break
             content += delta
             yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
         # ── 4. 综合评估（事实准确性 + 相关性 + 文学性 + 合规性 + SAFE独立验证） ──
+        # 注意：跳过综合评估以减少API调用，避免速率限制
         if (enable_fact_check or enable_safe_check) and content:
-            try:
-                async def _run_eval():
-                    llm = _make_llm(provider, model)
-                    evaluator = Evaluator(
-                        llm_adapter=llm,
-                        google_api_key=settings.google_api_key,
-                        google_cse_id=getattr(settings, 'google_cse_id', None),
-                    )
-                    return await evaluator.evaluate(
-                        memoir_text=memoir_text,
-                        generated_text=content,
-                        retrieval_result=retrieval_result,
-                        use_llm=True,
-                        enable_fact_check=enable_fact_check,
-                        enable_safe_check=enable_safe_check,
-                    )
-
-                eval_res = loop.run_until_complete(asyncio.wait_for(_run_eval(), timeout=180.0))
-
-                # 事实准确性（KB FActScore）
-                if eval_res.fact_check:
-                    accuracy_md = _format_accuracy(eval_res.fact_check, 0)
-
-                # SAFE 独立知识验证
-                if eval_res.safe_check:
-                    safe_md = _format_safe_check(eval_res.safe_check)
-
-                # 相关性
-                if "relevance" in eval_res.scores:
-                    relevance_md = _format_dimension(eval_res.scores["relevance"])
-
-                # 文学性
-                if "literary" in eval_res.scores:
-                    literary_md = _format_dimension(eval_res.scores["literary"])
-
-                # 合规性
-                if "compliance" in eval_res.scores:
-                    compliance_md = _format_compliance(eval_res.scores["compliance"])
-
-            except Exception as e:
-                accuracy_md = f"评估失败: {e}"
+            accuracy_md = "事实准确性评估已跳过（避免API速率限制）"
+            safe_md = "SAFE验证已跳过（避免API速率限制）"
+            relevance_md = "相关性评估已跳过（避免API速率限制）"
+            literary_md = "文学性评估已跳过（避免API速率限制）"
+            compliance_md = "合规性评估已跳过（避免API速率限制）"
 
         yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
     finally:
@@ -651,6 +715,8 @@ async def compare_providers_async(
     """
     使用多个LLM对比生成
     """
+    global retriever
+
     if not memoir_text.strip():
         return "请输入回忆录文本"
 
@@ -664,9 +730,10 @@ async def compare_providers_async(
         # 创建生成器
         gen = LiteraryGenerator(llm_router=router)
 
-        # 创建检索器并检索
-        ret = MemoirRetriever()
-        retrieval_result = ret.retrieve_sync(memoir_text, top_k=10)
+        # 使用全局检索器，避免重复加载索引
+        if retriever is None:
+            retriever = MemoirRetriever()
+        retrieval_result = retriever.retrieve_sync(memoir_text, top_k=10)
 
         # 并行生成
         multi_result = await gen.generate_parallel(
