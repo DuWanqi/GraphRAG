@@ -48,24 +48,23 @@
 
 ### 3. 生成时怎么约束各章长度？
 
-分两道闸：**用户选的档位决定全书总目标**，再**按各段回忆录长度比例摊到每一章**；每一章生成时同时用**自然语言要求**和**接口硬上限**（见 `src/generation/chapter_budget.py` + `LiteraryGenerator.generate`）。
+实现上有**两条互斥策略**（`allocate_segment_budgets`），都落在 `src/generation/chapter_budget.py` + `LiteraryGenerator.generate` 的 **`length_hint`（软）+ `max_tokens`（硬）**。
 
-**（1）全书总目标（来自 UI/API 的 `length_bucket`）**
+**A. 长文且分段数 > 1（多段分章）**
 
-档位对应一个「全书生成正文中位字数」中心值，例如短档约 300、最长档约 2000（具体映射在 `chapter_budget` 的 `_BUCKET_TOTAL_CENTER`）。
+- `length_bucket` 只映射为**扩写/紧缩系数**（如 `_BUCKET_EXPANSION`：`200-400`→0.8×、`1200+`→2.0× 等）。  
+- 每一段的**目标中心字数** ≈ **该段回忆录原文字数 × 系数**，再在其上下约 **±15%** 得到 `length_hint` 区间。  
+- 含义：长文多段时**不是**把「全书的固定总字数目标」按段长比例切分，而是**每段按原稿长度与档位做相对扩写/紧缩**。
 
-**（2）摊到每一章**
+**B. 仅一段（整篇一次、或切完仍由系统视为单段时）**
 
-- 权重 = 该段**回忆录原文**字符数（至少计 1）。  
-- 该章分到的「中心字数」≈ `全书中心 × (本段权重 / 权重和)`。  
-- 再在该中心上下取约 **±15%** 得到区间 `[low, high]`，写成人类可读的 **`length_hint`**（如「约 xxx–yyy 字」）。
+- 使用**全书档位中心**（`_BUCKET_TOTAL_CENTER`，如 400-800 档约 600 字中位）按各段**原文字长加权**分到各段，再形成 `length_hint` 与 `max_tokens`。  
+- Web/API **单段整篇生成**（不走分章 `chapter_mode`）时，还可用 `legacy_maps_for_single_segment` 的**固定**档位 `length_hint` + `max_tokens` 表，与上一种二选一由调用路径决定。
 
-**（3）落到模型调用**
+**落到模型调用**
 
-- **`length_hint`**：写入生成提示词，让模型按区间控制篇幅（软约束）。  
-- **`max_tokens`**：按区间上限估算（实现上约为「上限字数 × 2.2」再夹到 `[256, 8000]`），作为 API 的硬上限，减轻「写太长被截断或失控」——中文按字粗估，偏保守。
-
-单段模式不走比例分摊，仍用各档位固定的 `length_hint` + `max_tokens` 表（`legacy_maps_for_single_segment`）。
+- **`length_hint`**：写入提示词。  
+- **`max_tokens`**：约「区间上限 × 2.2」，再夹到 `[256, 8000]` 或单段下界略有不同——中文按字粗估，偏保守。
 
 ---
 
