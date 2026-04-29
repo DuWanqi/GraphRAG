@@ -80,7 +80,15 @@ class LiteraryGenerator:
         """
         self.llm_adapter = llm_adapter
         self.llm_router = llm_router
-    
+
+    def _build_retrieval_info(self, retrieval_result: RetrievalResult) -> Dict[str, Any]:
+        """构建检索信息元数据（避免重复代码）"""
+        return {
+            "entities_count": len(retrieval_result.entities),
+            "communities_count": len(retrieval_result.communities),
+            "query": retrieval_result.query,
+        }
+
     async def generate(
         self,
         memoir_text: str,
@@ -147,11 +155,7 @@ class LiteraryGenerator:
             provider=response.provider.value,
             model=response.model,
             memoir_context=retrieval_result.context,
-            retrieval_info={
-                "entities_count": len(retrieval_result.entities),
-                "communities_count": len(retrieval_result.communities),
-                "query": retrieval_result.query,
-            }
+            retrieval_info=self._build_retrieval_info(retrieval_result)
         )
 
     async def generate_stream(
@@ -235,11 +239,7 @@ class LiteraryGenerator:
                 provider=response.provider.value,
                 model=response.model,
                 memoir_context=retrieval_result.context,
-                retrieval_info={
-                    "entities_count": len(retrieval_result.entities),
-                    "communities_count": len(retrieval_result.communities),
-                    "query": retrieval_result.query,
-                }
+                retrieval_info=self._build_retrieval_info(retrieval_result)
             )
         
         return MultiGenerationResult(

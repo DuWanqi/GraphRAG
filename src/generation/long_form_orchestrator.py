@@ -27,6 +27,11 @@ from .memoir_segmenter import (
 logger = logging.getLogger(__name__)
 
 
+def _extract_entity_names(rr: RetrievalResult, limit: int = 10) -> List[str]:
+    """从检索结果中提取实体名称（避免重复代码）"""
+    return [e.get("name", "") for e in (rr.entities or [])[:limit] if e.get("name")]
+
+
 @dataclass
 class ChapterGenerationResult:
     segment_index: int
@@ -156,7 +161,7 @@ async def run_long_form_generation(
 
         # 5) 记录
         if chapter_ctx is not None:
-            entities = [e.get("name", "") for e in (rr.entities or [])[:10] if e.get("name")]
+            entities = _extract_entity_names(rr)
             chapter_ctx.record_chapter(seg.index, gr.content, entities)
 
         chapters.append(
@@ -236,7 +241,7 @@ async def regenerate_chapters(
         )
 
         if result.chapter_context is not None:
-            entities = [e.get("name", "") for e in (rr.entities or [])[:10] if e.get("name")]
+            entities = _extract_entity_names(rr)
             result.chapter_context.record_chapter(ch_idx, gr.content, entities)
 
         result.chapters[ch_idx] = ChapterGenerationResult(
