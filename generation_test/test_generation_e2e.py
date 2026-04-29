@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from src.generation import (
     LiteraryGenerator,
@@ -43,9 +44,13 @@ TEST_MEMOIR = """
 @pytest.fixture
 def output_dir():
     """获取输出目录"""
-    output_path = Path("output")
+    output_path = Path("data/graphrag_output")
     if not output_path.exists():
-        pytest.skip("需要已构建的知识图谱（output/ 目录不存在）")
+        pytest.skip("需要已构建的知识图谱（data/graphrag_output/ 目录不存在）")
+    # 验证 output 子目录中有 parquet 文件
+    parquet_dir = output_path / "output"
+    if not parquet_dir.exists() or not list(parquet_dir.glob("*.parquet")):
+        pytest.skip("知识图谱索引文件不完整（缺少 parquet 文件）")
     return output_path
 
 
@@ -59,12 +64,11 @@ def llm_adapter():
         pytest.skip(f"无法创建LLM适配器: {e}")
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def retriever(output_dir):
     """创建检索器"""
     try:
         retriever = MemoirRetriever(index_dir=str(output_dir))
-        await retriever.initialize()
         return retriever
     except Exception as e:
         pytest.skip(f"无法初始化检索器: {e}")
@@ -77,22 +81,20 @@ class TestGenerationModule:
         """测试1: 回忆录分段功能"""
         print("\n=== 测试1: 回忆录分段 ===")
 
-        segments, report = segment_memoir(TEST_MEMOIR, target_chars_per_segment=200)
+        segments = segment_memoir(TEST_MEMOIR, target_max_chars=200)
 
         print(f"分段数量: {len(segments)}")
-        print(f"验证报告: {report}")
 
         # 验证
         assert len(segments) > 0, "应该至少有1个段落"
         assert all(seg.text.strip() for seg in segments), "所有段落都应该有内容"
-        assert report.is_valid, f"分段应该有效: {report.issues}"
 
         # 打印每个段落的元数据
         for i, seg in enumerate(segments):
             print(f"\n段落 {i+1}:")
             print(f"  长度: {len(seg.text)} 字符")
-            print(f"  年份: {seg.meta.years if seg.meta else '无'}")
-            print(f"  地点: {seg.meta.locations if seg.meta else '无'}")
+            print(f"  年份: {seg.meta.detected_years if seg.meta else '无'}")
+            print(f"  地点: {seg.meta.detected_locations if seg.meta else '无'}")
             print(f"  内容预览: {seg.text[:50]}...")
 
         print("\n✓ 分段测试通过")
@@ -101,7 +103,7 @@ class TestGenerationModule:
         """测试2: 预算分配功能"""
         print("\n=== 测试2: 预算分配 ===")
 
-        segments, _ = segment_memoir(TEST_MEMOIR, target_chars_per_segment=200)
+        segments = segment_memoir(TEST_MEMOIR, target_max_chars=200)
         budgets = allocate_segment_budgets(segments, length_bucket="400-800")
 
         print(f"预算数量: {len(budgets)}")
@@ -125,7 +127,7 @@ class TestGenerationModule:
         """测试3: 单段检索功能"""
         print("\n=== 测试3: 单段检索 ===")
 
-        segments, _ = segment_memoir(TEST_MEMOIR, target_chars_per_segment=200)
+        segments = segment_memoir(TEST_MEMOIR, target_max_chars=200)
         first_segment = segments[0]
 
         print(f"检索文本: {first_segment.text[:100]}...")
@@ -162,7 +164,7 @@ class TestGenerationModule:
         """测试4: 单段生成功能"""
         print("\n=== 测试4: 单段生成 ===")
 
-        segments, _ = segment_memoir(TEST_MEMOIR, target_chars_per_segment=200)
+        segments = segment_memoir(TEST_MEMOIR, target_max_chars=200)
         first_segment = segments[0]
 
         # 检索
@@ -227,7 +229,7 @@ class TestGenerationModule:
         # 验证
         assert len(result.chapters) > 0, "应该至少有1个章节"
         assert result.merged_content, "应该有合并内容"
-        assert result.segmentation_report.is_valid, "分段应该有效"
+        assert result.segmentation_report.passed, "分段应该有效"
 
         # 打印每个章节的信息
         for i, chapter in enumerate(result.chapters):
@@ -235,7 +237,7 @@ class TestGenerationModule:
             print(f"  段落索引: {chapter.segment_index}")
             print(f"  内容长度: {len(chapter.generation.content)} 字符")
             print(f"  提供商: {chapter.generation.provider}")
-            print(f"  警告: {chapter.warnings or '无'}")
+            print(f"  警告: {chapter.repetition_warning or '无'}")
             print(f"  内容预览: {chapter.generation.content[:100]}...")
 
         # 验证跨章节上下文
@@ -282,7 +284,7 @@ class TestGenerationModule:
                 print(f"\n章节 {i+1} 记录:")
                 print(f"  摘要: {record.brief}")
                 print(f"  时间段: {record.time_period}")
-                print(f"  实体: {record.entities[:5]}")  # 只显示前5个
+                print(f"  实体: {record.entities_mentioned[:5]}")  # 只显示前5个
                 print(f"  关键短语数: {len(record.key_phrases)}")
 
             print("\n✓ 跨章节上下文测试通过")
@@ -324,7 +326,6 @@ def main():
         # 测试3-6: 需要异步运行
         async def run_async_tests():
             retriever = MemoirRetriever(index_dir=str(output_dir))
-            await retriever.initialize()
 
             await test.test_single_segment_retrieval(retriever)
             await test.test_single_segment_generation(retriever, llm_adapter)

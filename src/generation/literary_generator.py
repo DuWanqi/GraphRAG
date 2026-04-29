@@ -27,16 +27,25 @@ class GenerationResult:
     model: str
     memoir_context: Optional[MemoirContext] = None
     retrieval_info: Optional[Dict[str, Any]] = None
-    
+    novel_content_brief: Optional[Any] = None  # NovelContentBrief from novel_content_extractor
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
-        return {
+        result = {
             "content": self.content,
             "provider": self.provider,
             "model": self.model,
             "memoir_context": self.memoir_context.to_dict() if self.memoir_context else None,
             "retrieval_info": self.retrieval_info,
         }
+        if self.novel_content_brief:
+            result["novel_content_brief"] = {
+                "has_novel_content": self.novel_content_brief.has_novel_content,
+                "novel_entity_count": len(self.novel_content_brief.novel_entities),
+                "novel_relationship_count": len(self.novel_content_brief.novel_relationships),
+                "summary": self.novel_content_brief.summary,
+            }
+        return result
 
 
 @dataclass
@@ -155,7 +164,8 @@ class LiteraryGenerator:
             provider=response.provider.value,
             model=response.model,
             memoir_context=retrieval_result.context,
-            retrieval_info=self._build_retrieval_info(retrieval_result)
+            retrieval_info=self._build_retrieval_info(retrieval_result),
+            novel_content_brief=getattr(retrieval_result, '_novel_content_brief', None),
         )
 
     async def generate_stream(
@@ -282,14 +292,26 @@ class LiteraryGenerator:
         chapter_context: str = "",
     ) -> str:
         """构建生成提示词"""
+        from .novel_content_extractor import extract_novel_content
+
         context = retrieval_result.context
+
+        # 提取并分类 RAG 内容
+        novel_brief = extract_novel_content(memoir_text, retrieval_result)
+
+        # 将 novel_brief 附加到 retrieval_result（供后续评估使用）
+        retrieval_result._novel_content_brief = novel_brief
+
+        # 格式化为 prompt 注入用的两个区块
+        formatted = novel_brief.format_for_prompt()
 
         template = PromptTemplates.get_template(style=style)
         return template.format(
             memoir_text=memoir_text,
             year=context.year or "未知",
             location=context.location or "未知",
-            context=retrieval_result.get_context_text() or "暂无相关历史信息",
+            aligned_context=formatted["aligned_context"],
+            novel_context=formatted["novel_context"],
             length_hint=length_hint,
             chapter_context=chapter_context,
         )

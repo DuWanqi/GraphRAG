@@ -347,16 +347,19 @@ def calculate_all_metrics(
     literary_optimal_min: int = 200,
     literary_optimal_max: int = 500,
     literary_paragraph_relaxed: bool = False,
+    novel_content_brief: Optional[Any] = None,
 ) -> Dict[str, MetricResult]:
     """
     计算所有指标
 
     literary_* 参数用于长文/分章场景下校准长度与段落评分。
+    novel_content_brief: NovelContentBrief 对象（可选），用于计算新内容指标
+
     Returns:
         Dict[str, MetricResult]: 指标名称到结果的映射
     """
     results = {}
-    
+
     # 准确性指标
     results["entity_coverage"] = AccuracyMetrics.entity_coverage(
         generated_text, reference_entities or []
@@ -364,7 +367,7 @@ def calculate_all_metrics(
     results["time_consistency"] = AccuracyMetrics.time_consistency(
         generated_text, reference_year
     )
-    
+
     # 相关性指标
     results["keyword_overlap"] = RelevanceMetrics.keyword_overlap(
         generated_text, memoir_text, keywords
@@ -372,7 +375,7 @@ def calculate_all_metrics(
     results["semantic_similarity"] = RelevanceMetrics.semantic_similarity(
         generated_text, memoir_text
     )
-    
+
     # 文学性指标
     results["length_score"] = LiteraryMetrics.length_score(
         generated_text,
@@ -387,7 +390,25 @@ def calculate_all_metrics(
     )
     results["transition_usage"] = LiteraryMetrics.transition_usage(generated_text)
     results["descriptive_richness"] = LiteraryMetrics.descriptive_richness(generated_text)
-    
+
+    # 新内容指标（如果提供了 novel_content_brief）
+    if novel_content_brief is not None:
+        from .novel_content_metrics import (
+            novel_content_ratio_metric,
+            novel_content_grounding_metric,
+            expansion_depth_metric,
+        )
+
+        results["novel_content_ratio"] = novel_content_ratio_metric(
+            memoir_text, generated_text, novel_content_brief
+        )
+        results["novel_content_grounding"] = novel_content_grounding_metric(
+            memoir_text, generated_text, novel_content_brief
+        )
+        results["expansion_depth"] = expansion_depth_metric(
+            memoir_text, generated_text, novel_content_brief
+        )
+
     return results
 
 
@@ -397,11 +418,11 @@ def aggregate_scores(
 ) -> float:
     """
     聚合指标分数
-    
+
     Args:
         metrics: 指标结果
         weights: 权重（可选）
-        
+
     Returns:
         float: 综合分数 (0-10)
     """
@@ -415,14 +436,18 @@ def aggregate_scores(
             "paragraph_structure": 0.8,
             "transition_usage": 0.8,
             "descriptive_richness": 0.8,
+            # 新内容指标权重
+            "novel_content_ratio": 1.2,
+            "novel_content_grounding": 1.5,
+            "expansion_depth": 1.0,
         }
-    
+
     total_weight = sum(weights.get(k, 1.0) for k in metrics)
     weighted_sum = sum(
         metrics[k].normalized * weights.get(k, 1.0)
         for k in metrics
     )
-    
+
     # 归一化到 0-10 分
     return (weighted_sum / total_weight) * 10 if total_weight > 0 else 0
 
