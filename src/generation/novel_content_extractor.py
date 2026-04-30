@@ -56,13 +56,13 @@ class NovelContentBrief:
     def format_for_prompt(self) -> Dict[str, str]:
         """
         格式化为 prompt 注入用的两个区块
-        
+
         Returns:
             {"aligned_context": str, "novel_context": str}
         """
         aligned_parts = []
         novel_parts = []
-        
+
         # 对齐内容：已在原文中提及的实体
         if self.aligned_entities:
             aligned_parts.append("相关实体：")
@@ -70,30 +70,53 @@ class NovelContentBrief:
                 name = entity.get("name", entity.get("title", ""))
                 desc = entity.get("description", "")[:150]
                 aligned_parts.append(f"- {name}: {desc}")
-        
-        # 新知识：原文未提及的实体
+
+        # 新知识：原文未提及的实体（白名单式格式）
         if self.novel_entities:
-            novel_parts.append("新增实体（原文未提及）：")
-            for entity in self.novel_entities[:8]:
+            novel_parts.append("可用的新知识（可改写表述，但不可添加未提供的实体或细节）：\n")
+            for i, entity in enumerate(self.novel_entities[:8], 1):
                 name = entity.get("name", entity.get("title", ""))
-                desc = entity.get("description", "")[:150]
-                novel_parts.append(f"- {name}: {desc}")
-        
+                desc = entity.get("description", "")
+                # 截取完整句子（最多200字）
+                if len(desc) > 200:
+                    # 尝试在句号处截断
+                    sentences = desc.split("。")
+                    desc = sentences[0] + "。" if sentences else desc[:200]
+
+                novel_parts.append(f"{i}. [{name}]")
+                novel_parts.append(f"   {desc}")
+
         # 新知识：原文未提及的关系/事件
         if self.novel_relationships:
-            novel_parts.append("\n新增事件关联（原文未提及）：")
-            for rel in self.novel_relationships[:5]:
+            if not self.novel_entities:
+                novel_parts.append("可用的新知识（可改写表述，但不可添加未提供的实体或细节）：\n")
+            start_idx = len(self.novel_entities[:8]) + 1
+            for i, rel in enumerate(self.novel_relationships[:5], start_idx):
                 source = rel.get("source", "")
                 target = rel.get("target", "")
-                desc = rel.get("description", "")[:150]
-                novel_parts.append(f"- {source} → {target}: {desc}")
-        
+                desc = rel.get("description", "")
+                if len(desc) > 200:
+                    sentences = desc.split("。")
+                    desc = sentences[0] + "。" if sentences else desc[:200]
+
+                novel_parts.append(f"{i}. [{source} → {target}]")
+                novel_parts.append(f"   {desc}")
+
         # 新知识：背景片段
         if self.novel_snippets:
-            novel_parts.append("\n新增背景信息（原文未提及）：")
+            novel_parts.append("\n补充背景（可选择性引用）：")
             for snippet in self.novel_snippets[:3]:
                 novel_parts.append(f"- {snippet[:200]}")
-        
+
+        # 添加使用规则
+        if self.novel_entities or self.novel_relationships:
+            novel_parts.append("\n使用规则：")
+            novel_parts.append("✓ 可以改写上述内容的表述方式，调整语序，使其自然融入叙事")
+            novel_parts.append("✓ 可以选择性使用（不必全部使用），选择与叙事最相关的 1-3 条")
+            novel_parts.append("✗ 不可添加上述列表中未提及的实体、人名、地名、机构名")
+            novel_parts.append("✗ 不可添加上述内容中未提及的具体数据、政策名称、时间节点")
+            novel_parts.append("✗ 不可推断上述内容中未提及的因果关系、影响或评价")
+
         return {
             "aligned_context": "\n".join(aligned_parts) if aligned_parts else "（无）",
             "novel_context": "\n".join(novel_parts) if novel_parts else "（无可用新知识）",
