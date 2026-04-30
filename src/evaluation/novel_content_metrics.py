@@ -226,29 +226,246 @@ def _is_mentioned_in_text(entity_name: str, text: str) -> bool:
 def _extract_new_facts(memoir_text: str, generated_text: str) -> List[str]:
     """
     提取生成文本中的新事实陈述（不在原文中的）
-    
-    策略：
-    1. 提取生成文本中的实体名（人名、地名、组织名）
-    2. 提取生成文本中的年份
-    3. 过滤掉原文中已有的
+
+    采用三层漏斗过滤策略：
+    1. [粗筛] 词性过滤：快速提取候选实体（高召回）
+    2. [精筛] NER 验证：验证候选实体是否为真实事实（高精确）
+    3. [补充] 句式匹配：捕获复合事实和特殊模式
+
+    Args:
+        memoir_text: 回忆录原文
+        generated_text: 生成的文本
+
+    Returns:
+        List[str]: 新事实列表
     """
-    new_facts = []
-    
-    # 提取实体（中文 2-10 字）
-    generated_entities = set(re.findall(r'[一-龥]{2,10}', generated_text))
-    memoir_entities = set(re.findall(r'[一-龥]{2,10}', memoir_text))
-    
-    new_entities = generated_entities - memoir_entities
-    new_facts.extend(list(new_entities)[:20])  # 限制数量
-    
-    # 提取年份
+    # 第一层：词性粗筛（快速、高召回）
+    candidates = _extract_candidates_by_pos(memoir_text, generated_text)
+
+    # 第二层：NER 验证（准确、高精确）
+    verified_facts = _verify_candidates_by_ner(candidates, generated_text)
+
+    # 第三层：句式补充（捕获漏网之鱼）
+    compound_facts = _extract_compound_facts(memoir_text, generated_text)
+
+    # 合并去重
+    all_facts = verified_facts + compound_facts
+    return list(dict.fromkeys(all_facts))[:30]  # 去重并限制数量
+
+
+def _extract_candidates_by_pos(memoir_text: str, generated_text: str) -> List[str]:
+    """
+    第一层：基于词性的候选实体提取（粗筛）
+
+    目标：快速找出所有"可能是事实"的词，宁可多不可少
+
+    策略：
+    1. 使用 jieba 分词 + 词性标注
+    2. 保留专有名词相关的词性（nr/ns/nt/nz）
+    3. 过滤掉原文中已有的词
+    4. 过滤掉常见非事实词（黑名单）
+
+    Returns:
+        候选实体列表（可能包含误判）
+    """
+    try:
+        import jieba.posseg as pseg
+    except ImportError:
+        # 降级方案：使用简单正则
+        return _extract_candidates_by_regex(memoir_text, generated_text)
+
+    # 事实性词性标签
+    factual_pos_tags = {
+        'nr',   # 人名（邓小平、张三）
+        'ns',   # 地名（深圳、北京）
+        'nt',   # 机构名（中共中央、联想）
+        'nz',   # 其他专名（改革开放、高考）
+    }
+
+    # 常见非事实词黑名单
+    blacklist = {
+        # 时间词（太泛）
+        '年代', '时候', '时代', '时期', '时光', '岁月', '日子', '当时', '那时',
+        # 泛指词
+        '国家', '社会', '人民', '群众', '大家', '我们', '他们', '自己',
+        '地方', '方面', '情况', '问题', '事情', '东西', '事物',
+        # 常见动作/状态
+        '生活', '学习', '工作', '发展', '变化', '建设', '改革', '开放',
+        '刚刚开始', '开始', '结束', '进行', '发生', '出现',
+        # 常见文书词
+        '通知书', '录取', '考试', '成绩', '分数', '名次',
+        '政策', '制度', '办法', '措施', '方案', '计划', '目标',
+    }
+
+    # 分词 + 词性标注
+    generated_words = list(pseg.cut(generated_text))
+    memoir_words = set(w for w, _ in pseg.cut(memoir_text))
+
+    candidates = []
+
+    for word, flag in generated_words:
+        # 过滤条件
+        if len(word) < 2:           # 单字词
+            continue
+        if word in memoir_words:    # 原文已有
+            continue
+        if word in blacklist:       # 黑名单
+            continue
+
+        # 保留事实性词汇
+        if flag in factual_pos_tags:
+            candidates.append(word)
+
+    return candidates
+
+
+def _extract_candidates_by_regex(memoir_text: str, generated_text: str) -> List[str]:
+    """
+    降级方案：基于正则的候选实体提取（当 jieba 不可用时）
+
+    策略：提取 3-10 字的中文词（避免提取太多短词）
+    """
+    generated_entities = set(re.findall(r'[一-龥]{3,10}', generated_text))
+    memoir_entities = set(re.findall(r'[一-龥]{3,10}', memoir_text))
+
+    candidates = list(generated_entities - memoir_entities)
+    return candidates[:50]  # 限制数量
+
+
+def _verify_candidates_by_ner(candidates: List[str], text: str) -> List[str]:
+    """
+    第二层：基于 NER 的候选验证（精筛）
+
+    目标：验证候选词是否真的是事实性实体，去伪存真
+
+    策略：
+    1. 尝试使用 LAC (百度 NER) 进行验证
+    2. 如果 LAC 不可用，使用规则验证
+    3. 只保留被 NER 识别为实体的候选词
+
+    Returns:
+        验证通过的事实列表
+    """
+    if not candidates:
+        return []
+
+    # 尝试使用 LAC
+    try:
+        from LAC import LAC
+        lac = LAC(mode='lac')
+
+        # NER 识别
+        result = lac.run(text)
+        words, tags = result[0], result[1]
+
+        # 实体类型
+        entity_types = {'PER', 'LOC', 'ORG', 'TIME'}
+
+        # 构建实体集合
+        ner_entities = set()
+        for word, tag in zip(words, tags):
+            if tag in entity_types:
+                ner_entities.add(word)
+
+        # 验证候选词
+        verified = []
+        for candidate in candidates:
+            # 精确匹配或部分匹配
+            if candidate in ner_entities:
+                verified.append(candidate)
+            else:
+                # 检查是否是某个 NER 实体的一部分
+                for entity in ner_entities:
+                    if candidate in entity or entity in candidate:
+                        verified.append(candidate)
+                        break
+
+        return verified
+
+    except ImportError:
+        # LAC 不可用，使用规则验证
+        return _verify_candidates_by_rules(candidates)
+
+
+def _verify_candidates_by_rules(candidates: List[str]) -> List[str]:
+    """
+    规则验证：当 NER 不可用时的降级方案
+
+    策略：
+    1. 保留 3 字以上的词（更可能是专有名词）
+    2. 保留包含特定标志词的词（如"会议"、"政策"、"特区"）
+    """
+    verified = []
+
+    # 事实性标志词
+    fact_markers = {
+        '会议', '全会', '大会', '代表',
+        '政策', '制度', '法律', '条例',
+        '特区', '开发区', '示范区',
+        '公司', '企业', '集团', '组织',
+    }
+
+    for candidate in candidates:
+        # 3 字以上
+        if len(candidate) >= 3:
+            verified.append(candidate)
+            continue
+
+        # 包含标志词
+        if any(marker in candidate for marker in fact_markers):
+            verified.append(candidate)
+
+    return verified
+
+
+def _extract_compound_facts(memoir_text: str, generated_text: str) -> List[str]:
+    """
+    第三层：基于句式的复合事实提取（补充）
+
+    目标：捕获前两层可能遗漏的复合事实和特殊模式
+
+    策略：
+    1. 提取"年份 + 事件"模式（如"1978年十一届三中全会"）
+    2. 提取"实体 + 关系 + 实体"模式（如"邓小平推动改革开放"）
+    3. 提取年份（如"1978"）
+
+    Returns:
+        复合事实列表
+    """
+    compound_facts = []
+
+    # 模式 1: 年份 + 事件（如"1978年十一届三中全会确立了改革开放政策"）
+    # 改进：只提取事件主体，不包含动词和"的"
+    year_event_pattern = r'(\d{4})年(?:的)?([一-龥]{2,8}(?:会议|全会|政策|制度|特区|开放))'
+    matches = re.findall(year_event_pattern, generated_text)
+
+    for year, event in matches:
+        # 检查是否在原文中
+        if event not in memoir_text:
+            compound_facts.append(event)
+            compound_facts.append(year)  # 年份也是事实
+
+    # 模式 2: 实体 + 关系 + 实体（如"邓小平推动改革开放"）
+    # 改进：只提取实体，不包含关系词
+    relation_pattern = r'([一-龥]{2,6})(?:是|为|推动|确立|建立|创办)([一-龥]{2,6})'
+    matches = re.findall(relation_pattern, generated_text)
+
+    for source, target in matches:
+        # 过滤掉太短或太常见的词
+        if len(source) >= 2 and source not in memoir_text:
+            # 检查是否是实体（不包含动词、形容词）
+            if not any(word in source for word in ['了', '的', '是', '在', '有', '和']):
+                compound_facts.append(source)
+        if len(target) >= 2 and target not in memoir_text:
+            if not any(word in target for word in ['了', '的', '是', '在', '有', '和']):
+                compound_facts.append(target)
+
+    # 模式 3: 独立年份（如"1978"）
     generated_years = set(re.findall(r'\b(19|20)\d{2}\b', generated_text))
     memoir_years = set(re.findall(r'\b(19|20)\d{2}\b', memoir_text))
-    
-    new_years = generated_years - memoir_years
-    new_facts.extend(list(new_years))
-    
-    return new_facts
+    compound_facts.extend(list(generated_years - memoir_years))
+
+    return compound_facts
 
 
 def _build_rag_source_text(novel_content_brief: Any) -> str:

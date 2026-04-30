@@ -259,13 +259,28 @@ async def evaluate_long_form(
         # 提取新内容评估信息
         novel_content_info = None
         if novel_brief is not None:
+            # 调用 analyze_novel_content 获取完整分析结果
+            from .novel_content_metrics import analyze_novel_content
+
+            analysis = analyze_novel_content(
+                memoir_text=ch.segment_text,
+                generated_text=gen_text,
+                novel_content_brief=novel_brief,
+            )
+
             novel_content_info = {
                 "has_novel_content": novel_brief.has_novel_content,
-                "novel_entities_available": len(novel_brief.novel_entities),
-                "novel_entities_used": 0,  # 将从 metrics 中提取
+                "novel_entities_available": analysis.novel_entities_available,
+                "novel_entities_used": analysis.novel_entities_used,
+                "new_facts_in_output": analysis.new_facts_in_output,
+                "grounded_facts": analysis.grounded_facts,
+                "ungrounded_facts": analysis.ungrounded_facts,
+                "novel_content_ratio": analysis.novel_content_ratio,
+                "novel_content_grounding": analysis.novel_content_grounding,
+                "expansion_depth": analysis.expansion_depth,
                 "summary": novel_brief.summary,
             }
-            # 从 metrics 中提取新内容指标值
+            # 从 metrics 中提取指标值（覆盖上面的计算值，保持一致）
             if "novel_content_ratio" in metrics:
                 novel_content_info["novel_content_ratio"] = metrics["novel_content_ratio"].value
             if "novel_content_grounding" in metrics:
