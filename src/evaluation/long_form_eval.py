@@ -163,6 +163,7 @@ class SegmentEvalRecord:
     metrics: Dict[str, MetricResult]
     fact_check: Optional[Any]
     fact_check_skipped_reason: Optional[str] = None
+    novel_content_info: Optional[Dict[str, Any]] = None  # 新内容评估信息
 
 
 @dataclass
@@ -183,6 +184,7 @@ def _metrics_for_segment(
     retrieval_entities: Optional[List[str]] = None,
     reference_year: Optional[str] = None,
     keywords: Optional[List[str]] = None,
+    novel_content_brief: Optional[Any] = None,
 ) -> Dict[str, MetricResult]:
     lo, hi = _parse_length_hint_range(length_hint)
     margin = max(80, (hi - lo) // 2)
@@ -197,6 +199,7 @@ def _metrics_for_segment(
         literary_optimal_min=max(50, lo),
         literary_optimal_max=max(lo + 1, hi),
         literary_paragraph_relaxed=True,
+        novel_content_brief=novel_content_brief,
     )
 
 
@@ -242,12 +245,48 @@ async def evaluate_long_form(
         ctx = ch.retrieval_result.context
         hint = ch.length_hint or f"{max(80, len(gen_text) // 2)}-{max(100, len(gen_text) + 100)}字"
 
+        # 获取 novel_content_brief（如果可用）
+        novel_brief = getattr(ch.retrieval_result, '_novel_content_brief', None)
+
         metrics = _metrics_for_segment(
             ch.segment_text, gen_text, hint,
             retrieval_entities=ref_entities,
             reference_year=ctx.year,
             keywords=ctx.keywords,
+            novel_content_brief=novel_brief,
         )
+
+        # 提取新内容评估信息
+        novel_content_info = None
+        if novel_brief is not None:
+            # 调用 analyze_novel_content 获取完整分析结果
+            from .novel_content_metrics import analyze_novel_content
+
+            analysis = analyze_novel_content(
+                memoir_text=ch.segment_text,
+                generated_text=gen_text,
+                novel_content_brief=novel_brief,
+            )
+
+            novel_content_info = {
+                "has_novel_content": novel_brief.has_novel_content,
+                "novel_entities_available": analysis.novel_entities_available,
+                "novel_entities_used": analysis.novel_entities_used,
+                "new_facts_in_output": analysis.new_facts_in_output,
+                "grounded_facts": analysis.grounded_facts,
+                "ungrounded_facts": analysis.ungrounded_facts,
+                "novel_content_ratio": analysis.novel_content_ratio,
+                "novel_content_grounding": analysis.novel_content_grounding,
+                "expansion_depth": analysis.expansion_depth,
+                "summary": novel_brief.summary,
+            }
+            # 从 metrics 中提取指标值（覆盖上面的计算值，保持一致）
+            if "novel_content_ratio" in metrics:
+                novel_content_info["novel_content_ratio"] = metrics["novel_content_ratio"].value
+            if "novel_content_grounding" in metrics:
+                novel_content_info["novel_content_grounding"] = metrics["novel_content_grounding"].value
+            if "expansion_depth" in metrics:
+                novel_content_info["expansion_depth"] = metrics["expansion_depth"].explanation
 
         eval_result: Optional[Any] = None
         try:
@@ -297,6 +336,7 @@ async def evaluate_long_form(
             metrics=metrics,
             fact_check=fc,
             fact_check_skipped_reason=skip_reason,
+            novel_content_info=novel_content_info,
         )
 
     # ---- 并发评估所有章节 ----
@@ -376,6 +416,13 @@ async def evaluate_long_form(
             line += f" (FActScore {r.fact_check.factscore:.0%})"
         elif r.fact_check_skipped_reason:
             line += f" | 事实检查({r.fact_check_skipped_reason})"
+        # 新内容评估信息
+        if r.novel_content_info:
+            nci = r.novel_content_info
+            if "novel_content_ratio" in nci:
+                line += f" | 新内容引入率 {nci['novel_content_ratio']:.0%}"
+            if "novel_content_grounding" in nci:
+                line += f" | 溯源率 {nci['novel_content_grounding']:.0%}"
         summary_lines.append(line)
 
     # 跨章指标摘要
@@ -410,6 +457,7 @@ async def evaluate_long_form(
                 "fact_score": r.fact_check.factscore if r.fact_check else None,
                 "fact_skip": r.fact_check_skipped_reason,
                 "entities": _extract_entities_info(long_form.chapters[i], r) if i < len(long_form.chapters) else {},
+                "novel_content": r.novel_content_info,
             }
             for i, r in enumerate(records)
         ],

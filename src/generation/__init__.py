@@ -22,6 +22,7 @@ from .runtime_options import (
     estimate_long_form_evaluation_timeout,
     build_long_form_eval_options,
 )
+from .novel_content_extractor import NovelContentBrief, extract_novel_content
 
 __all__ = [
     "LiteraryGenerator",
@@ -52,6 +53,8 @@ __all__ = [
     "estimate_long_form_generation_timeout",
     "estimate_long_form_evaluation_timeout",
     "build_long_form_eval_options",
+    "NovelContentBrief",
+    "extract_novel_content",
 ]
 
 
