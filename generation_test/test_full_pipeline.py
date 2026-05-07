@@ -157,8 +157,25 @@ async def test_full_pipeline():
         if eval_result.quality_gate:
             gate = eval_result.quality_gate
             print(f"\n质量门控: {'✓ 通过' if gate.passed else '✗ 未通过'}")
+
+            # 显示每章的检查结果
+            if gate.chapter_results:
+                print(f"\n  章节检查:")
+                for cr in gate.chapter_results:
+                    status = "✓" if cr.passed else "✗"
+                    print(f"    第{cr.chapter_index + 1}章 {status}")
+                    if cr.issues:
+                        for issue in cr.issues:
+                            print(f"      [{issue.severity}] {issue.dimension}: {issue.message}")
+
+            # 显示跨章问题
+            if gate.cross_chapter_issues:
+                print(f"\n  跨章问题:")
+                for ci in gate.cross_chapter_issues:
+                    print(f"    [{ci.severity}] {ci.dimension}: {ci.message}")
+
             if not gate.passed and gate.remediation:
-                print(f"  建议重新生成: 第 {', '.join(str(c+1) for c in gate.remediation.chapters_to_regenerate)} 章")
+                print(f"\n  建议重新生成: 第 {', '.join(str(c+1) for c in gate.remediation.chapters_to_regenerate)} 章")
 
     except Exception as e:
         print(f"\n  ✗ 评估失败: {e}")
@@ -348,8 +365,36 @@ async def test_full_pipeline():
         if eval_result.quality_gate:
             gate = eval_result.quality_gate
             report_lines.append(f"\n质量门控: {'✓ 通过' if gate.passed else '✗ 未通过'}")
-            if not gate.passed and hasattr(gate, 'failed_checks') and gate.failed_checks:
-                report_lines.append(f"  失败检查: {', '.join(gate.failed_checks)}")
+
+            # 添加详细的失败信息
+            if not gate.passed:
+                # 章节检查结果
+                if gate.chapter_results:
+                    report_lines.append(f"\n【章节检查】")
+                    for cr in gate.chapter_results:
+                        status = "✓ 通过" if cr.passed else "✗ 未通过"
+                        report_lines.append(f"  第{cr.chapter_index + 1}章: {status}")
+                        if cr.issues:
+                            for issue in cr.issues:
+                                report_lines.append(f"    [{issue.severity}] {issue.dimension}: {issue.message}")
+                                report_lines.append(f"      建议: {issue.suggestion}")
+
+                # 跨章问题
+                if gate.cross_chapter_issues:
+                    report_lines.append(f"\n【跨章问题】")
+                    for ci in gate.cross_chapter_issues:
+                        report_lines.append(f"  [{ci.severity}] {ci.dimension}: {ci.message}")
+                        report_lines.append(f"    涉及章节: 第{', '.join(str(c+1) for c in ci.chapters_involved)}章")
+                        report_lines.append(f"    建议: {ci.suggestion}")
+
+                # 修复建议
+                if gate.remediation:
+                    report_lines.append(f"\n【修复建议】")
+                    report_lines.append(f"  需重新生成: 第 {', '.join(str(c+1) for c in gate.remediation.chapters_to_regenerate)} 章")
+                    for ch_idx, reasons in gate.remediation.reasons.items():
+                        report_lines.append(f"  第{ch_idx+1}章原因:")
+                        for reason in reasons:
+                            report_lines.append(f"    - {reason}")
 
     report_lines.append("\n" + "=" * 100)
     report_lines.append("报告结束")
