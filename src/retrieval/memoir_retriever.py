@@ -409,7 +409,6 @@ class MemoirRetriever:
         # 构建搜索词（包含中英文变体）
         search_terms = []
         if context.year:
-            search_terms.append(context.year)
             search_terms.append(str(context.year))
         if context.location:
             search_terms.append(context.location)
@@ -421,6 +420,9 @@ class MemoirRetriever:
             if context.location in location_map:
                 search_terms.append(location_map[context.location])
         search_terms.extend(context.keywords)
+
+        # 去重（保持顺序）
+        search_terms = list(dict.fromkeys(search_terms))
         
         print(f"[_search_entities] 搜索词: {search_terms}")
         print(f"[_search_entities] 实体总数: {len(self._entities_df)}")
