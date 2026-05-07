@@ -130,7 +130,7 @@ async def test_full_pipeline():
             result,
             llm_adapter=llm_adapter,
             use_llm_eval=False,  # 不使用 LLM 评估（节省时间）
-            enable_fact_check=True,  # 启用事实检查
+            enable_fact_check=False,  # Expansion 任务不需要严格的事实检查（依赖 expansion_grounding）
             quality_thresholds=QualityThresholds.for_expansion_task(),  # 使用 expansion 阈值
             enable_quality_gate=True,
         )
