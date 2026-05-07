@@ -306,18 +306,15 @@ async def evaluate_long_form(
                 "new_facts_in_output": analysis.new_facts_in_output,
                 "grounded_facts": analysis.grounded_facts,
                 "ungrounded_facts": analysis.ungrounded_facts,
-                "novel_content_ratio": analysis.novel_content_ratio,
-                "novel_content_grounding": analysis.novel_content_grounding,
-                "expansion_depth": analysis.expansion_depth,
+                "information_gain": analysis.information_gain,
+                "expansion_grounding": analysis.expansion_grounding,
                 "summary": novel_brief.summary,
             }
             # 从 metrics 中提取指标值（覆盖上面的计算值，保持一致）
-            if "novel_content_ratio" in metrics:
-                novel_content_info["novel_content_ratio"] = metrics["novel_content_ratio"].value
-            if "novel_content_grounding" in metrics:
-                novel_content_info["novel_content_grounding"] = metrics["novel_content_grounding"].value
-            if "expansion_depth" in metrics:
-                novel_content_info["expansion_depth"] = metrics["expansion_depth"].explanation
+            if "information_gain" in metrics:
+                novel_content_info["information_gain"] = metrics["information_gain"].value
+            if "expansion_grounding" in metrics:
+                novel_content_info["expansion_grounding"] = metrics["expansion_grounding"].value
 
         eval_result: Optional[Any] = None
         try:
