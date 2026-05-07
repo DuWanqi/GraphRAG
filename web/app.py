@@ -924,9 +924,9 @@ def create_ui():
                         )
 
                         fact_check_checkbox = gr.Checkbox(
-                            value=True,
+                            value=False,
                             label="\U0001f50d 启用评估",
-                            info="检测生成内容的事实准确性、相关性、文学性和合规性",
+                            info="检测生成内容的事实准确性（注意：会增加3-5次API调用，可能导致速率限制）",
                         )
 
                         rule_decompose_checkbox = gr.Checkbox(

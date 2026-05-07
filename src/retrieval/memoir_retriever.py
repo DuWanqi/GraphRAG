@@ -222,7 +222,7 @@ class MemoirRetriever:
             keyword_entities = self._search_entities(context, top_k)
             try:
                 vector_entities = await self.vector_retriever.search_entities(query, top_k)
-                result.entities = self._merge_results(keyword_entities, vector_entities, top_k)
+                result.entities = self._merge_results(keyword_entities, vector_entities, top_k, context)
             except EmbeddingError as e:
                 vector_error = e.message
                 result.error_message = f"⚠️ {e.message}"
@@ -235,7 +235,7 @@ class MemoirRetriever:
             keyword_communities = self._search_communities(context, top_k // 2)
             try:
                 vector_communities = await self.vector_retriever.search_communities(query, top_k // 2)
-                result.communities = self._merge_results(keyword_communities, vector_communities, top_k // 2)
+                result.communities = self._merge_results(keyword_communities, vector_communities, top_k // 2, context)
             except EmbeddingError:
                 result.communities = keyword_communities
             
@@ -295,29 +295,73 @@ class MemoirRetriever:
         keyword_results: List[Dict[str, Any]],
         vector_results: List[Dict[str, Any]],
         top_k: int,
+        context: Optional[MemoirContext] = None,
     ) -> List[Dict[str, Any]]:
-        """融合关键词和向量检索结果"""
+        """融合关键词和向量检索结果
+        
+        改进策略：
+        1. 优先使用关键词检索结果（更可靠）
+        2. 向量检索结果需要年份匹配才纳入
+        3. 如果关键词结果不足，才补充向量结果
+        """
         merged = {}
         
+        # 首先添加关键词结果（更可靠）
         for item in keyword_results:
             name = item.get("name", item.get("title", ""))
             if name:
                 merged[name] = item.copy()
-                merged[name]["score"] = item.get("score", 1) * 0.5
+                merged[name]["score"] = item.get("score", 1) * 1.0  # 关键词结果权重更高
                 merged[name]["source"] = "keyword"
         
-        for item in vector_results:
-            name = item.get("name", item.get("title", ""))
-            if name:
-                if name in merged:
-                    merged[name]["score"] += item.get("score", 1) * 0.5
-                    merged[name]["source"] = "hybrid"
-                else:
-                    merged[name] = item.copy()
-                    merged[name]["score"] = item.get("score", 1) * 0.5
-                    merged[name]["source"] = "vector"
+        # 然后添加向量结果，但需要年份匹配
+        if context and context.year:
+            target_year = str(context.year)
+            for item in vector_results:
+                name = item.get("name", item.get("title", ""))
+                desc = item.get("description", "")
+                
+                if not name:
+                    continue
+                
+                # 检查是否包含目标年份
+                combined_text = f"{name} {desc}"
+                year_match = target_year in combined_text
+                
+                # 如果向量结果包含年份，才考虑纳入
+                if year_match:
+                    if name in merged:
+                        # 如果已有关键词结果，增加分数
+                        merged[name]["score"] += item.get("score", 0.5) * 0.5
+                        merged[name]["source"] = "hybrid"
+                    else:
+                        # 新结果，降低权重
+                        merged[name] = item.copy()
+                        merged[name]["score"] = item.get("score", 0.5) * 0.5
+                        merged[name]["source"] = "vector"
+        else:
+            # 没有年份信息，按原逻辑处理但降低向量权重
+            for item in vector_results:
+                name = item.get("name", item.get("title", ""))
+                if name:
+                    if name in merged:
+                        merged[name]["score"] += item.get("score", 0.5) * 0.3
+                        merged[name]["source"] = "hybrid"
+                    else:
+                        merged[name] = item.copy()
+                        merged[name]["score"] = item.get("score", 0.5) * 0.3
+                        merged[name]["source"] = "vector"
         
         sorted_results = sorted(merged.values(), key=lambda x: x.get("score", 0), reverse=True)
+        
+        # 如果关键词结果足够，优先返回关键词结果
+        if len(keyword_results) >= top_k // 2:
+            # 优先使用关键词结果
+            keyword_names = {item.get("name", item.get("title", "")) for item in keyword_results}
+            filtered = [r for r in sorted_results if r.get("name", r.get("title", "")) in keyword_names]
+            if len(filtered) >= top_k // 2:
+                return filtered[:top_k]
+        
         return sorted_results[:top_k]
     
     def _merge_text_results(
