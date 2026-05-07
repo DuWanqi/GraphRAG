@@ -148,10 +148,10 @@ async def test_full_pipeline():
             # 显示新内容指标
             if seg.novel_content_info:
                 nci = seg.novel_content_info
-                if 'novel_content_ratio' in nci:
-                    print(f"    · 新内容引入率: {nci['novel_content_ratio']:.0%}")
-                if 'novel_content_grounding' in nci:
-                    print(f"    · 新内容溯源率: {nci['novel_content_grounding']:.0%}")
+                if 'information_gain' in nci:
+                    print(f"    · 信息增益: {nci['information_gain']:.0%}")
+                if 'expansion_grounding' in nci:
+                    print(f"    · 扩展溯源率: {nci['expansion_grounding']:.0%}")
 
         # 显示质量门控
         if eval_result.quality_gate:
@@ -300,9 +300,9 @@ async def test_full_pipeline():
                 report_lines.append(f"\n【新内容使用情况】")
 
                 # 1. 新实体使用率
-                if hasattr(nci, 'novel_entities_used') and hasattr(nci, 'novel_entities_available'):
-                    used = nci.novel_entities_used
-                    available = nci.novel_entities_available
+                if 'novel_entities_used' in nci and 'novel_entities_available' in nci:
+                    used = nci['novel_entities_used']
+                    available = nci['novel_entities_available']
                     report_lines.append(f"  可用新实体: {len(available)} 个")
                     report_lines.append(f"  实际使用: {len(used)} 个")
                     if used:
@@ -314,27 +314,27 @@ async def test_full_pipeline():
                 # 2. 新事实提取与溯源
                 report_lines.append(f"\n【新事实提取与溯源】")
 
-                if hasattr(nci, 'new_facts_in_output'):
-                    report_lines.append(f"  生成文本中的新事实: {len(nci.new_facts_in_output)} 个")
-                    if nci.new_facts_in_output:
-                        report_lines.append(f"    → {', '.join(nci.new_facts_in_output[:10])}")
+                if 'new_facts_in_output' in nci:
+                    report_lines.append(f"  生成文本中的新事实: {len(nci['new_facts_in_output'])} 个")
+                    if nci['new_facts_in_output']:
+                        report_lines.append(f"    → {', '.join(nci['new_facts_in_output'][:10])}")
 
-                if hasattr(nci, 'grounded_facts'):
-                    report_lines.append(f"\n  ✓ 有 RAG 支撑的新事实: {len(nci.grounded_facts)} 个")
-                    if nci.grounded_facts:
-                        report_lines.append(f"    → {', '.join(nci.grounded_facts[:10])}")
+                if 'grounded_facts' in nci:
+                    report_lines.append(f"\n  ✓ 有 RAG 支撑的新事实: {len(nci['grounded_facts'])} 个")
+                    if nci['grounded_facts']:
+                        report_lines.append(f"    → {', '.join(nci['grounded_facts'][:10])}")
 
-                if hasattr(nci, 'ungrounded_facts'):
-                    report_lines.append(f"\n  ✗ 无 RAG 支撑的新事实 (疑似幻觉): {len(nci.ungrounded_facts)} 个")
-                    if nci.ungrounded_facts:
-                        report_lines.append(f"    ⚠️  {', '.join(nci.ungrounded_facts[:10])}")
+                if 'ungrounded_facts' in nci:
+                    report_lines.append(f"\n  ✗ 无 RAG 支撑的新事实 (疑似幻觉): {len(nci['ungrounded_facts'])} 个")
+                    if nci['ungrounded_facts']:
+                        report_lines.append(f"    ⚠️  {', '.join(nci['ungrounded_facts'][:10])}")
 
                 # 3. 评分
                 report_lines.append(f"\n【评分】")
-                if hasattr(nci, 'novel_content_ratio'):
-                    report_lines.append(f"  新内容引入率: {nci.novel_content_ratio:.1%}")
-                if hasattr(nci, 'novel_content_grounding'):
-                    report_lines.append(f"  新内容溯源率: {nci.novel_content_grounding:.1%}")
+                if 'information_gain' in nci:
+                    report_lines.append(f"  信息增益: {nci['information_gain']:.1%}")
+                if 'expansion_grounding' in nci:
+                    report_lines.append(f"  扩展溯源率: {nci['expansion_grounding']:.1%}")
 
             # 其他指标
             report_lines.append(f"\n【其他指标】")
@@ -402,7 +402,7 @@ async def test_full_pipeline():
 
     # 保存报告
     report_content = "\n".join(report_lines)
-    output_path = Path("PIPELINE_DETAILED_REPORT.txt")
+    output_path = Path(__file__).parent / "PIPELINE_DETAILED_REPORT.txt"
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(report_content)
 

@@ -2,9 +2,8 @@
 Novel Content Metrics - 新内容评估指标
 
 评估生成文本中"新内容"的引入情况：
-1. novel_content_ratio - 新内容引入率（使用了多少 RAG 提供的新知识）
-2. novel_content_grounding - 新内容溯源率（新内容是否有 RAG 来源支撑，防幻觉）
-3. expansion_depth - 扩展深度（shallow/moderate/deep）
+1. information_gain - 信息增益（引入了多少新知识）
+2. expansion_grounding - 扩展溯源率（新内容是否有 RAG 来源支撑，防幻觉）
 """
 
 from __future__ import annotations
@@ -24,31 +23,38 @@ class NovelContentAnalysis:
     new_facts_in_output: List[str]          # 生成文本中的新事实陈述
     grounded_facts: List[str]               # 有 RAG 来源支撑的新事实
     ungrounded_facts: List[str]             # 无 RAG 来源支撑的新事实（疑似幻觉）
-    
+
     @property
-    def novel_content_ratio(self) -> float:
-        """新内容引入率"""
-        if not self.novel_entities_available:
+    def information_gain(self) -> float:
+        """
+        信息增量（Information Gain）
+
+        衡量生成文本引入了多少新信息，基于使用的新实体数量分段评分：
+        - 0个实体 → 0.0（无新信息）
+        - 1个实体 → 0.4（少量新信息）
+        - 2个实体 → 0.7（适量新信息）
+        - 3+个实体 → 1.0（丰富新信息）
+
+        这样可以避免"分母过大"的问题（不相关实体不应该拉低分数）
+        """
+        used_count = len(self.novel_entities_used)
+
+        if used_count == 0:
             return 0.0
-        return len(self.novel_entities_used) / len(self.novel_entities_available)
+        elif used_count == 1:
+            return 0.4
+        elif used_count == 2:
+            return 0.7
+        else:
+            return 1.0
     
     @property
-    def novel_content_grounding(self) -> float:
-        """新内容溯源率"""
+    def expansion_grounding(self) -> float:
+        """扩展溯源率（Expansion Grounding）"""
         if not self.new_facts_in_output:
             return 1.0  # 没有新事实，默认为完全有据
         return len(self.grounded_facts) / len(self.new_facts_in_output)
-    
-    @property
-    def expansion_depth(self) -> str:
-        """扩展深度"""
-        used_count = len(self.novel_entities_used)
-        if used_count == 0:
-            return "shallow"
-        elif used_count <= 2:
-            return "moderate"
-        else:
-            return "deep"
+
 
 
 def analyze_novel_content(
@@ -138,44 +144,52 @@ def _extract_entity_names_only(generated_text: str, memoir_text: str) -> List[st
     return list(dict.fromkeys(entities))[:20]  # Dedupe and limit
 
 
-def novel_content_ratio_metric(
+def information_gain_metric(
     memoir_text: str,
     generated_text: str,
     novel_content_brief: Any,
 ) -> MetricResult:
     """
-    新内容引入率指标
-    
-    衡量生成文本使用了多少 RAG 提供的新知识
+    信息增量指标（Information Gain）
+
+    衡量生成文本引入了多少新知识（基于实体使用数量的分段评分）
+    - 0个实体 → 0.0（无新内容）
+    - 1个实体 → 0.4（少量新内容）
+    - 2个实体 → 0.7（适量新内容）
+    - 3+个实体 → 1.0（丰富新内容）
     """
     analysis = analyze_novel_content(memoir_text, generated_text, novel_content_brief)
-    
-    ratio = analysis.novel_content_ratio
+
+    ratio = analysis.information_gain
     used = len(analysis.novel_entities_used)
     available = len(analysis.novel_entities_available)
-    
+
     if available == 0:
         explanation = "RAG 未提供新实体"
+    elif used == 0:
+        explanation = f"未使用新实体（RAG 提供了 {available} 个）"
     else:
-        explanation = f"使用了 {used}/{available} 个新实体 ({ratio:.0%})"
+        explanation = f"使用了 {used} 个新实体"
         if used > 0:
-            explanation += f"，包括：{', '.join(analysis.novel_entities_used[:3])}"
-    
+            explanation += f"：{', '.join(analysis.novel_entities_used[:3])}"
+        if used < available:
+            explanation += f"（RAG 还提供了 {available - used} 个未使用的实体）"
+
     return MetricResult(
-        name="novel_content_ratio",
+        name="information_gain",
         value=ratio,
         max_value=1.0,
         explanation=explanation,
     )
 
 
-def novel_content_grounding_metric(
+def expansion_grounding_metric(
     memoir_text: str,
     generated_text: str,
     novel_content_brief: Any,
 ) -> MetricResult:
     """
-    新内容溯源率指标（简化版）
+    扩展溯源率指标（Expansion Grounding）
 
     For expansion tasks: measures if used entities are from RAG sources.
     Since we only count entities that ARE in novel_content_brief,
@@ -202,45 +216,10 @@ def novel_content_grounding_metric(
             explanation += f"；检测到 {ungrounded_count} 个额外事实（未在 RAG 中）"
 
     return MetricResult(
-        name="novel_content_grounding",
+        name="expansion_grounding",
         value=grounding,
         max_value=1.0,
         explanation=explanation,
-    )
-
-
-def expansion_depth_metric(
-    memoir_text: str,
-    generated_text: str,
-    novel_content_brief: Any,
-) -> MetricResult:
-    """
-    扩展深度指标
-    
-    衡量生成文本相对于输入的信息增量
-    """
-    analysis = analyze_novel_content(memoir_text, generated_text, novel_content_brief)
-    
-    depth = analysis.expansion_depth
-    used = len(analysis.novel_entities_used)
-    
-    depth_scores = {
-        "shallow": 0.3,
-        "moderate": 0.7,
-        "deep": 1.0,
-    }
-    
-    depth_labels = {
-        "shallow": "浅层（仅润色，未引入新知识）",
-        "moderate": f"中等（引入 {used} 个新事实）",
-        "deep": f"深度（引入 {used} 个新事实并有叙事整合）",
-    }
-    
-    return MetricResult(
-        name="expansion_depth",
-        value=depth_scores[depth],
-        max_value=1.0,
-        explanation=depth_labels[depth],
     )
 
 

@@ -24,9 +24,8 @@ from src.generation import (
 from src.retrieval import MemoirRetriever
 from src.llm import create_llm_adapter
 from src.evaluation import (
-    novel_content_ratio_metric,
-    novel_content_grounding_metric,
-    expansion_depth_metric,
+    information_gain_metric,
+    expansion_grounding_metric,
 )
 
 
@@ -209,36 +208,27 @@ class TestNovelContentGeneration:
         # 计算新内容指标
         print(f"\n计算新内容指标...")
 
-        ratio_metric = novel_content_ratio_metric(
+        ratio_metric = information_gain_metric(
             TEST_MEMOIR_MINIMAL,
             generated_text,
             novel_brief,
         )
-        print(f"\n新内容引入率:")
+        print(f"\n信息增量:")
         print(f"  分数: {ratio_metric.value:.2f} / {ratio_metric.max_value}")
         print(f"  说明: {ratio_metric.explanation}")
 
-        grounding_metric = novel_content_grounding_metric(
+        grounding_metric = expansion_grounding_metric(
             TEST_MEMOIR_MINIMAL,
             generated_text,
             novel_brief,
         )
-        print(f"\n新内容溯源率:")
+        print(f"\n扩展溯源率:")
         print(f"  分数: {grounding_metric.value:.2f} / {grounding_metric.max_value}")
         print(f"  说明: {grounding_metric.explanation}")
 
-        depth_metric = expansion_depth_metric(
-            TEST_MEMOIR_MINIMAL,
-            generated_text,
-            novel_brief,
-        )
-        print(f"\n扩展深度:")
-        print(f"  分数: {depth_metric.value:.2f} / {depth_metric.max_value}")
-        print(f"  说明: {depth_metric.explanation}")
-
         # 验证
-        assert ratio_metric.value > 0, "新内容引入率应该大于0（至少引入了一些新知识）"
-        assert grounding_metric.value > 0.5, "新内容溯源率应该大于0.5（新内容有RAG来源支撑）"
+        assert ratio_metric.value > 0, "信息增量应该大于0（至少引入了一些新知识）"
+        assert grounding_metric.value > 0.5, "扩展溯源率应该大于0.5（新内容有RAG来源支撑）"
 
         print("\n✓ 新内容评估指标测试通过")
 

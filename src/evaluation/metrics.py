@@ -418,18 +418,14 @@ def calculate_all_metrics(
     # 新内容指标（如果提供了 novel_content_brief）
     if novel_content_brief is not None:
         from .novel_content_metrics import (
-            novel_content_ratio_metric,
-            novel_content_grounding_metric,
-            expansion_depth_metric,
+            information_gain_metric,
+            expansion_grounding_metric,
         )
 
-        results["novel_content_ratio"] = novel_content_ratio_metric(
+        results["information_gain"] = information_gain_metric(
             memoir_text, generated_text, novel_content_brief
         )
-        results["novel_content_grounding"] = novel_content_grounding_metric(
-            memoir_text, generated_text, novel_content_brief
-        )
-        results["expansion_depth"] = expansion_depth_metric(
+        results["expansion_grounding"] = expansion_grounding_metric(
             memoir_text, generated_text, novel_content_brief
         )
 
@@ -461,9 +457,8 @@ def aggregate_scores(
             "transition_usage": 0.8,
             "descriptive_richness": 0.8,
             # 新内容指标权重
-            "novel_content_ratio": 1.2,
-            "novel_content_grounding": 1.5,
-            "expansion_depth": 1.0,
+            "information_gain": 1.2,
+            "expansion_grounding": 1.5,
         }
 
     total_weight = sum(weights.get(k, 1.0) for k in metrics)
