@@ -45,50 +45,50 @@ Pipeline 详细测试报告
      The 1980 Moscow Olympics was an event that was boycotted, leading to a retaliatory boycott in 1984....
 
 【新增实体】(原文未提到，可用于扩展)
-  1. 中国科学院 (ORGANIZATION)
-     The Chinese Academy of Sciences (CAS) is China's highest academic institution in science and technology, with its members referred to as academicians....
-  2. 中华人民共和国刑法 (ORGANIZATION)
-     The Criminal Law of the People's Republic of China, also known as "中华人民共和国刑法", is a foundational legal framework adopted on July 1, 1979, by the Secon...
-  3. 庚申年“猴票” (EVENT)
+  1. 庚申年“猴票” (EVENT)
      The 庚申年“猴票” (Gengshen Year Monkey Stamp) holds significant importance as the first zodiac stamp of New China. Issued in the Gengshen year (1980), this...
-  4. 赵紫阳 (PERSON)
-     Zhao Ziyang was a prominent figure in Chinese politics, serving as the third Premier of the People's Republic of China from 1980 to 1987 and as Genera...
-  5. 团结工会 (ORGANIZATION)
-     团结工会 (Solidarity) was a Polish trade union federation that originated in 1980 at the Lenin Shipyard in Gdańsk. It holds the distinction of being the f...
-  6. 中国女排 (ORGANIZATION)
+  2. 中国女排 (ORGANIZATION)
      The Chinese Women's Volleyball Team (中国女排) is a national sports team that represents China in international women's volleyball competitions. This team...
-  7. 青年科学基金项目（A类） (EVENT)
+  3. 女排精神 (EVENT)
+     The Women's Volleyball Spirit is a historical legacy of the Chinese Women's Volleyball Team, summarized after their five consecutive championships in ...
+  4. 青年科学基金项目（A类） (EVENT)
      A talent program established by the National Natural Science Foundation of China (NSFC) in 1994, approved by the State Council. It aims to support you...
+  5. 中国科学院 (ORGANIZATION)
+     The Chinese Academy of Sciences (CAS) is China's highest academic institution in science and technology, with its members referred to as academicians....
+  6. 赵紫阳 (PERSON)
+     Zhao Ziyang was a prominent figure in Chinese politics, serving as the third Premier of the People's Republic of China from 1980 to 1987 and as Genera...
+  7. 团结工会 (ORGANIZATION)
+     团结工会 (Solidarity) was a Polish trade union federation that originated in 1980 at the Lenin Shipyard in Gdańsk. It holds the distinction of being the f...
   8. 国家公务员制度 (ORGANIZATION)
      The National Civil Service System is China's regulatory framework for managing civil servants, with the core being the "Provisional Regulations on Nat...
-  9. 女排精神 (EVENT)
-     The Women's Volleyball Spirit is a historical legacy of the Chinese Women's Volleyball Team, summarized after their five consecutive championships in ...
+  9. 中华人民共和国刑法 (ORGANIZATION)
+     The Criminal Law of the People's Republic of China, also known as "中华人民共和国刑法", is a foundational legal framework adopted on July 1, 1979, by the Secon...
 
 【关系】(共 4 个)
-  1. 国际自然保护同盟 → 科学发展观
-     The International Union for Conservation of Nature's "The World Conservation Strategy" in 1980 first...
-  2. 马丁·路德·金 → 林肯纪念堂
-     马丁·路德·金在林肯纪念堂前发表了著名的《我有一个梦想》演讲...
-  3. 马丁·路德·金 → 《我有一个梦想》演讲
-     马丁·路德·金发表了著名的《我有一个梦想》演讲...
-  4. 《我有一个梦想》演讲 → 林肯纪念堂
+  1. 《我有一个梦想》演讲 → 林肯纪念堂
      《我有一个梦想》演讲在林肯纪念堂前发表...
+  2. 马丁·路德·金 → 《我有一个梦想》演讲
+     马丁·路德·金发表了著名的《我有一个梦想》演讲...
+  3. 国际自然保护同盟 → 科学发展观
+     The International Union for Conservation of Nature's "The World Conservation Strategy" in 1980 first...
+  4. 马丁·路德·金 → 林肯纪念堂
+     马丁·路德·金在林肯纪念堂前发表了著名的《我有一个梦想》演讲...
 ----------------------------------------------------------------------------------------------------
 
 >>> 生成内容:
 ----------------------------------------------------------------------------------------------------
-早晨的阳光从窗帘缝隙里洒进来，显得格外明亮。父亲站在正厅的桌边，手里攥着那张薄薄的大学录取通知书，指尖微微发抖。他的嘴角似乎藏着笑意，但眼眶却红得明显。他来回踱步，偶尔停下来，低声念着通知书上的字，好像怕自己漏掉了什么重要的信息。母亲坐在一旁的木椅上，没说话，只是轻轻地抹着眼角。我靠在门框上，心里有种说不出的复杂感。兴奋，当然有；更多的是一种隐约的沉重感。那张通知书，是我一个人的，却又是全家人的愿望。我知道，这一天父亲等了很久，他总说，“恢复高考，这是国家给咱老百姓开的窗子。”而今天，这扇窗终于对我们家敞开了。
+父亲那晚的脚步声一直在我耳边回响。靠近房门时，他总是轻轻地停顿片刻，仿佛怕打扰睡梦中的人，但随后又迈开步子，踱回客厅。母亲坐在桌边，灯光映着她微微低垂的脸，泪水在昏黄的灯影里闪着光。我知道，那不仅是我的大学录取通知书，也是他们半生的期盼。这张薄薄的纸，承载了一个家庭对未来的想象，甚至是某种解脱——从田间劳作的日复一日中，从村口那条尘土飞扬的泥路中。
 
-上学的行李简单得出奇，一只棕色帆布包，里面装着些许换洗衣物，几本笔记本，还有母亲特意为我缝的蓝布书皮。我自己提着包，父亲坚持要送我到车站。他一路上紧握着我的胳膊，好像担心我会突然跑掉似的。车站人头攒动，汽笛声混杂着人们的谈话，空气中带着煤油味和些许尘土的干涩感。父亲站在月台边，眼神里带着不舍和一种藏不住的期盼。他拍了拍我的肩膀，笑着说：“去了就好好读书，不用挂念家里。你娘和我，都盼着你出息。”
+那是1980年，恢复高考的第三个年头。这个国家正在从一场漫长的沉睡中苏醒，像初春的土地，开始孕育新的生机。街头巷尾的人们谈论着中国女排的胜利，她们以七场连胜夺得了世界冠军，这是中国第一次在国际赛场上的巅峰。广播里人们高喊着“女排精神”，那种拼搏的意志与团结的力量，似乎成为了这个时代最鲜明的符号。父亲也曾在村里的广播里听到过这些消息，但对他来说，真正改变命运的却是这张通知书。
 
-学校的大门是一座灰色的拱形建筑，入口处的匾额上刻着校名，字迹苍劲有力。校园里安静极了，只有风吹动树叶发出的“沙沙”声。宿舍是六人间，窗外是一片修剪整齐的草坪。室友们陆陆续续进来时，都带着些许拘谨，但很快，这种拘谨就被相互的好奇和热情打破了。阿明来自安徽，皮肤黝黑，笑起来露出一排洁白的牙；小李是重庆人，说话带着浓重的地方口音，语速快得让人听不清；小陈是北方人，身形高大，说话却温吞热诚。我们围坐在床边，聊起各自的家乡和生活。阿明说，“我们村里有人收集猴票，听说今年的猴票特别稀罕，设计得好看极了。”小李接话道，“对啊，庚申年的第一张生肖邮票，能值不少钱呢。”
+开学那天，阳光洒在校园的水泥路上，我背着简单的行李，脚步轻快却带着几分拘谨。四周是高大的白杨树，树叶在风中沙沙作响，偶尔有几片落叶飘下，轻轻触碰到地面。我走进宿舍，那里已经住了几位同学，来自不同的省份。一个来自福建的男孩正在收拾床铺，他的行李箱里竟放着几张庚申年猴票。他兴奋地向我们展示，说这是今年刚发行的第一张生肖邮票，设计师是黄永玉。另一位来自东北的同学笑着调侃：“这猴票能值多少钱？以后会不会比金子还贵？”
 
-那天晚上，宿舍的灯光洒在大家的脸上，显得每个人都有种跃跃欲试的神情。我们聊到未来，聊到梦想。小陈提到他父亲是工厂的技术员，曾经告诉他，中国科学院的科学家们能合成出新的化学物质，这些东西未来可能会改变世界。他说得兴致勃勃，眼睛里闪着光。我听着，心里也涌起一股向往。我想，也许有一天，我也能为国家做些事情。那种渴望，就像一颗种子，在那一刻悄悄地埋进了我的心里。
+晚上，我们围坐在宿舍的一角，各自带着一点新鲜和羞涩，聊起了家乡的习俗和未来的梦想。福建男孩提到，他的家乡靠海，小时候总能听到船的汽笛声；东北的同学讲起他们冬天的冰雕和热腾腾的饺子；而我，则讲了一段关于村里春播的故事——父亲总是在播种时对我说，“种下去的每一颗种子，都有希望。”那一刻，我意识到，我们虽然来自不同的地方，但却有着同样的渴望：通过知识改变命运，为家人和自己谋得更好的生活。
 
-夜深了，窗外传来虫鸣声，偶尔夹杂几声远处的犬吠。室友们渐渐安静下来，有人已经沉沉睡去。我独自坐在床边，看着桌上那份入学通知书，感觉它比白天时更加沉重。我轻轻合上它，心里默默地告诉自己，这只是开始，未来的路还很长。
+夜深时，窗外的白杨树在风中摇曳，远处传来几声自行车铃的清脆响声。我们逐渐安静下来，各自回到床铺。微弱的灯光中，我看着手边的书，心跳着，仿佛有无数的可能性在眼前展开。这是新的开始，一个充满未知但充满希望的开端。
 ----------------------------------------------------------------------------------------------------
 
-生成长度: 1027 字
+生成长度: 873 字
 
 >>> 评估结果:
 ----------------------------------------------------------------------------------------------------
@@ -100,27 +100,27 @@ Pipeline 详细测试报告
 【评分】
 
 【其他指标】
-  - entity_coverage: 0.10
-  - time_consistency: 0.30
-  - keyword_overlap: 0.20
-  - semantic_similarity: 0.19
+  - entity_coverage: 1.00
+  - time_consistency: 1.00
+  - keyword_overlap: 0.40
+  - semantic_similarity: 0.22
   - length_score: 0.30
   - paragraph_structure: 1.00
-  - transition_usage: 0.40
-  - descriptive_richness: 1.00
-  - novel_content_ratio: 0.11
+  - transition_usage: 0.70
+  - descriptive_richness: 0.75
+  - novel_content_ratio: 0.33
   - novel_content_grounding: 0.07
-  - expansion_depth: 0.70
+  - expansion_depth: 1.00
 ----------------------------------------------------------------------------------------------------
 
 ====================================================================================================
 【整体评估】
 ====================================================================================================
 
-综合分数: 9.00/10
+综合分数: 8.70/10
 
 文档级指标:
-  - year_diversity: 0.50
+  - year_diversity: 1.00
   - merged_length: 1.00
 
 质量门控: ✗ 未通过

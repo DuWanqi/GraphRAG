@@ -31,10 +31,18 @@ class AccuracyMetrics:
     def entity_coverage(
         generated_text: str,
         reference_entities: List[str],
+        task_type: str = "expansion",
+        min_required: int = 2,
     ) -> MetricResult:
         """
         实体覆盖率
         检查生成文本中包含了多少参考实体
+
+        Args:
+            generated_text: 生成的文本
+            reference_entities: 参考实体列表
+            task_type: 任务类型 ("expansion" 或 "summarization")
+            min_required: expansion任务要求的最少实体数
         """
         if not reference_entities:
             return MetricResult(
@@ -43,15 +51,25 @@ class AccuracyMetrics:
                 max_value=1,
                 explanation="无参考实体"
             )
-        
+
         covered = sum(1 for e in reference_entities if e in generated_text)
-        coverage = covered / len(reference_entities)
-        
+
+        if task_type == "expansion":
+            # 扩展任务：检查是否达到最低要求
+            target = min(min_required, len(reference_entities))
+            coverage = min(covered / target, 1.0)  # 上限为1.0
+            status = "✓" if covered >= target else "✗"
+            explanation = f"{status} 使用了 {covered} 个实体（要求至少 {target} 个）"
+        else:
+            # 摘要任务：使用百分比覆盖率
+            coverage = covered / len(reference_entities)
+            explanation = f"覆盖了 {covered}/{len(reference_entities)} 个参考实体"
+
         return MetricResult(
             name="entity_coverage",
             value=coverage,
             max_value=1.0,
-            explanation=f"覆盖了 {covered}/{len(reference_entities)} 个参考实体"
+            explanation=explanation
         )
     
     @staticmethod
@@ -348,12 +366,16 @@ def calculate_all_metrics(
     literary_optimal_max: int = 500,
     literary_paragraph_relaxed: bool = False,
     novel_content_brief: Optional[Any] = None,
+    task_type: str = "expansion",
+    min_required_entities: int = 2,
 ) -> Dict[str, MetricResult]:
     """
     计算所有指标
 
     literary_* 参数用于长文/分章场景下校准长度与段落评分。
     novel_content_brief: NovelContentBrief 对象（可选），用于计算新内容指标
+    task_type: 任务类型 ("expansion" 或 "summarization")
+    min_required_entities: expansion任务要求的最少实体数
 
     Returns:
         Dict[str, MetricResult]: 指标名称到结果的映射
@@ -362,7 +384,9 @@ def calculate_all_metrics(
 
     # 准确性指标
     results["entity_coverage"] = AccuracyMetrics.entity_coverage(
-        generated_text, reference_entities or []
+        generated_text, reference_entities or [],
+        task_type=task_type,
+        min_required=min_required_entities,
     )
     results["time_consistency"] = AccuracyMetrics.time_consistency(
         generated_text, reference_year
