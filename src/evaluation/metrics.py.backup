@@ -325,140 +325,85 @@ def _is_entity_mentioned(entity_name: str, text: str) -> bool:
     return False
 
 
-def _extract_core_concepts(memoir_text: str) -> List[str]:
-    """
-    提取原文核心概念（名词、专有名词）
-
-    使用 jieba 分词 + 词性标注，提取：
-    - nr: 人名
-    - ns: 地名
-    - nt: 机构名
-    - nz: 其他专名
-    - n: 普通名词（过滤常见词）
-    """
-    try:
-        import jieba.posseg as pseg
-    except ImportError:
-        # 降级方案：使用正则提取 2-4 字的中文词
-        return list(set(re.findall(r'[一-龥]{2,4}', memoir_text)))[:20]
-
-    # 目标词性
-    target_pos = {'nr', 'ns', 'nt', 'nz', 'n'}
-
-    # 常见词黑名单（过滤掉太泛的词）
-    blacklist = {
-        '时候', '时间', '地方', '方面', '情况', '问题', '事情', '东西',
-        '人', '大家', '我们', '他们', '自己', '什么', '怎么', '这样',
-        '那样', '如何', '为什么', '因为', '所以', '但是', '然后',
-        '开始', '结束', '进行', '发生', '出现', '成为', '变成',
-    }
-
-    words = pseg.cut(memoir_text)
-    concepts = []
-
-    for word, flag in words:
-        if (len(word) >= 2 and
-            flag in target_pos and
-            word not in blacklist):
-            concepts.append(word)
-
-    # 去重并限制数量
-    return list(dict.fromkeys(concepts))[:30]
-
-
-def _is_concept_preserved(concept: str, generated_text: str) -> bool:
-    """
-    检查概念是否在生成文本中保留（支持部分匹配）
-
-    匹配策略：
-    1. 精确匹配：概念完整出现
-    2. 部分匹配：概念的主要部分出现（≥2字）
-    3. 同义匹配：概念的核心词出现
-    """
-    if not concept or not generated_text:
-        return False
-
-    # 归一化
-    concept_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', concept).upper()
-    text_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', generated_text).upper()
-
-    # 1. 精确匹配
-    if concept_normalized in text_normalized:
-        return True
-
-    # 2. 部分匹配（对于 ≥3 字的概念，匹配前 2 字或后 2 字）
-    if len(concept) >= 3:
-        # 提取概念中的 2 字词
-        for i in range(len(concept) - 1):
-            substring = concept[i:i+2]
-            if len(substring) == 2 and substring in generated_text:
-                return True
-
-    # 3. 同义匹配（对于复合词，匹配核心词）
-    # 例如："大学" 可以匹配 "大学生"、"上大学"
-    if len(concept) == 2 and concept in generated_text:
-        return True
-
-    return False
-
-
 class RelevanceMetrics:
     """相关性指标"""
     
     @staticmethod
-    def topic_coherence(
+    def keyword_overlap(
+        generated_text: str,
+        memoir_text: str,
+        keywords: Optional[List[str]] = None,
+    ) -> MetricResult:
+        """
+        关键词重叠度
+        """
+        if keywords:
+            matched = sum(1 for k in keywords if k in generated_text)
+            score = matched / len(keywords) if keywords else 0
+            return MetricResult(
+                name="keyword_overlap",
+                value=score,
+                max_value=1.0,
+                explanation=f"匹配了 {matched}/{len(keywords)} 个关键词"
+            )
+        
+        # 如果没有提供关键词，计算字符重叠
+        memoir_chars = set(memoir_text)
+        generated_chars = set(generated_text)
+        overlap = len(memoir_chars & generated_chars)
+        total = len(memoir_chars | generated_chars)
+        
+        score = overlap / total if total > 0 else 0
+        
+        return MetricResult(
+            name="keyword_overlap",
+            value=score,
+            max_value=1.0,
+            explanation=f"字符重叠度 {score:.2%}"
+        )
+    
+    @staticmethod
+    def semantic_similarity(
         generated_text: str,
         memoir_text: str,
     ) -> MetricResult:
         """
-        主题一致性（Topic Coherence）
-
-        检查核心概念是否保留（支持同义改写和部分匹配）
-
-        与旧指标的区别：
-        - keyword_overlap: 精确匹配 → 无法识别同义改写
-        - semantic_similarity: 2-gram重叠 → 对expansion任务不适用
-        - topic_coherence: 核心概念保留（支持同义） → 更合理
-
-        计算方式：
-        1. 提取原文核心概念（名词、专有名词）
-        2. 检查每个概念是否在生成文本中出现（支持部分匹配）
-        3. 计算保留率
+        语义相似度（基于 2-gram 词频余弦相似度）。
+        如需精确计算，应使用 embedding 模型。
         """
-        # 提取原文核心概念
-        core_concepts = _extract_core_concepts(memoir_text)
+        def get_ngram_freq(text: str, n: int = 2) -> Dict[str, int]:
+            chars = re.findall(r'[\u4e00-\u9fa5]', text)
+            freq: Dict[str, int] = {}
+            for i in range(len(chars) - n + 1):
+                gram = "".join(chars[i:i + n])
+                freq[gram] = freq.get(gram, 0) + 1
+            return freq
 
-        if not core_concepts:
-            return MetricResult(
-                name="topic_coherence",
-                value=0.5,
-                max_value=1.0,
-                explanation="原文未提取到核心概念"
-            )
+        memoir_freq = get_ngram_freq(memoir_text)
+        generated_freq = get_ngram_freq(generated_text)
 
-        # 检查每个概念是否保留
-        preserved = 0
-        preserved_concepts = []
+        # 计算余弦相似度
+        all_grams = set(memoir_freq.keys()) | set(generated_freq.keys())
 
-        for concept in core_concepts:
-            if _is_concept_preserved(concept, generated_text):
-                preserved += 1
-                preserved_concepts.append(concept)
-
-        score = preserved / len(core_concepts)
-
-        explanation = f"保留了 {preserved}/{len(core_concepts)} 个核心概念"
-        if preserved_concepts:
-            examples = ', '.join(preserved_concepts[:3])
-            explanation += f"（如：{examples}）"
-
-        return MetricResult(
-            name="topic_coherence",
-            value=score,
-            max_value=1.0,
-            explanation=explanation
+        dot_product = sum(
+            memoir_freq.get(g, 0) * generated_freq.get(g, 0)
+            for g in all_grams
         )
 
+        norm_memoir = sum(v**2 for v in memoir_freq.values()) ** 0.5
+        norm_generated = sum(v**2 for v in generated_freq.values()) ** 0.5
+
+        if norm_memoir == 0 or norm_generated == 0:
+            similarity = 0.0
+        else:
+            similarity = dot_product / (norm_memoir * norm_generated)
+
+        return MetricResult(
+            name="semantic_similarity",
+            value=similarity,
+            max_value=1.0,
+            explanation=f"2-gram 余弦相似度 {similarity:.2%}"
+        )
 
 
 class LiteraryMetrics:
@@ -650,7 +595,10 @@ def calculate_all_metrics(
     )
 
     # 相关性指标
-    results["topic_coherence"] = RelevanceMetrics.topic_coherence(
+    results["keyword_overlap"] = RelevanceMetrics.keyword_overlap(
+        generated_text, memoir_text, keywords
+    )
+    results["semantic_similarity"] = RelevanceMetrics.semantic_similarity(
         generated_text, memoir_text
     )
 
@@ -705,7 +653,8 @@ def aggregate_scores(
             "entity_coverage": 1.5,
             "temporal_coherence": 1.0,
             "rag_entity_accuracy": 1.5,  # 实体描述准确性（重要）
-            "topic_coherence": 1.5,  # 主题一致性（重要）
+            "keyword_overlap": 1.0,
+            "semantic_similarity": 1.0,
             "length_score": 0.8,
             "paragraph_structure": 0.8,
             "transition_usage": 0.8,
