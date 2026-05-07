@@ -178,9 +178,9 @@ async def main():
                 report_lines.append(f"  - 无依据的新事实: {len(nci.ungrounded_facts)} 个")
                 if nci.ungrounded_facts:
                     report_lines.append(f"    ⚠️  示例: {', '.join(nci.ungrounded_facts[:10])}")
-                
-                report_lines.append(f"  - 新内容引入率: {nci.novel_content_ratio:.1%}")
-                report_lines.append(f"  - 新内容溯源率: {nci.grounding_score:.1%}")
+
+                report_lines.append(f"  - 信息增益: {nci.information_gain:.1%}")
+                report_lines.append(f"  - 扩展溯源率: {nci.expansion_grounding:.1%}")
             
             report_lines.append("-" * 100)
     

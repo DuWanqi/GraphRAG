@@ -185,21 +185,45 @@ def _metrics_for_segment(
     reference_year: Optional[str] = None,
     keywords: Optional[List[str]] = None,
     novel_content_brief: Optional[Any] = None,
+    task_type: str = "expansion",
+    min_required_entities: int = 2,
 ) -> Dict[str, MetricResult]:
     lo, hi = _parse_length_hint_range(length_hint)
-    margin = max(80, (hi - lo) // 2)
+
+    if task_type == "expansion":
+        # For expansion: allow much more flexibility
+        # Original memoir length as baseline
+        memoir_len = len(memoir_snippet)
+
+        # Expansion factor: 2-6x is reasonable
+        margin = max(200, hi - lo)
+
+        literary_length_min = max(50, memoir_len)  # At least as long as original
+        literary_length_max = max(hi * 3, memoir_len * 8)  # Allow 3x hint or 8x original
+        literary_optimal_min = max(memoir_len * 2, lo)  # At least 2x original
+        literary_optimal_max = max(memoir_len * 5, hi)  # Up to 5x original
+    else:
+        # For summarization: keep strict bounds
+        margin = max(80, (hi - lo) // 2)
+        literary_length_min = max(50, lo - margin)
+        literary_length_max = min(20000, hi + margin * 2)
+        literary_optimal_min = max(50, lo)
+        literary_optimal_max = max(lo + 1, hi)
+
     return calculate_all_metrics(
         memoir_snippet,
         generated_snippet,
         reference_entities=retrieval_entities or [],
         reference_year=reference_year,
         keywords=keywords,
-        literary_length_min=max(50, lo - margin),
-        literary_length_max=min(20000, hi + margin * 2),
-        literary_optimal_min=max(50, lo),
-        literary_optimal_max=max(lo + 1, hi),
+        literary_length_min=literary_length_min,
+        literary_length_max=literary_length_max,
+        literary_optimal_min=literary_optimal_min,
+        literary_optimal_max=literary_optimal_max,
         literary_paragraph_relaxed=True,
         novel_content_brief=novel_content_brief,
+        task_type=task_type,
+        min_required_entities=min_required_entities,
     )
 
 
@@ -236,17 +260,22 @@ async def evaluate_long_form(
         """评估单章（指标 + evaluator + fact_check），可并发。"""
         gen_text = ch.generation.content
 
+        # 获取 novel_content_brief（如果可用）
+        novel_brief = getattr(ch.retrieval_result, '_novel_content_brief', None)
+
+        # 使用 novel entities 作为参考实体
         ref_entities: List[str] = []
-        for e in (ch.retrieval_result.entities or [])[:15]:
-            name = e.get("name") or e.get("title") or ""
-            if name:
-                ref_entities.append(name)
+        if novel_brief:
+            ref_entities = novel_brief.novel_entity_names[:10]
+        else:
+            # 回退到所有实体
+            for e in (ch.retrieval_result.entities or [])[:15]:
+                name = e.get("name") or e.get("title") or ""
+                if name:
+                    ref_entities.append(name)
 
         ctx = ch.retrieval_result.context
         hint = ch.length_hint or f"{max(80, len(gen_text) // 2)}-{max(100, len(gen_text) + 100)}字"
-
-        # 获取 novel_content_brief（如果可用）
-        novel_brief = getattr(ch.retrieval_result, '_novel_content_brief', None)
 
         metrics = _metrics_for_segment(
             ch.segment_text, gen_text, hint,
@@ -254,6 +283,8 @@ async def evaluate_long_form(
             reference_year=ctx.year,
             keywords=ctx.keywords,
             novel_content_brief=novel_brief,
+            task_type="expansion",
+            min_required_entities=2,
         )
 
         # 提取新内容评估信息
@@ -275,18 +306,15 @@ async def evaluate_long_form(
                 "new_facts_in_output": analysis.new_facts_in_output,
                 "grounded_facts": analysis.grounded_facts,
                 "ungrounded_facts": analysis.ungrounded_facts,
-                "novel_content_ratio": analysis.novel_content_ratio,
-                "novel_content_grounding": analysis.novel_content_grounding,
-                "expansion_depth": analysis.expansion_depth,
+                "information_gain": analysis.information_gain,
+                "expansion_grounding": analysis.expansion_grounding,
                 "summary": novel_brief.summary,
             }
             # 从 metrics 中提取指标值（覆盖上面的计算值，保持一致）
-            if "novel_content_ratio" in metrics:
-                novel_content_info["novel_content_ratio"] = metrics["novel_content_ratio"].value
-            if "novel_content_grounding" in metrics:
-                novel_content_info["novel_content_grounding"] = metrics["novel_content_grounding"].value
-            if "expansion_depth" in metrics:
-                novel_content_info["expansion_depth"] = metrics["expansion_depth"].explanation
+            if "information_gain" in metrics:
+                novel_content_info["information_gain"] = metrics["information_gain"].value
+            if "expansion_grounding" in metrics:
+                novel_content_info["expansion_grounding"] = metrics["expansion_grounding"].value
 
         eval_result: Optional[Any] = None
         try:

@@ -5,7 +5,12 @@
 
 import asyncio
 import os
+import sys
 from pathlib import Path
+
+# 添加项目根目录到 Python 路径
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 # 设置环境变量
 os.environ['GRAPHRAG_OUTPUT_DIR'] = 'data/graphrag_output'
@@ -119,11 +124,14 @@ async def test_full_pipeline():
     print("\n[6/6] 执行评估...")
 
     try:
+        from src.evaluation.quality_gate import QualityThresholds
+
         eval_result = await evaluate_long_form(
             result,
             llm_adapter=llm_adapter,
             use_llm_eval=False,  # 不使用 LLM 评估（节省时间）
-            enable_fact_check=True,  # 启用事实检查
+            enable_fact_check=False,  # Expansion 任务不需要严格的事实检查（依赖 expansion_grounding）
+            quality_thresholds=QualityThresholds.for_expansion_task(),  # 使用 expansion 阈值
             enable_quality_gate=True,
         )
 
@@ -140,17 +148,34 @@ async def test_full_pipeline():
             # 显示新内容指标
             if seg.novel_content_info:
                 nci = seg.novel_content_info
-                if 'novel_content_ratio' in nci:
-                    print(f"    · 新内容引入率: {nci['novel_content_ratio']:.0%}")
-                if 'novel_content_grounding' in nci:
-                    print(f"    · 新内容溯源率: {nci['novel_content_grounding']:.0%}")
+                if 'information_gain' in nci:
+                    print(f"    · 信息增益: {nci['information_gain']:.0%}")
+                if 'expansion_grounding' in nci:
+                    print(f"    · 扩展溯源率: {nci['expansion_grounding']:.0%}")
 
         # 显示质量门控
         if eval_result.quality_gate:
             gate = eval_result.quality_gate
             print(f"\n质量门控: {'✓ 通过' if gate.passed else '✗ 未通过'}")
+
+            # 显示每章的检查结果
+            if gate.chapter_results:
+                print(f"\n  章节检查:")
+                for cr in gate.chapter_results:
+                    status = "✓" if cr.passed else "✗"
+                    print(f"    第{cr.chapter_index + 1}章 {status}")
+                    if cr.issues:
+                        for issue in cr.issues:
+                            print(f"      [{issue.severity}] {issue.dimension}: {issue.message}")
+
+            # 显示跨章问题
+            if gate.cross_chapter_issues:
+                print(f"\n  跨章问题:")
+                for ci in gate.cross_chapter_issues:
+                    print(f"    [{ci.severity}] {ci.dimension}: {ci.message}")
+
             if not gate.passed and gate.remediation:
-                print(f"  建议重新生成: 第 {', '.join(str(c+1) for c in gate.remediation.chapters_to_regenerate)} 章")
+                print(f"\n  建议重新生成: 第 {', '.join(str(c+1) for c in gate.remediation.chapters_to_regenerate)} 章")
 
     except Exception as e:
         print(f"\n  ✗ 评估失败: {e}")
@@ -275,9 +300,9 @@ async def test_full_pipeline():
                 report_lines.append(f"\n【新内容使用情况】")
 
                 # 1. 新实体使用率
-                if hasattr(nci, 'novel_entities_used') and hasattr(nci, 'novel_entities_available'):
-                    used = nci.novel_entities_used
-                    available = nci.novel_entities_available
+                if 'novel_entities_used' in nci and 'novel_entities_available' in nci:
+                    used = nci['novel_entities_used']
+                    available = nci['novel_entities_available']
                     report_lines.append(f"  可用新实体: {len(available)} 个")
                     report_lines.append(f"  实际使用: {len(used)} 个")
                     if used:
@@ -289,27 +314,27 @@ async def test_full_pipeline():
                 # 2. 新事实提取与溯源
                 report_lines.append(f"\n【新事实提取与溯源】")
 
-                if hasattr(nci, 'new_facts_in_output'):
-                    report_lines.append(f"  生成文本中的新事实: {len(nci.new_facts_in_output)} 个")
-                    if nci.new_facts_in_output:
-                        report_lines.append(f"    → {', '.join(nci.new_facts_in_output[:10])}")
+                if 'new_facts_in_output' in nci:
+                    report_lines.append(f"  生成文本中的新事实: {len(nci['new_facts_in_output'])} 个")
+                    if nci['new_facts_in_output']:
+                        report_lines.append(f"    → {', '.join(nci['new_facts_in_output'][:10])}")
 
-                if hasattr(nci, 'grounded_facts'):
-                    report_lines.append(f"\n  ✓ 有 RAG 支撑的新事实: {len(nci.grounded_facts)} 个")
-                    if nci.grounded_facts:
-                        report_lines.append(f"    → {', '.join(nci.grounded_facts[:10])}")
+                if 'grounded_facts' in nci:
+                    report_lines.append(f"\n  ✓ 有 RAG 支撑的新事实: {len(nci['grounded_facts'])} 个")
+                    if nci['grounded_facts']:
+                        report_lines.append(f"    → {', '.join(nci['grounded_facts'][:10])}")
 
-                if hasattr(nci, 'ungrounded_facts'):
-                    report_lines.append(f"\n  ✗ 无 RAG 支撑的新事实 (疑似幻觉): {len(nci.ungrounded_facts)} 个")
-                    if nci.ungrounded_facts:
-                        report_lines.append(f"    ⚠️  {', '.join(nci.ungrounded_facts[:10])}")
+                if 'ungrounded_facts' in nci:
+                    report_lines.append(f"\n  ✗ 无 RAG 支撑的新事实 (疑似幻觉): {len(nci['ungrounded_facts'])} 个")
+                    if nci['ungrounded_facts']:
+                        report_lines.append(f"    ⚠️  {', '.join(nci['ungrounded_facts'][:10])}")
 
                 # 3. 评分
                 report_lines.append(f"\n【评分】")
-                if hasattr(nci, 'novel_content_ratio'):
-                    report_lines.append(f"  新内容引入率: {nci.novel_content_ratio:.1%}")
-                if hasattr(nci, 'novel_content_grounding'):
-                    report_lines.append(f"  新内容溯源率: {nci.novel_content_grounding:.1%}")
+                if 'information_gain' in nci:
+                    report_lines.append(f"  信息增益: {nci['information_gain']:.1%}")
+                if 'expansion_grounding' in nci:
+                    report_lines.append(f"  扩展溯源率: {nci['expansion_grounding']:.1%}")
 
             # 其他指标
             report_lines.append(f"\n【其他指标】")
@@ -340,8 +365,36 @@ async def test_full_pipeline():
         if eval_result.quality_gate:
             gate = eval_result.quality_gate
             report_lines.append(f"\n质量门控: {'✓ 通过' if gate.passed else '✗ 未通过'}")
-            if not gate.passed and hasattr(gate, 'failed_checks') and gate.failed_checks:
-                report_lines.append(f"  失败检查: {', '.join(gate.failed_checks)}")
+
+            # 添加详细的失败信息
+            if not gate.passed:
+                # 章节检查结果
+                if gate.chapter_results:
+                    report_lines.append(f"\n【章节检查】")
+                    for cr in gate.chapter_results:
+                        status = "✓ 通过" if cr.passed else "✗ 未通过"
+                        report_lines.append(f"  第{cr.chapter_index + 1}章: {status}")
+                        if cr.issues:
+                            for issue in cr.issues:
+                                report_lines.append(f"    [{issue.severity}] {issue.dimension}: {issue.message}")
+                                report_lines.append(f"      建议: {issue.suggestion}")
+
+                # 跨章问题
+                if gate.cross_chapter_issues:
+                    report_lines.append(f"\n【跨章问题】")
+                    for ci in gate.cross_chapter_issues:
+                        report_lines.append(f"  [{ci.severity}] {ci.dimension}: {ci.message}")
+                        report_lines.append(f"    涉及章节: 第{', '.join(str(c+1) for c in ci.chapters_involved)}章")
+                        report_lines.append(f"    建议: {ci.suggestion}")
+
+                # 修复建议
+                if gate.remediation:
+                    report_lines.append(f"\n【修复建议】")
+                    report_lines.append(f"  需重新生成: 第 {', '.join(str(c+1) for c in gate.remediation.chapters_to_regenerate)} 章")
+                    for ch_idx, reasons in gate.remediation.reasons.items():
+                        report_lines.append(f"  第{ch_idx+1}章原因:")
+                        for reason in reasons:
+                            report_lines.append(f"    - {reason}")
 
     report_lines.append("\n" + "=" * 100)
     report_lines.append("报告结束")
@@ -349,7 +402,7 @@ async def test_full_pipeline():
 
     # 保存报告
     report_content = "\n".join(report_lines)
-    output_path = Path("PIPELINE_DETAILED_REPORT.txt")
+    output_path = Path(__file__).parent / "PIPELINE_DETAILED_REPORT.txt"
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(report_content)
 

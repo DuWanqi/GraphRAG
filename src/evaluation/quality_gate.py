@@ -28,6 +28,24 @@ class QualityThresholds:
     min_length_ratio: float = 0.40        # 实际字数 / 目标字数 下限
     max_length_ratio: float = 2.5         # 实际字数 / 目标字数 上限
     max_summary_sentence_ratio: float = 0.30  # 总结性语句占比上限
+    min_semantic_similarity: Optional[float] = None  # 语义相似度下限（可选）
+    min_expansion_grounding: float = 0.40  # 扩展内容溯源率下限
+    min_entity_coverage: float = 0.80     # 实体覆盖率下限
+
+    @classmethod
+    def for_expansion_task(cls) -> "QualityThresholds":
+        """为扩展任务优化的阈值配置"""
+        return cls(
+            min_segment_score=5.0,
+            max_cross_repetition=0.20,
+            min_fact_score=0.60,
+            min_semantic_similarity=0.15,  # 扩展任务语义相似度要求较低
+            min_expansion_grounding=0.40,  # 更现实的溯源率要求
+            min_entity_coverage=0.80,  # 基于新的指标定义
+            min_length_ratio=0.40,
+            max_length_ratio=2.5,
+            max_summary_sentence_ratio=0.30,
+        )
 
 
 # ---------------------------------------------------------------------------

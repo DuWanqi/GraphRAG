@@ -45,72 +45,89 @@ Pipeline 详细测试报告
      The 1980 Moscow Olympics was an event that was boycotted, leading to a retaliatory boycott in 1984....
 
 【新增实体】(原文未提到，可用于扩展)
-  1. 中国科学院 (ORGANIZATION)
-     The Chinese Academy of Sciences (CAS) is China's highest academic institution in science and technology, with its members referred to as academicians....
-  2. 中华人民共和国刑法 (ORGANIZATION)
-     The Criminal Law of the People's Republic of China, also known as "中华人民共和国刑法", is a foundational legal framework adopted on July 1, 1979, by the Secon...
-  3. 庚申年“猴票” (EVENT)
+  1. 庚申年“猴票” (EVENT)
      The 庚申年“猴票” (Gengshen Year Monkey Stamp) holds significant importance as the first zodiac stamp of New China. Issued in the Gengshen year (1980), this...
-  4. 赵紫阳 (PERSON)
-     Zhao Ziyang was a prominent figure in Chinese politics, serving as the third Premier of the People's Republic of China from 1980 to 1987 and as Genera...
-  5. 团结工会 (ORGANIZATION)
-     团结工会 (Solidarity) was a Polish trade union federation that originated in 1980 at the Lenin Shipyard in Gdańsk. It holds the distinction of being the f...
-  6. 中国女排 (ORGANIZATION)
+  2. 中国女排 (ORGANIZATION)
      The Chinese Women's Volleyball Team (中国女排) is a national sports team that represents China in international women's volleyball competitions. This team...
-  7. 青年科学基金项目（A类） (EVENT)
+  3. 女排精神 (EVENT)
+     The Women's Volleyball Spirit is a historical legacy of the Chinese Women's Volleyball Team, summarized after their five consecutive championships in ...
+  4. 青年科学基金项目（A类） (EVENT)
      A talent program established by the National Natural Science Foundation of China (NSFC) in 1994, approved by the State Council. It aims to support you...
+  5. 中国科学院 (ORGANIZATION)
+     The Chinese Academy of Sciences (CAS) is China's highest academic institution in science and technology, with its members referred to as academicians....
+  6. 赵紫阳 (PERSON)
+     Zhao Ziyang was a prominent figure in Chinese politics, serving as the third Premier of the People's Republic of China from 1980 to 1987 and as Genera...
+  7. 团结工会 (ORGANIZATION)
+     团结工会 (Solidarity) was a Polish trade union federation that originated in 1980 at the Lenin Shipyard in Gdańsk. It holds the distinction of being the f...
   8. 国家公务员制度 (ORGANIZATION)
      The National Civil Service System is China's regulatory framework for managing civil servants, with the core being the "Provisional Regulations on Nat...
-  9. 女排精神 (EVENT)
-     The Women's Volleyball Spirit is a historical legacy of the Chinese Women's Volleyball Team, summarized after their five consecutive championships in ...
+  9. 中华人民共和国刑法 (ORGANIZATION)
+     The Criminal Law of the People's Republic of China, also known as "中华人民共和国刑法", is a foundational legal framework adopted on July 1, 1979, by the Secon...
 
 【关系】(共 4 个)
-  1. 国际自然保护同盟 → 科学发展观
-     The International Union for Conservation of Nature's "The World Conservation Strategy" in 1980 first...
-  2. 马丁·路德·金 → 林肯纪念堂
-     马丁·路德·金在林肯纪念堂前发表了著名的《我有一个梦想》演讲...
-  3. 马丁·路德·金 → 《我有一个梦想》演讲
-     马丁·路德·金发表了著名的《我有一个梦想》演讲...
-  4. 《我有一个梦想》演讲 → 林肯纪念堂
+  1. 《我有一个梦想》演讲 → 林肯纪念堂
      《我有一个梦想》演讲在林肯纪念堂前发表...
+  2. 马丁·路德·金 → 《我有一个梦想》演讲
+     马丁·路德·金发表了著名的《我有一个梦想》演讲...
+  3. 国际自然保护同盟 → 科学发展观
+     The International Union for Conservation of Nature's "The World Conservation Strategy" in 1980 first...
+  4. 马丁·路德·金 → 林肯纪念堂
+     马丁·路德·金在林肯纪念堂前发表了著名的《我有一个梦想》演讲...
 ----------------------------------------------------------------------------------------------------
 
 >>> 生成内容:
 ----------------------------------------------------------------------------------------------------
-早晨的阳光从窗帘缝隙里洒进来，显得格外明亮。父亲站在正厅的桌边，手里攥着那张薄薄的大学录取通知书，指尖微微发抖。他的嘴角似乎藏着笑意，但眼眶却红得明显。他来回踱步，偶尔停下来，低声念着通知书上的字，好像怕自己漏掉了什么重要的信息。母亲坐在一旁的木椅上，没说话，只是轻轻地抹着眼角。我靠在门框上，心里有种说不出的复杂感。兴奋，当然有；更多的是一种隐约的沉重感。那张通知书，是我一个人的，却又是全家人的愿望。我知道，这一天父亲等了很久，他总说，“恢复高考，这是国家给咱老百姓开的窗子。”而今天，这扇窗终于对我们家敞开了。
+黎明前，院子里的槐树在微风中轻轻摇曳，月光透过稀疏的枝叶洒在地上，像是散乱的碎银。屋内，父亲坐在灯下，一支烟燃到了尽头，灰烬摇摇欲坠。他的目光落在桌上那份大学录取通知书上，微微颤抖的手指似乎想抚摸，又不敢落下。“咱家终于出个大学生了！”他低声念着，像是对自己，又像是对母亲。母亲站在一旁，没说话，只是用手背悄悄擦去眼角的泪。
 
-上学的行李简单得出奇，一只棕色帆布包，里面装着些许换洗衣物，几本笔记本，还有母亲特意为我缝的蓝布书皮。我自己提着包，父亲坚持要送我到车站。他一路上紧握着我的胳膊，好像担心我会突然跑掉似的。车站人头攒动，汽笛声混杂着人们的谈话，空气中带着煤油味和些许尘土的干涩感。父亲站在月台边，眼神里带着不舍和一种藏不住的期盼。他拍了拍我的肩膀，笑着说：“去了就好好读书，不用挂念家里。你娘和我，都盼着你出息。”
+我躺在床上，听着父母的动静，心里翻涌着复杂的情绪。对未来的兴奋和不安交织在一起，像一团解不开的线。1980年，恢复高考的第三年，考上大学已经不仅仅是一个人的成就，而是整个家庭甚至整个村子的荣耀。通知书上那鲜红的印章，与我想象中的大学生活一样鲜活，又一样陌生。
 
-学校的大门是一座灰色的拱形建筑，入口处的匾额上刻着校名，字迹苍劲有力。校园里安静极了，只有风吹动树叶发出的“沙沙”声。宿舍是六人间，窗外是一片修剪整齐的草坪。室友们陆陆续续进来时，都带着些许拘谨，但很快，这种拘谨就被相互的好奇和热情打破了。阿明来自安徽，皮肤黝黑，笑起来露出一排洁白的牙；小李是重庆人，说话带着浓重的地方口音，语速快得让人听不清；小陈是北方人，身形高大，说话却温吞热诚。我们围坐在床边，聊起各自的家乡和生活。阿明说，“我们村里有人收集猴票，听说今年的猴票特别稀罕，设计得好看极了。”小李接话道，“对啊，庚申年的第一张生肖邮票，能值不少钱呢。”
+入学那天，天刚泛白，我背起行李离开了家。行李很简单，一只洗得发白的帆布包，里面装着几件换洗衣服和一本父亲偷偷塞进来的《新华字典》。父亲陪我到镇上的汽车站，他的脸在晨光中显得疲惫却满足。临别时，他拍了拍我的肩膀，什么也没说，只是点了点头。我知道，这沉默里包含的，是一个农民对知识的敬畏和对儿子的期待。
 
-那天晚上，宿舍的灯光洒在大家的脸上，显得每个人都有种跃跃欲试的神情。我们聊到未来，聊到梦想。小陈提到他父亲是工厂的技术员，曾经告诉他，中国科学院的科学家们能合成出新的化学物质，这些东西未来可能会改变世界。他说得兴致勃勃，眼睛里闪着光。我听着，心里也涌起一股向往。我想，也许有一天，我也能为国家做些事情。那种渴望，就像一颗种子，在那一刻悄悄地埋进了我的心里。
+学校的大门高大而气派，青砖红瓦的教学楼在阳光下闪着光。我拖着行李走进宿舍，迎面撞见几个正在铺床的同学。屋子里弥漫着夏末的潮气，木床的边角有些粗糙，但每个人脸上都带着一种无法掩饰的兴奋。“你从哪儿来的？”一个男生放下手里的被褥，笑着问我。“河南。”我答道。他拍了拍自己的胸脯，“我是湖南的！咱们五湖四海，今天算是聚齐了！”这句话引发了一阵笑声，屋子里的陌生感瞬间烟消云散。
 
-夜深了，窗外传来虫鸣声，偶尔夹杂几声远处的犬吠。室友们渐渐安静下来，有人已经沉沉睡去。我独自坐在床边，看着桌上那份入学通知书，感觉它比白天时更加沉重。我轻轻合上它，心里默默地告诉自己，这只是开始，未来的路还很长。
+晚上，我们围坐在宿舍的小桌子旁，谈天说地。有人说起家乡的美景，有人聊起小时候的趣事。一个来自上海的男生兴奋地从包里掏出一枚庚申年的“猴票”，递给我们看。那是他父亲托人从邮局排了半天队买来的，他说，这枚小小的邮票已经成了收藏界的“明星”，许多人都为它争得不可开交。我们忍不住传看着，摸着那精致的纹理，仿佛能感受到1980年这个年份带来的某种特别的气息。
+
+聊到梦想时，一个女生提到中国女排刚刚在世界比赛中大获全胜。“你们知道吗？”她的声音里带着骄傲，“她们七场全胜，拿了世界冠军！‘女排精神’现在都成了一个词，代表拼搏和团结。咱们也要像她们那样，努力拼出个未来！”大家纷纷点头，眼里闪着光，那光里有对未来的渴望，也有对这个正在改变的时代的信任。
+
+窗外，夜色已深，远处传来一阵犬吠。宿舍的灯光渐渐熄灭，沉寂中，我听见自己的心跳声，像是一个全新的节拍，催促着我去迎接未知的旅程。
 ----------------------------------------------------------------------------------------------------
 
-生成长度: 1027 字
+生成长度: 1020 字
 
 >>> 评估结果:
 ----------------------------------------------------------------------------------------------------
 
 【新内容使用情况】
+  可用新实体: 9 个
+  实际使用: 3 个
+  已使用的新实体: 庚申年“猴票”, 中国女排, 女排精神
+  未使用的新实体: 国家公务员制度, 中华人民共和国刑法, 团结工会, 青年科学基金项目（A类）, 赵紫阳
 
 【新事实提取与溯源】
+  生成文本中的新事实: 15 个
+    → 荣耀, 天刚, 塞进来, 新华字典, 临别时, 敬畏, 红瓦, 阳光, 河南, 湖南
+
+  ✓ 有 RAG 支撑的新事实: 3 个
+    → 庚申年“猴票”, 中国女排, 女排精神
+
+  ✗ 无 RAG 支撑的新事实 (疑似幻觉): 14 个
+    ⚠️  荣耀, 天刚, 塞进来, 新华字典, 临别时, 敬畏, 红瓦, 阳光, 河南, 湖南
 
 【评分】
+  信息增益: 100.0%
+  扩展溯源率: 100.0%
 
 【其他指标】
-  - entity_coverage: 0.10
-  - time_consistency: 0.30
-  - keyword_overlap: 0.20
-  - semantic_similarity: 0.19
-  - length_score: 0.30
+  - entity_coverage: 1.00
+  - temporal_coherence: 1.00
+  - rag_entity_accuracy: 1.00
+  - topic_coherence: 0.73
+  - length_score: 0.94
   - paragraph_structure: 1.00
   - transition_usage: 0.40
   - descriptive_richness: 1.00
-  - novel_content_ratio: 0.11
-  - novel_content_grounding: 0.07
-  - expansion_depth: 0.70
+  - information_gain: 1.00
+  - expansion_grounding: 1.00
 ----------------------------------------------------------------------------------------------------
 
 ====================================================================================================
@@ -120,10 +137,10 @@ Pipeline 详细测试报告
 综合分数: 9.00/10
 
 文档级指标:
-  - year_diversity: 0.50
+  - year_diversity: 1.00
   - merged_length: 1.00
 
-质量门控: ✗ 未通过
+质量门控: ✓ 通过
 
 ====================================================================================================
 报告结束

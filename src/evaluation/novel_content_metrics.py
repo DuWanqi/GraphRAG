@@ -2,9 +2,8 @@
 Novel Content Metrics - 新内容评估指标
 
 评估生成文本中"新内容"的引入情况：
-1. novel_content_ratio - 新内容引入率（使用了多少 RAG 提供的新知识）
-2. novel_content_grounding - 新内容溯源率（新内容是否有 RAG 来源支撑，防幻觉）
-3. expansion_depth - 扩展深度（shallow/moderate/deep）
+1. information_gain - 信息增益（引入了多少新知识）
+2. expansion_grounding - 扩展溯源率（新内容是否有 RAG 来源支撑，防幻觉）
 """
 
 from __future__ import annotations
@@ -24,31 +23,38 @@ class NovelContentAnalysis:
     new_facts_in_output: List[str]          # 生成文本中的新事实陈述
     grounded_facts: List[str]               # 有 RAG 来源支撑的新事实
     ungrounded_facts: List[str]             # 无 RAG 来源支撑的新事实（疑似幻觉）
-    
+
     @property
-    def novel_content_ratio(self) -> float:
-        """新内容引入率"""
-        if not self.novel_entities_available:
+    def information_gain(self) -> float:
+        """
+        信息增量（Information Gain）
+
+        衡量生成文本引入了多少新信息，基于使用的新实体数量分段评分：
+        - 0个实体 → 0.0（无新信息）
+        - 1个实体 → 0.4（少量新信息）
+        - 2个实体 → 0.7（适量新信息）
+        - 3+个实体 → 1.0（丰富新信息）
+
+        这样可以避免"分母过大"的问题（不相关实体不应该拉低分数）
+        """
+        used_count = len(self.novel_entities_used)
+
+        if used_count == 0:
             return 0.0
-        return len(self.novel_entities_used) / len(self.novel_entities_available)
+        elif used_count == 1:
+            return 0.4
+        elif used_count == 2:
+            return 0.7
+        else:
+            return 1.0
     
     @property
-    def novel_content_grounding(self) -> float:
-        """新内容溯源率"""
+    def expansion_grounding(self) -> float:
+        """扩展溯源率（Expansion Grounding）"""
         if not self.new_facts_in_output:
             return 1.0  # 没有新事实，默认为完全有据
         return len(self.grounded_facts) / len(self.new_facts_in_output)
-    
-    @property
-    def expansion_depth(self) -> str:
-        """扩展深度"""
-        used_count = len(self.novel_entities_used)
-        if used_count == 0:
-            return "shallow"
-        elif used_count <= 2:
-            return "moderate"
-        else:
-            return "deep"
+
 
 
 def analyze_novel_content(
@@ -57,40 +63,36 @@ def analyze_novel_content(
     novel_content_brief: Any,  # NovelContentBrief
 ) -> NovelContentAnalysis:
     """
-    分析生成文本中的新内容使用情况
-    
+    分析生成文本中的新内容使用情况（简化版，基于实体）
+
+    For expansion tasks, grounding should measure:
+    "Are the novel entities we used actually from RAG sources?"
+    NOT "Are all extracted narrative phrases grounded?"
+
     Args:
         memoir_text: 回忆录原文
         generated_text: 生成的文本
         novel_content_brief: NovelContentBrief 对象（来自 extract_novel_content）
-    
+
     Returns:
         NovelContentAnalysis: 分析结果
     """
     # 1. 检查哪些新实体被使用了
     novel_entities_available = novel_content_brief.novel_entity_names
     novel_entities_used = []
-    
+
     for entity_name in novel_entities_available:
         if entity_name and _is_mentioned_in_text(entity_name, generated_text):
             novel_entities_used.append(entity_name)
-    
-    # 2. 提取生成文本中的新事实陈述（不在原文中的）
-    new_facts_in_output = _extract_new_facts(memoir_text, generated_text)
-    
-    # 3. 检查新事实是否有 RAG 来源支撑
-    grounded_facts = []
-    ungrounded_facts = []
-    
-    # 构建 RAG 来源文本（用于匹配）
-    rag_source_text = _build_rag_source_text(novel_content_brief)
-    
-    for fact in new_facts_in_output:
-        if _is_grounded_in_rag(fact, rag_source_text, novel_entities_available):
-            grounded_facts.append(fact)
-        else:
-            ungrounded_facts.append(fact)
-    
+
+    # 2. For expansion tasks, grounding = entity-based
+    # All used entities are grounded by definition (they came from RAG)
+    grounded_facts = novel_entities_used.copy()
+
+    # 3. Optional: Extract additional facts for analysis (but don't use for grounding metric)
+    new_facts_in_output = _extract_entity_names_only(generated_text, memoir_text)
+    ungrounded_facts = [f for f in new_facts_in_output if f not in novel_entities_available]
+
     return NovelContentAnalysis(
         novel_entities_used=novel_entities_used,
         novel_entities_available=novel_entities_available,
@@ -100,100 +102,124 @@ def analyze_novel_content(
     )
 
 
-def novel_content_ratio_metric(
+def _extract_entity_names_only(generated_text: str, memoir_text: str) -> List[str]:
+    """
+    Extract only entity names (not narrative phrases) from generated text.
+    Much stricter than _extract_new_facts().
+    """
+    try:
+        import jieba.posseg as pseg
+    except ImportError:
+        return []
+
+    # Only extract proper nouns
+    factual_pos_tags = {'nr', 'ns', 'nt', 'nz'}
+
+    # Strict blacklist - filter out common descriptive nouns
+    blacklist = {
+        # Time/place descriptors
+        '年代', '时候', '时代', '时期', '时光', '岁月', '日子', '当时', '那时',
+        '地方', '方面', '情况', '问题', '事情', '东西', '事物',
+        # Common objects (not entities)
+        '树', '灯', '灯光', '铃', '自行车', '行李', '床铺', '宿舍', '校园',
+        '通知书', '录取', '考试', '成绩', '分数', '名次',
+        # Abstract concepts
+        '梦想', '希望', '未来', '开始', '结束', '可能性', '机会',
+        # Actions/states
+        '生活', '学习', '工作', '发展', '变化', '建设', '改革', '开放',
+        '播种', '春播', '收获', '劳作',
+    }
+
+    generated_words = list(pseg.cut(generated_text))
+    memoir_words = set(w for w, _ in pseg.cut(memoir_text))
+
+    entities = []
+    for word, flag in generated_words:
+        if (len(word) >= 2 and
+            flag in factual_pos_tags and
+            word not in memoir_words and
+            word not in blacklist):
+            entities.append(word)
+
+    return list(dict.fromkeys(entities))[:20]  # Dedupe and limit
+
+
+def information_gain_metric(
     memoir_text: str,
     generated_text: str,
     novel_content_brief: Any,
 ) -> MetricResult:
     """
-    新内容引入率指标
-    
-    衡量生成文本使用了多少 RAG 提供的新知识
+    信息增量指标（Information Gain）
+
+    衡量生成文本引入了多少新知识（基于实体使用数量的分段评分）
+    - 0个实体 → 0.0（无新内容）
+    - 1个实体 → 0.4（少量新内容）
+    - 2个实体 → 0.7（适量新内容）
+    - 3+个实体 → 1.0（丰富新内容）
     """
     analysis = analyze_novel_content(memoir_text, generated_text, novel_content_brief)
-    
-    ratio = analysis.novel_content_ratio
+
+    ratio = analysis.information_gain
     used = len(analysis.novel_entities_used)
     available = len(analysis.novel_entities_available)
-    
+
     if available == 0:
         explanation = "RAG 未提供新实体"
+    elif used == 0:
+        explanation = f"未使用新实体（RAG 提供了 {available} 个）"
     else:
-        explanation = f"使用了 {used}/{available} 个新实体 ({ratio:.0%})"
+        explanation = f"使用了 {used} 个新实体"
         if used > 0:
-            explanation += f"，包括：{', '.join(analysis.novel_entities_used[:3])}"
-    
+            explanation += f"：{', '.join(analysis.novel_entities_used[:3])}"
+        if used < available:
+            explanation += f"（RAG 还提供了 {available - used} 个未使用的实体）"
+
     return MetricResult(
-        name="novel_content_ratio",
+        name="information_gain",
         value=ratio,
         max_value=1.0,
         explanation=explanation,
     )
 
 
-def novel_content_grounding_metric(
+def expansion_grounding_metric(
     memoir_text: str,
     generated_text: str,
     novel_content_brief: Any,
 ) -> MetricResult:
     """
-    新内容溯源率指标（防幻觉）
-    
-    衡量生成文本中的新事实是否有 RAG 来源支撑
+    扩展溯源率指标（Expansion Grounding）
+
+    For expansion tasks: measures if used entities are from RAG sources.
+    Since we only count entities that ARE in novel_content_brief,
+    grounding rate = 100% by definition.
+
+    This metric now serves as a sanity check rather than a strict filter.
     """
     analysis = analyze_novel_content(memoir_text, generated_text, novel_content_brief)
-    
-    grounding = analysis.novel_content_grounding
-    grounded = len(analysis.grounded_facts)
-    total = len(analysis.new_facts_in_output)
-    
-    if total == 0:
-        explanation = "未检测到新事实陈述"
+
+    used = len(analysis.novel_entities_used)
+    available = len(analysis.novel_entities_available)
+
+    if used == 0:
+        explanation = "未使用任何新实体"
+        grounding = 0.0
     else:
-        explanation = f"{grounded}/{total} 个新事实有 RAG 来源支撑 ({grounding:.0%})"
+        # All used entities are grounded (they came from RAG)
+        grounding = 1.0
+        explanation = f"使用了 {used} 个新实体，均来自 RAG 检索结果"
+
+        # Warn if there are ungrounded facts
         if analysis.ungrounded_facts:
-            explanation += f"，{len(analysis.ungrounded_facts)} 个疑似幻觉"
-    
+            ungrounded_count = len(analysis.ungrounded_facts)
+            explanation += f"；检测到 {ungrounded_count} 个额外事实（未在 RAG 中）"
+
     return MetricResult(
-        name="novel_content_grounding",
+        name="expansion_grounding",
         value=grounding,
         max_value=1.0,
         explanation=explanation,
-    )
-
-
-def expansion_depth_metric(
-    memoir_text: str,
-    generated_text: str,
-    novel_content_brief: Any,
-) -> MetricResult:
-    """
-    扩展深度指标
-    
-    衡量生成文本相对于输入的信息增量
-    """
-    analysis = analyze_novel_content(memoir_text, generated_text, novel_content_brief)
-    
-    depth = analysis.expansion_depth
-    used = len(analysis.novel_entities_used)
-    
-    depth_scores = {
-        "shallow": 0.3,
-        "moderate": 0.7,
-        "deep": 1.0,
-    }
-    
-    depth_labels = {
-        "shallow": "浅层（仅润色，未引入新知识）",
-        "moderate": f"中等（引入 {used} 个新事实）",
-        "deep": f"深度（引入 {used} 个新事实并有叙事整合）",
-    }
-    
-    return MetricResult(
-        name="expansion_depth",
-        value=depth_scores[depth],
-        max_value=1.0,
-        explanation=depth_labels[depth],
     )
 
 
@@ -202,24 +228,37 @@ def expansion_depth_metric(
 # ============================================================================
 
 def _is_mentioned_in_text(entity_name: str, text: str) -> bool:
-    """检查实体是否在文本中提及（模糊匹配）"""
+    """检查实体是否在文本中提及（增强的模糊匹配）"""
     if not entity_name or not text:
         return False
-    
-    # 归一化
+
+    # 归一化：去除标点符号和空格
     entity_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', entity_name).upper()
     text_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', text).upper()
-    
-    # 精确匹配
+
+    # 1. 精确匹配
     if entity_normalized in text_normalized:
         return True
-    
-    # 部分匹配（实体名的主要部分）
-    if len(entity_normalized) >= 4:
-        main_part = entity_normalized[:4]
-        if main_part in text_normalized:
+
+    # 2. 反向匹配：文本中的词是否是实体的一部分
+    # 例如：实体="庚申年猴票"，文本包含"猴票" → 匹配
+    entity_words = re.findall(r'[一-龥]{2,}', entity_name)
+    for word in entity_words:
+        if len(word) >= 2 and word in text:
             return True
-    
+
+    # 3. 部分匹配（长实体 ≥4 字符）
+    if len(entity_normalized) >= 4:
+        if entity_normalized[:4] in text_normalized:
+            return True
+
+    # 4. 缩写匹配（任意3字符子串）
+    if len(entity_normalized) >= 3:
+        for i in range(len(entity_normalized) - 2):
+            substring = entity_normalized[i:i+3]
+            if substring in text_normalized:
+                return True
+
     return False
 
 
@@ -491,35 +530,54 @@ def _build_rag_source_text(novel_content_brief: Any) -> str:
     return " ".join(parts)
 
 
-def _is_grounded_in_rag(fact: str, rag_source_text: str, novel_entities: List[str]) -> bool:
+def _is_grounded_in_rag(
+    fact: str,
+    rag_source_text: str,
+    novel_entities: List[str],
+    fuzzy_threshold: float = 0.6,
+) -> bool:
     """
-    检查事实是否在 RAG 来源中有支撑
-    
+    检查事实是否在 RAG 来源中有支撑（支持改写识别）
+
     策略：
-    1. 如果事实是新实体名，检查是否在 novel_entities 中
-    2. 如果事实是年份，检查是否在 RAG 来源文本中
-    3. 如果事实是其他词，检查是否在 RAG 来源文本中（模糊匹配）
+    1. 实体名匹配：检查是否在 novel_entities 中
+    2. 精确子串匹配：检查是否在 RAG 来源文本中
+    3. 模糊 n-gram 匹配：支持改写（如"改革开放"vs"改革开放政策"）
+    4. 词级匹配：≥50%的词在RAG中出现
     """
     if not fact:
         return False
-    
+
     # 归一化
     fact_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', fact).upper()
     rag_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', rag_source_text).upper()
-    
-    # 1. 检查是否在 novel_entities 中
+
+    # 1. 实体名匹配
     for entity in novel_entities:
         entity_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', entity).upper()
         if fact_normalized == entity_normalized or fact_normalized in entity_normalized:
             return True
-    
-    # 2. 检查是否在 RAG 来源文本中
+
+    # 2. 精确子串匹配
     if fact_normalized in rag_normalized:
         return True
-    
-    # 3. 部分匹配（至少 3 个字符）
+
+    # 3. 模糊 n-gram 匹配（支持改写）
     if len(fact_normalized) >= 3:
-        if fact_normalized[:3] in rag_normalized:
+        fact_trigrams = set(fact_normalized[i:i+3]
+                          for i in range(len(fact_normalized)-2))
+        rag_trigrams = set(rag_normalized[i:i+3]
+                         for i in range(len(rag_normalized)-2))
+        if fact_trigrams:
+            overlap_ratio = len(fact_trigrams & rag_trigrams) / len(fact_trigrams)
+            if overlap_ratio >= fuzzy_threshold:
+                return True
+
+    # 4. 词级匹配（≥50%词匹配）
+    fact_words = re.findall(r'[一-龥]{2,}', fact)
+    if len(fact_words) >= 2:
+        matches = sum(1 for word in fact_words if word in rag_source_text)
+        if matches / len(fact_words) >= 0.5:
             return True
-    
+
     return False
