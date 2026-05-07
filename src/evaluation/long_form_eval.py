@@ -189,17 +189,37 @@ def _metrics_for_segment(
     min_required_entities: int = 2,
 ) -> Dict[str, MetricResult]:
     lo, hi = _parse_length_hint_range(length_hint)
-    margin = max(80, (hi - lo) // 2)
+
+    if task_type == "expansion":
+        # For expansion: allow much more flexibility
+        # Original memoir length as baseline
+        memoir_len = len(memoir_snippet)
+
+        # Expansion factor: 2-6x is reasonable
+        margin = max(200, hi - lo)
+
+        literary_length_min = max(50, memoir_len)  # At least as long as original
+        literary_length_max = max(hi * 3, memoir_len * 8)  # Allow 3x hint or 8x original
+        literary_optimal_min = max(memoir_len * 2, lo)  # At least 2x original
+        literary_optimal_max = max(memoir_len * 5, hi)  # Up to 5x original
+    else:
+        # For summarization: keep strict bounds
+        margin = max(80, (hi - lo) // 2)
+        literary_length_min = max(50, lo - margin)
+        literary_length_max = min(20000, hi + margin * 2)
+        literary_optimal_min = max(50, lo)
+        literary_optimal_max = max(lo + 1, hi)
+
     return calculate_all_metrics(
         memoir_snippet,
         generated_snippet,
         reference_entities=retrieval_entities or [],
         reference_year=reference_year,
         keywords=keywords,
-        literary_length_min=max(50, lo - margin),
-        literary_length_max=min(20000, hi + margin * 2),
-        literary_optimal_min=max(50, lo),
-        literary_optimal_max=max(lo + 1, hi),
+        literary_length_min=literary_length_min,
+        literary_length_max=literary_length_max,
+        literary_optimal_min=literary_optimal_min,
+        literary_optimal_max=literary_optimal_max,
         literary_paragraph_relaxed=True,
         novel_content_brief=novel_content_brief,
         task_type=task_type,

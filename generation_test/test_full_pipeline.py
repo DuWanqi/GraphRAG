@@ -124,11 +124,14 @@ async def test_full_pipeline():
     print("\n[6/6] 执行评估...")
 
     try:
+        from src.evaluation.quality_gate import QualityThresholds
+
         eval_result = await evaluate_long_form(
             result,
             llm_adapter=llm_adapter,
             use_llm_eval=False,  # 不使用 LLM 评估（节省时间）
             enable_fact_check=True,  # 启用事实检查
+            quality_thresholds=QualityThresholds.for_expansion_task(),  # 使用 expansion 阈值
             enable_quality_gate=True,
         )
 
