@@ -159,6 +159,11 @@ class LiteraryGenerator:
                 f"provider={response.provider.value} model={response.model}"
             )
         
+        # 检查是否因敏感内容被拦截
+        if response.is_sensitive:
+            error_msg = response.error_message or "内容因敏感词被模型拦截"
+            raise RuntimeError(error_msg)
+        
         return GenerationResult(
             content=response.content,
             provider=response.provider.value,
@@ -197,6 +202,7 @@ class LiteraryGenerator:
         if not hasattr(adapter, "generate_stream"):
             raise ValueError("当前适配器不支持流式生成")
 
+        collected_content = []
         async for delta in adapter.generate_stream(
             prompt=prompt,
             system_prompt=get_system_prompt(self.DEFAULT_SYSTEM_PROMPT_KEY),
@@ -204,7 +210,15 @@ class LiteraryGenerator:
             max_tokens=max_tokens,
         ):
             if delta:
+                collected_content.append(delta)
                 yield delta
+        
+        # 流式生成结束后，检查总内容是否为空（可能被敏感拦截）
+        full_content = "".join(collected_content)
+        if not full_content or len(full_content.strip()) < 10:
+            # 内容过短，可能是被拦截了
+            error_msg = "生成内容为空或太短，可能是：\n1. 模型触发了敏感内容检测\n2. 输入文本包含敏感词汇\n建议：更换模型或修改输入文本"
+            raise RuntimeError(error_msg)
     
     async def generate_parallel(
         self,

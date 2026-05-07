@@ -109,6 +109,20 @@ class LLMResponse:
         if self.usage:
             return self.usage.get("total_tokens", 0)
         return 0
+    
+    @property
+    def is_sensitive(self) -> bool:
+        """检查是否因敏感内容被截断"""
+        if self.finish_reason:
+            return self.finish_reason.lower() in ['sensitive', 'content_filter', 'filtered']
+        return False
+    
+    @property
+    def error_message(self) -> Optional[str]:
+        """获取错误信息（如果有）"""
+        if self.is_sensitive:
+            return "内容因敏感词被模型拦截，请尝试：\n1. 更换其他模型（如 Deepseek、Qwen）\n2. 修改输入文本避免敏感词汇\n3. 调整写作风格选项"
+        return None
 
 
 class LLMAdapter(ABC):
