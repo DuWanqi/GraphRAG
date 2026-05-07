@@ -32,20 +32,54 @@ for file_path in sorted(input_dir.iterdir()):
                         if isinstance(item, dict):
                             # 提取文本内容
                             text = item.get('content', item.get('text', item.get('description', '')))
+                            # 同时包含日期和标题信息，确保年份被保留
+                            date = item.get('date', '')
+                            title = item.get('title', '')
+                            location = item.get('location', '')
+                            
+                            # 组合完整文本：标题 + 日期 + 地点 + 内容
+                            full_text_parts = []
+                            if title:
+                                full_text_parts.append(f"{title}")
+                            if date:
+                                full_text_parts.append(f"({date})")
+                            if location:
+                                full_text_parts.append(f"地点：{location}")
                             if text:
+                                full_text_parts.append(text)
+                            
+                            full_text = "\n".join(full_text_parts)
+                            
+                            if full_text.strip():
                                 all_documents.append({
                                     "id": str(doc_id),
-                                    "text": text,
+                                    "text": full_text,
                                     "source": file_path.name
                                 })
                                 doc_id += 1
                 # 如果是字典，直接处理
                 elif isinstance(data, dict):
                     text = data.get('content', data.get('text', data.get('description', '')))
+                    date = data.get('date', '')
+                    title = data.get('title', '')
+                    location = data.get('location', '')
+                    
+                    full_text_parts = []
+                    if title:
+                        full_text_parts.append(f"{title}")
+                    if date:
+                        full_text_parts.append(f"({date})")
+                    if location:
+                        full_text_parts.append(f"地点：{location}")
                     if text:
+                        full_text_parts.append(text)
+                    
+                    full_text = "\n".join(full_text_parts)
+                    
+                    if full_text.strip():
                         all_documents.append({
                             "id": str(doc_id),
-                            "text": text,
+                            "text": full_text,
                             "source": file_path.name
                         })
                         doc_id += 1
