@@ -202,24 +202,37 @@ def expansion_depth_metric(
 # ============================================================================
 
 def _is_mentioned_in_text(entity_name: str, text: str) -> bool:
-    """检查实体是否在文本中提及（模糊匹配）"""
+    """检查实体是否在文本中提及（增强的模糊匹配）"""
     if not entity_name or not text:
         return False
-    
+
     # 归一化
     entity_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', entity_name).upper()
     text_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', text).upper()
-    
-    # 精确匹配
+
+    # 1. 精确匹配
     if entity_normalized in text_normalized:
         return True
-    
-    # 部分匹配（实体名的主要部分）
+
+    # 2. 部分匹配（长实体 ≥4 字符）
     if len(entity_normalized) >= 4:
-        main_part = entity_normalized[:4]
-        if main_part in text_normalized:
+        if entity_normalized[:4] in text_normalized:
             return True
-    
+
+    # 3. 缩写匹配（任意3字符子串）
+    if len(entity_normalized) >= 3:
+        for i in range(len(entity_normalized) - 2):
+            substring = entity_normalized[i:i+3]
+            if substring in text_normalized:
+                return True
+
+    # 4. 多词匹配（≥2个词匹配）
+    entity_words = re.findall(r'[一-龥]+', entity_name)
+    if len(entity_words) >= 2:
+        matches = sum(1 for word in entity_words if len(word) >= 2 and word in text)
+        if matches >= 2:
+            return True
+
     return False
 
 
@@ -491,35 +504,54 @@ def _build_rag_source_text(novel_content_brief: Any) -> str:
     return " ".join(parts)
 
 
-def _is_grounded_in_rag(fact: str, rag_source_text: str, novel_entities: List[str]) -> bool:
+def _is_grounded_in_rag(
+    fact: str,
+    rag_source_text: str,
+    novel_entities: List[str],
+    fuzzy_threshold: float = 0.6,
+) -> bool:
     """
-    检查事实是否在 RAG 来源中有支撑
-    
+    检查事实是否在 RAG 来源中有支撑（支持改写识别）
+
     策略：
-    1. 如果事实是新实体名，检查是否在 novel_entities 中
-    2. 如果事实是年份，检查是否在 RAG 来源文本中
-    3. 如果事实是其他词，检查是否在 RAG 来源文本中（模糊匹配）
+    1. 实体名匹配：检查是否在 novel_entities 中
+    2. 精确子串匹配：检查是否在 RAG 来源文本中
+    3. 模糊 n-gram 匹配：支持改写（如"改革开放"vs"改革开放政策"）
+    4. 词级匹配：≥50%的词在RAG中出现
     """
     if not fact:
         return False
-    
+
     # 归一化
     fact_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', fact).upper()
     rag_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', rag_source_text).upper()
-    
-    # 1. 检查是否在 novel_entities 中
+
+    # 1. 实体名匹配
     for entity in novel_entities:
         entity_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', entity).upper()
         if fact_normalized == entity_normalized or fact_normalized in entity_normalized:
             return True
-    
-    # 2. 检查是否在 RAG 来源文本中
+
+    # 2. 精确子串匹配
     if fact_normalized in rag_normalized:
         return True
-    
-    # 3. 部分匹配（至少 3 个字符）
+
+    # 3. 模糊 n-gram 匹配（支持改写）
     if len(fact_normalized) >= 3:
-        if fact_normalized[:3] in rag_normalized:
+        fact_trigrams = set(fact_normalized[i:i+3]
+                          for i in range(len(fact_normalized)-2))
+        rag_trigrams = set(rag_normalized[i:i+3]
+                         for i in range(len(rag_normalized)-2))
+        if fact_trigrams:
+            overlap_ratio = len(fact_trigrams & rag_trigrams) / len(fact_trigrams)
+            if overlap_ratio >= fuzzy_threshold:
+                return True
+
+    # 4. 词级匹配（≥50%词匹配）
+    fact_words = re.findall(r'[一-龥]{2,}', fact)
+    if len(fact_words) >= 2:
+        matches = sum(1 for word in fact_words if word in rag_source_text)
+        if matches / len(fact_words) >= 0.5:
             return True
-    
+
     return False
