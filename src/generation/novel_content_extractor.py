@@ -73,9 +73,10 @@ class NovelContentBrief:
 
         # 新知识：原文未提及的实体（白名单式格式）
         if self.novel_entities:
-            novel_parts.append("可用的新知识（可改写表述，但不可添加未提供的实体或细节）：\n")
+            novel_parts.append("【可用实体白名单】以下是你唯一可以使用的新实体，禁止引入其他任何实体：\n")
             for i, entity in enumerate(self.novel_entities[:8], 1):
                 name = entity.get("name", entity.get("title", ""))
+                etype = entity.get("type", "")
                 desc = entity.get("description", "")
                 # 截取完整句子（最多200字）
                 if len(desc) > 200:
@@ -83,13 +84,16 @@ class NovelContentBrief:
                     sentences = desc.split("。")
                     desc = sentences[0] + "。" if sentences else desc[:200]
 
-                novel_parts.append(f"{i}. [{name}]")
+                type_label = f" ({etype})" if etype else ""
+                novel_parts.append(f"{i}. [{name}]{type_label}")
                 novel_parts.append(f"   {desc}")
 
         # 新知识：原文未提及的关系/事件
         if self.novel_relationships:
             if not self.novel_entities:
-                novel_parts.append("可用的新知识（可改写表述，但不可添加未提供的实体或细节）：\n")
+                novel_parts.append("【可用实体白名单】以下是你唯一可以使用的新实体，禁止引入其他任何实体：\n")
+            else:
+                novel_parts.append("\n【可用关系】")
             start_idx = len(self.novel_entities[:8]) + 1
             for i, rel in enumerate(self.novel_relationships[:5], start_idx):
                 source = rel.get("source", "")
@@ -110,10 +114,11 @@ class NovelContentBrief:
 
         # 添加使用规则
         if self.novel_entities or self.novel_relationships:
-            novel_parts.append("\n使用规则：")
+            novel_parts.append("\n【使用规则】")
             novel_parts.append("✓ 可以改写上述内容的表述方式，调整语序，使其自然融入叙事")
             novel_parts.append("✓ 可以选择性使用（不必全部使用），选择与叙事最相关的 1-3 条")
-            novel_parts.append("✗ 不可添加上述列表中未提及的实体、人名、地名、机构名")
+            novel_parts.append("✗ 严格禁止：不可添加上述白名单中未列出的任何实体、人名、地名、机构名、历史事件")
+            novel_parts.append("✗ 严格禁止：不可使用你自身训练数据中的历史知识（如邓小平、文化大革命等），除非它们出现在上述白名单中")
             novel_parts.append("✗ 不可添加上述内容中未提及的具体数据、政策名称、时间节点")
             novel_parts.append("✗ 不可推断上述内容中未提及的因果关系、影响或评价")
 
