@@ -43,6 +43,7 @@ class FactCheckResult:
     entity_coverage: float = 0.0
     evidence_support: float = 0.0
     summary: str = ""
+    atomic_facts: List[str] = field(default_factory=list)
 
 
 class FActScoreChecker:
@@ -166,6 +167,7 @@ class FActScoreChecker:
         use_llm: bool = True,
         use_rule_decompose: Optional[bool] = None,
         max_atomic_facts: Optional[int] = None,
+        batch_size: int = 5,
     ) -> FactCheckResult:
         """
         执行事实性检查（使用FActScore方法）
@@ -200,15 +202,17 @@ class FActScoreChecker:
             inconsistencies = []
             total_facts = 0
             supported_facts = 0
+            atomic_facts: List[str] = []
 
             # FActScore原子化检查
             if use_llm and self.llm_adapter:
                 logger.info("[FActScore] 执行原子化检查")
-                factscore_issues, total_facts, supported_facts = await self._factscore_check(
+                factscore_issues, total_facts, supported_facts, atomic_facts = await self._factscore_check(
                     memoir_text,
                     generated_text,
                     retrieval_result,
                     max_atomic_facts=max_atomic_facts,
+                    batch_size=batch_size,
                 )
                 inconsistencies.extend(factscore_issues)
 
@@ -235,6 +239,7 @@ class FActScoreChecker:
                 entity_coverage=entity_coverage,
                 evidence_support=evidence_support,
                 summary=summary,
+                atomic_facts=atomic_facts,
             )
             
             # 缓存结果
@@ -253,6 +258,7 @@ class FActScoreChecker:
         generated_text: str,
         retrieval_result: Optional[RetrievalResult],
         max_atomic_facts: Optional[int] = None,
+        batch_size: int = 5,
     ) -> tuple:
         """
         FActScore原子化检查
@@ -261,7 +267,7 @@ class FActScoreChecker:
         验证上下文包括：回忆录原文 + 检索到的历史背景。
 
         Returns:
-            (inconsistencies, total_facts, supported_facts)
+            (inconsistencies, total_facts, supported_facts, atomic_facts)
         """
         logger = logging.getLogger(__name__)
         inconsistencies = []
@@ -281,7 +287,7 @@ class FActScoreChecker:
 
         if not context:
             logger.warning("[FActScore] 无上下文，跳过原子化检查")
-            return [], 0, 0
+            return [], 0, 0, []
 
         # 分解生成文本为原子事实
         logger.info("[FActScore] 分解生成文本为原子事实...")
@@ -299,7 +305,7 @@ class FActScoreChecker:
         logger.info(f"[FActScore] 过滤后剩余 {total_facts} 个可验证事实")
 
         if total_facts == 0:
-            return [], 0, 0
+            return [], 0, 0, []
 
         # 先做快速规则匹配：如果事实能在原文中找到关键词对应，直接标记为支持
         rule_supported, remaining_facts = self._rule_match_against_source(
@@ -311,9 +317,9 @@ class FActScoreChecker:
 
         # 对剩余事实用 LLM 批量验证
         if remaining_facts:
-            logger.info(f"[FActScore] LLM 验证剩余 {len(remaining_facts)} 个事实")
+            logger.info(f"[FActScore] LLM 批量验证剩余 {len(remaining_facts)} 个事实 (batch_size={batch_size})")
             verification_results = await self._verify_facts_batch(
-                remaining_facts, context
+                remaining_facts, context, batch_size=batch_size
             )
         else:
             verification_results = []
@@ -337,7 +343,7 @@ class FActScoreChecker:
             f"[FActScore] 验证完成: {supported_facts}/{total_facts} 事实被支持 "
             f"(FActScore={supported_facts/total_facts:.2%})"
         )
-        return inconsistencies, total_facts, supported_facts
+        return inconsistencies, total_facts, supported_facts, atomic_facts
     
     async def _verify_against_memoir(
         self,
@@ -473,19 +479,38 @@ class FActScoreChecker:
 
     @staticmethod
     def _filter_literary_sentences(facts: List[str]) -> List[str]:
-        """过滤纯文学描写句，只保留含可验证信息的陈述。"""
+        """
+        过滤纯文学描写句，只保留含可验证信息的陈述。
+
+        策略：
+        1. 保留包含时间、地点、数字的事实性陈述
+        2. 过滤纯感官描写、情感描写、场景描写
+        """
         filtered = []
         for fact in facts:
             s = fact.strip()
             if len(s) < 6:
                 continue
+
+            # 检查是否包含可验证信息（实体/事件标志）
             has_verifiable = bool(re.search(
                 r"[\d一二三四五六七八九十百千万亿]"  # 包含数字
                 r"|[年月日号]"                        # 包含时间词
                 r"|(?:省|市|县|区|镇|村|塬|河|山)"    # 包含地名标志
+                r"|(?:会议|全会|政策|制度|法律|条例|特区|开发区)"  # 包含事件/制度标志
+                r"|(?:大学|学院|研究所|公司|企业|组织|团体)"  # 包含机构标志
+                r"|(?:主席|总理|部长|书记|院士|教授|队长)"  # 包含职位标志
                 r"|(?:叫|姓|名|是|在|从|到|去|来|做|当|任)", s  # 包含事实性动词
             ))
-            if has_verifiable:
+
+            # 检查是否是纯感官/情感描写（排除）
+            is_pure_narrative = bool(re.search(
+                r"^[^。！？]*(?:阳光|微风|树叶|灯光|气息|味道|声音|窗帘|缝隙|光影|斑驳)[^。！？]*[。！？]?$"  # 纯感官描写
+                r"|^[^。！？]*(?:激动|兴奋|幸福|期待|憧憬|沉甸甸)[^。！？]*[。！？]?$"  # 纯情感描写
+                r"|^[^。！？]*(?:坐在|站在|躺在|走进|打开|放下|抬头|低头|闭上)[^。！？]*[。！？]?$", s  # 纯动作描写
+            ))
+
+            if has_verifiable and not is_pure_narrative:
                 filtered.append(s)
         return filtered
 
@@ -592,32 +617,27 @@ class FActScoreChecker:
             return []
         
         prompt = self.DECOMPOSE_PROMPT.format(text=text[:1000])
-        
+
         try:
-            response = await self.llm_adapter.chat(
+            # chat_json 内部对解析失败做 2 次重试（无退避），底层 chat 对
+            # transport 错误由 litellm num_retries 处理
+            facts = await self.llm_adapter.chat_json(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
                 max_tokens=1024,
+                json_pattern=r'\[.*\]',  # 原子事实是 JSON 数组
             )
-            
-            result_text = response.content.strip()
-            
-            # 解析JSON结果
-            try:
-                facts = json.loads(result_text)
-                if not isinstance(facts, list):
-                    facts = []
-            except json.JSONDecodeError:
-                # 尝试从文本中提取JSON数组
-                facts = self._extract_json_array(result_text)
-            
-            # 缓存结果
+            if not isinstance(facts, list):
+                facts = []
             self._decompose_cache[cache_key] = facts
             return facts
-            
+
         except Exception as e:
-            logging.getLogger(__name__).error(f"分解文本失败: {e}")
-            return []
+            # 重试全部失败：降级到规则拆分，避免整条 pipeline 崩溃
+            logging.getLogger(__name__).error(f"分解文本失败（已重试），降级到规则拆分: {e}")
+            facts = self._decompose_text_rule_based(text)
+            self._decompose_cache[cache_key] = facts
+            return facts
     
     async def _verify_fact(self, fact: str, context: str) -> bool:
         """
@@ -706,12 +726,15 @@ class FActScoreChecker:
                 facts=facts_str
             )
             
+            # 按 batch_size 动态调整：每条事实约需 ~90 tokens 输出 + 3s
+            dyn_max_tokens = max(512, len(batch) * 90)
+            dyn_timeout = max(20, len(batch) * 3)
             try:
                 response = await self.llm_adapter.chat(
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
-                    max_tokens=512,  # 足够处理5个事实的结果
-                    timeout=20,  # 批量验证的超时时间
+                    max_tokens=dyn_max_tokens,
+                    timeout=dyn_timeout,
                 )
                 
                 # 解析批量结果

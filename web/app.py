@@ -4,7 +4,13 @@
 """
 
 import asyncio
+import csv
+import json
+import tempfile
+import threading
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Optional, List, Tuple
 import gradio as gr
 
@@ -273,46 +279,7 @@ async def process_memoir_async(
 **生成的查询**: {retrieval_result.query}
 **提取+检索耗时**: {retrieve_time:.2f} 秒"""
         
-        # 检查检索结果质量
-        quality_warning = ""
-        if retrieval_result.entities:
-            # 检查是否有与查询相关的实体
-            query_terms = set(context.keywords + [context.year, context.location])
-            query_terms = {t.lower() for t in query_terms if t}
-            
-            relevant_count = 0
-            for entity in retrieval_result.entities[:10]:
-                entity_text = f"{entity.get('name', '')} {entity.get('description', '')}".lower()
-                if any(term in entity_text for term in query_terms):
-                    relevant_count += 1
-            
-            # 如果相关实体少于3个，提示知识图谱覆盖度问题
-            if relevant_count < 3:
-                quality_warning = f"""⚠️ **检索质量提示**
-
-当前知识图谱中缺乏与查询高度相关的实体（如：{', '.join(context.keywords[:3])}）。
-检索结果主要基于年份匹配，可能无法提供细粒度的历史背景。
-
-建议：
-1. 使用更通用的查询词
-2. 或者依赖 LLM 基于已有信息生成合理的历史背景
-
----
-
-"""
-        
-        # 如果有错误信息，显示在检索信息顶部
-        error_section = ""
-        if retrieval_result.error_message:
-            error_section = f"""⚠️ **检索警告**
-
-{retrieval_result.error_message}
-
----
-
-"""
-        
-        retrieval_info = f"""{quality_warning}{error_section}**找到实体**: {len(retrieval_result.entities)} 个
+        retrieval_info = f"""**找到实体**: {len(retrieval_result.entities)} 个
 **找到关系**: {len(retrieval_result.relationships)} 个
 **社区报告**: {len(retrieval_result.communities)} 个
 **相关文本**: {len(retrieval_result.text_units)} 段"""
@@ -464,7 +431,10 @@ def process_memoir_stream(
     retrieval_mode: str = "keyword",
     use_rule_decompose: bool = False,
     enable_safe_check: bool = False,
+    enable_retrieval_quality: bool = True,
+    enable_llm_judge: bool = True,
     chapter_mode: bool = False,
+    batch_size: int = 5,
 ):
     """
     Gradio 流式生成。
@@ -548,6 +518,7 @@ def process_memoir_stream(
                         max_atomic_facts_per_segment=12,
                         fact_check_timeout_per_segment=45.0,
                         use_rule_decompose=use_rule_decompose,
+                        batch_size=int(batch_size),
                     )
                     ev = loop.run_until_complete(
                         asyncio.wait_for(
@@ -574,99 +545,46 @@ def process_memoir_stream(
 
         context = retrieval_result.context
         extracted_md = (
-            f"### 📋 提取的上下文信息\n\n"
-            f"| 字段 | 值 |\n"
-            f"|------|-----|\n"
-            f"| **时间** | {context.year or '未识别'} |\n"
-            f"| **地点** | {context.location or '未识别'} |\n"
-            f"| **关键词** | {', '.join(context.keywords) if context.keywords else '无'} |\n"
-            f"| **查询** | `{retrieval_result.query}` |\n\n"
-            f"### 🔍 检索结果统计\n\n"
-            f"| 类型 | 数量 |\n"
-            f"|------|------|\n"
-            f"| **实体** | {len(retrieval_result.entities)} 个 |\n"
-            f"| **关系** | {len(retrieval_result.relationships)} 个 |\n"
-            f"| **社区报告** | {len(retrieval_result.communities)} 个 |\n"
-            f"| **相关文本** | {len(retrieval_result.text_units)} 段 |"
+            f"**提取的时间**: {context.year or '未识别'}\n"
+            f"**提取的地点**: {context.location or '未识别'}\n"
+            f"**关键词**: {', '.join(context.keywords) if context.keywords else '无'}\n"
+            f"**生成的查询**: {retrieval_result.query}\n\n"
+            f"**找到实体**: {len(retrieval_result.entities)} 个  "
+            f"**找到关系**: {len(retrieval_result.relationships)} 个  "
+            f"**社区报告**: {len(retrieval_result.communities)} 个  "
+            f"**相关文本**: {len(retrieval_result.text_units)} 段"
         )
-        
-        # 添加检索到的实体详情（展示所有）
-        if retrieval_result.entities:
-            extracted_md += "\n\n### 📌 检索到的实体（已重排序）\n\n"
-            for i, entity in enumerate(retrieval_result.entities, 1):
-                name = entity.get('name', '未知')
-                desc = entity.get('description', '')[:100]
-                entity_type = entity.get('type', '未知类型')
-                # 显示混合分数和详细分数
-                hybrid_score = entity.get('hybrid_score')
-                original_score = entity.get('original_score')
-                rerank_score = entity.get('rerank_score')
-                if hybrid_score is not None:
-                    score_text = f" [混合得分: {hybrid_score:.3f} | 原始: {original_score:.3f} | 重排序: {rerank_score:.3f}]"
-                elif rerank_score:
-                    score_text = f" [重排序得分: {rerank_score:.3f}]"
-                else:
-                    score_text = ""
-                extracted_md += f"**{i}. {name}** ({entity_type}){score_text}\n\n{desc}...\n\n"
-
-        # 添加检索到的关系详情（展示所有）
-        if retrieval_result.relationships:
-            extracted_md += "\n### 🔗 检索到的关系（已重排序）\n\n"
-            for i, rel in enumerate(retrieval_result.relationships, 1):
-                source = rel.get('source', '未知')
-                target = rel.get('target', '未知')
-                rel_type = rel.get('type', '关联')
-                desc = rel.get('description', '')[:80]
-                # 显示混合分数和详细分数
-                hybrid_score = rel.get('hybrid_score')
-                original_score = rel.get('original_score')
-                rerank_score = rel.get('rerank_score')
-                if hybrid_score is not None:
-                    score_text = f" [混合得分: {hybrid_score:.3f} | 原始: {original_score:.3f} | 重排序: {rerank_score:.3f}]"
-                elif rerank_score:
-                    score_text = f" [重排序得分: {rerank_score:.3f}]"
-                else:
-                    score_text = ""
-                extracted_md += f"**{i}. {source} → {target}** ({rel_type}){score_text}\n\n{desc}...\n\n"
-        
-        # 添加检索到的文本单元详情（展示所有）
-        if retrieval_result.text_units:
-            extracted_md += "\n### 📝 相关文本片段\n\n"
-            for i, text_unit in enumerate(retrieval_result.text_units, 1):
-                # text_unit 可能是字符串或字典
-                if isinstance(text_unit, dict):
-                    content = text_unit.get('content', '')[:200]
-                else:
-                    content = str(text_unit)[:200]
-                extracted_md += f"**片段 {i}:** {content}...\n\n"
-        
-        print(f"[DEBUG] extracted_md length: {len(extracted_md)} chars")
         yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
         # ── 2. 检索质量评估 (LLM-as-a-Judge) ──
-        # 注意：跳过检索质量评估以减少API调用，避免速率限制
-        # 如果需要评估，可以单独运行评估脚本
-        retrieval_q_md = "检索质量评估已跳过（避免API速率限制）"
+        if enable_retrieval_quality:
+            try:
+                eval_result = loop.run_until_complete(asyncio.wait_for(
+                    evaluate_retrieval_quality(
+                        query_text=memoir_text,
+                        text_units=retrieval_result.text_units,
+                        llm_adapter=_make_llm(provider, model),
+                    ),
+                    timeout=30.0,
+                ))
+                retrieval_q_md = _format_retrieval_quality(eval_result)
+            except Exception as e:
+                retrieval_q_md = f"检索质量评估失败: {e}"
+        else:
+            retrieval_q_md = "_未启用_"
         yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
         # ── 3. 流式生成 ──
         async def _stream():
-            try:
-                async for delta in generator.generate_stream(
-                    memoir_text=memoir_text,
-                    retrieval_result=retrieval_result,
-                    style=style,
-                    length_hint=single_cfg["length_hint"],
-                    temperature=temperature,
-                    max_tokens=single_cfg["max_tokens"],
-                ):
-                    yield delta
-            except Exception as e:
-                import traceback
-                error_msg = f"\n\n[生成错误: {type(e).__name__}: {e}]"
-                print(f"[ERROR] 流式生成失败: {e}")
-                print(traceback.format_exc())
-                yield error_msg
+            async for delta in generator.generate_stream(
+                memoir_text=memoir_text,
+                retrieval_result=retrieval_result,
+                style=style,
+                length_hint=single_cfg["length_hint"],
+                temperature=temperature,
+                max_tokens=single_cfg["max_tokens"],
+            ):
+                yield delta
 
         content = ""
         agen = _stream()
@@ -683,21 +601,58 @@ def process_memoir_stream(
                 content += "\n\n（\u26a0\ufe0f 生成超时：已达到 90s 上限，返回已生成的部分内容）"
                 yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
                 break
-            except Exception as e:
-                content += f"\n\n[生成异常: {e}]"
-                yield (content, extracted_md, retrieval_q_md, accuracy_md, relevance_md, literary_md, compliance_md)
-                break
             content += delta
             yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
 
-        # ── 4. 综合评估（事实准确性 + 相关性 + 文学性 + 合规性 + SAFE独立验证） ──
-        # 注意：跳过综合评估以减少API调用，避免速率限制
-        if (enable_fact_check or enable_safe_check) and content:
-            accuracy_md = "事实准确性评估已跳过（避免API速率限制）"
-            safe_md = "SAFE验证已跳过（避免API速率限制）"
-            relevance_md = "相关性评估已跳过（避免API速率限制）"
-            literary_md = "文学性评估已跳过（避免API速率限制）"
-            compliance_md = "合规性评估已跳过（避免API速率限制）"
+        # ── 4. 综合评估（事实准确性 + SAFE + LLM-as-a-Judge） ──
+        any_eval = enable_fact_check or enable_safe_check or enable_llm_judge
+        if any_eval and content:
+            try:
+                async def _run_eval():
+                    llm = _make_llm(provider, model)
+                    evaluator = Evaluator(
+                        llm_adapter=llm,
+                        google_api_key=settings.google_api_key,
+                        google_cse_id=getattr(settings, 'google_cse_id', None),
+                    )
+                    return await evaluator.evaluate(
+                        memoir_text=memoir_text,
+                        generated_text=content,
+                        retrieval_result=retrieval_result,
+                        use_llm=True,
+                        enable_fact_check=enable_fact_check,
+                        enable_safe_check=enable_safe_check,
+                        enable_llm_judge=enable_llm_judge,
+                        batch_size=int(batch_size),
+                    )
+
+                eval_res = loop.run_until_complete(asyncio.wait_for(_run_eval(), timeout=180.0))
+
+                if eval_res.fact_check:
+                    accuracy_md = _format_accuracy(eval_res.fact_check, 0)
+                if eval_res.safe_check:
+                    safe_md = _format_safe_check(eval_res.safe_check)
+                if "relevance" in eval_res.scores:
+                    relevance_md = _format_dimension(eval_res.scores["relevance"])
+                if "literary" in eval_res.scores:
+                    literary_md = _format_dimension(eval_res.scores["literary"])
+                if "compliance" in eval_res.scores:
+                    compliance_md = _format_compliance(eval_res.scores["compliance"])
+
+            except Exception as e:
+                accuracy_md = f"评估失败: {e}"
+
+        if not enable_fact_check and not accuracy_md:
+            accuracy_md = "_未启用_"
+        if not enable_safe_check and not safe_md:
+            safe_md = "_未启用_"
+        if not enable_llm_judge:
+            if not relevance_md:
+                relevance_md = "_未启用_"
+            if not literary_md:
+                literary_md = "_未启用_"
+            if not compliance_md:
+                compliance_md = "_未启用_"
 
         yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
     finally:
@@ -715,8 +670,6 @@ async def compare_providers_async(
     """
     使用多个LLM对比生成
     """
-    global retriever
-
     if not memoir_text.strip():
         return "请输入回忆录文本"
 
@@ -730,10 +683,9 @@ async def compare_providers_async(
         # 创建生成器
         gen = LiteraryGenerator(llm_router=router)
 
-        # 使用全局检索器，避免重复加载索引
-        if retriever is None:
-            retriever = MemoirRetriever()
-        retrieval_result = retriever.retrieve_sync(memoir_text, top_k=10)
+        # 创建检索器并检索
+        ret = MemoirRetriever()
+        retrieval_result = ret.retrieve_sync(memoir_text, top_k=10)
 
         # 并行生成
         multi_result = await gen.generate_parallel(
@@ -767,6 +719,391 @@ def compare_providers(
 ) -> str:
     """对比生成（同步包装）"""
     return asyncio.run(compare_providers_async(memoir_text, selected_providers, temperature))
+
+
+# ────────────────────────────────────────────────────────────
+# 批量测试 (Benchmark) — 在固定测试集上系统性地跑生成 + 评估
+# ────────────────────────────────────────────────────────────
+
+BENCHMARK_DATASET_PATH = Path(__file__).resolve().parent.parent / "historical_background_segments.json"
+
+BENCHMARK_COLUMNS = [
+    "ID",
+    "章节",
+    "历史标签",
+    "原文",
+    "扩写文本",
+    "nDCG@5",
+    "MRR",
+    "FActScore",
+    "SAFE",
+    "相关性",
+    "文学性",
+    "合规性",
+    "耗时(s)",
+    "状态",
+]
+
+
+_benchmark_stop_event = threading.Event()
+
+
+def request_benchmark_stop() -> str:
+    """由「停止」按钮调用：设置标志位，请求批量任务在当前段落结束后中止。"""
+    _benchmark_stop_event.set()
+    return "🛑 已请求停止：将在当前段落处理完成后中止，并导出已完成部分的结果。"
+
+
+def _load_benchmark_dataset() -> List[dict]:
+    with open(BENCHMARK_DATASET_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _truncate(text: Optional[str], n: int = 100) -> str:
+    if not text:
+        return ""
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _fmt_score(v, pct: bool = False) -> str:
+    if v is None:
+        return "—"
+    return f"{v:.1%}" if pct else f"{v:.3f}"
+
+
+def batch_benchmark_stream(
+    provider: str,
+    model: Optional[str],
+    style: str,
+    length_bucket: str,
+    temperature: float,
+    enable_fact_check: bool,
+    retrieval_mode: str,
+    use_rule_decompose: bool,
+    enable_safe_check: bool,
+    enable_retrieval_quality: bool,
+    enable_llm_judge: bool,
+    batch_size: int,
+):
+    """
+    在 historical_background_segments.json 上系统性地跑扩写 + 评估。
+
+    - 扩写文本始终生成（无视 UI 评估开关）
+    - 评估模块按 UI 当前勾选状态执行
+    - 所有参数沿用主标签页 UI 设置
+
+    yields: (status_md, dataframe_rows, json_file, md_file, csv_file)
+    """
+    global retriever, generator, current_provider, current_model
+
+    # 重置停止标志，避免上次残留
+    _benchmark_stop_event.clear()
+
+    if not provider:
+        yield ("⚠️ 请先在「生成历史背景」标签页选择 LLM 模型（供应商）。", [], None, None, None)
+        return
+
+    # 复用 / 必要时初始化检索器与生成器
+    if (
+        retriever is None
+        or generator is None
+        or current_provider != provider
+        or (provider == "ollama" and current_model != model)
+    ):
+        init_msg = init_components(provider, model=model)
+        if "失败" in init_msg:
+            yield (init_msg, [], None, None, None)
+            return
+
+    try:
+        dataset = _load_benchmark_dataset()
+    except Exception as e:
+        yield (f"❌ 读取测试集失败 ({BENCHMARK_DATASET_PATH.name}): {e}", [], None, None, None)
+        return
+
+    total = len(dataset)
+    if total == 0:
+        yield ("⚠️ 测试集为空。", [], None, None, None)
+        return
+
+    single_cfg = single_segment_generation_config(length_bucket)
+
+    rows: List[List[str]] = []
+    detail_records: List[dict] = []
+    bench_start = time.monotonic()
+
+    yield (
+        f"⏳ 共 {total} 条段落待处理。当前配置：{provider}{f'/{model}' if model else ''} · "
+        f"风格 `{style}` · 字数 `{length_bucket}` · 温度 `{temperature}` · 检索 `{retrieval_mode}`",
+        rows,
+        None,
+        None,
+        None,
+    )
+
+    loop = asyncio.new_event_loop()
+    stopped_early = False
+    try:
+        for idx, item in enumerate(dataset, start=1):
+            # 段落级停止检查：只在新段落开始前响应停止请求
+            if _benchmark_stop_event.is_set():
+                stopped_early = True
+                yield (
+                    f"🛑 已停止：在第 {idx} / {total} 条段落开始前中止。已完成 {len(rows)} 条，正在导出…",
+                    rows, None, None, None,
+                )
+                break
+
+            seg_id = item.get("id", f"#{idx}")
+            chapter = item.get("chapter", "")
+            tags = item.get("historical_tag", []) or []
+            tags_str = "、".join(tags)
+            original_text = item.get("original_text", "")
+
+            seg_start = time.monotonic()
+            base_status = (
+                f"### 进度: {idx} / {total}\n\n"
+                f"- 当前: **{seg_id}** — {chapter}\n"
+                f"- 历史标签: {tags_str}\n"
+                f"- 已耗时: {time.monotonic() - bench_start:.1f}s\n"
+            )
+            yield (base_status + "\n_正在检索…_", rows, None, None, None)
+
+            row = [
+                seg_id, chapter, tags_str,
+                _truncate(original_text, 120), "",
+                "—", "—", "—", "—", "—", "—", "—",
+                "—", "进行中",
+            ]
+
+            generated_text = ""
+            ndcg5 = mrr = factscore = safe_score = relevance = literary = compliance = None
+            error_msg = ""
+            retrieval_result = None
+
+            try:
+                # ── 1. 检索 ──
+                retrieval_result = loop.run_until_complete(asyncio.wait_for(
+                    retriever.retrieve(
+                        original_text, top_k=10, use_llm_parsing=False, mode=retrieval_mode,
+                    ),
+                    timeout=60.0,
+                ))
+
+                # ── 2. 扩写（必跑） ──
+                yield (base_status + "\n_正在生成扩写…_", rows, None, None, None)
+                gen_result = loop.run_until_complete(asyncio.wait_for(
+                    generator.generate(
+                        memoir_text=original_text,
+                        retrieval_result=retrieval_result,
+                        temperature=temperature,
+                        max_tokens=single_cfg["max_tokens"],
+                        style=style,
+                        length_hint=single_cfg["length_hint"],
+                    ),
+                    timeout=120.0,
+                ))
+                generated_text = gen_result.content or ""
+                row[4] = _truncate(generated_text, 120)
+                yield (base_status + "\n_扩写完成，进入评估…_", rows, None, None, None)
+
+                # ── 3. 检索质量（按需） ──
+                if enable_retrieval_quality:
+                    try:
+                        eval_result = loop.run_until_complete(asyncio.wait_for(
+                            evaluate_retrieval_quality(
+                                query_text=original_text,
+                                text_units=retrieval_result.text_units,
+                                llm_adapter=_make_llm(provider, model),
+                            ),
+                            timeout=60.0,
+                        ))
+                        ndcg5 = eval_result.get("ndcg_at_5")
+                        mrr = eval_result.get("mrr")
+                        row[5] = _fmt_score(ndcg5)
+                        row[6] = _fmt_score(mrr)
+                    except Exception as e:
+                        row[5] = "失败"
+                        row[6] = "失败"
+                        error_msg = (error_msg + " | " if error_msg else "") + f"检索评估: {e}"
+
+                # ── 4. 准确性 + LLM-as-Judge（按需） ──
+                if enable_fact_check or enable_safe_check or enable_llm_judge:
+                    try:
+                        async def _eval():
+                            llm = _make_llm(provider, model)
+                            evaluator = Evaluator(
+                                llm_adapter=llm,
+                                google_api_key=settings.google_api_key,
+                                google_cse_id=getattr(settings, "google_cse_id", None),
+                            )
+                            return await evaluator.evaluate(
+                                memoir_text=original_text,
+                                generated_text=generated_text,
+                                retrieval_result=retrieval_result,
+                                use_llm=True,
+                                enable_fact_check=enable_fact_check,
+                                enable_safe_check=enable_safe_check,
+                                enable_llm_judge=enable_llm_judge,
+                                batch_size=int(batch_size),
+                            )
+
+                        eval_res = loop.run_until_complete(asyncio.wait_for(_eval(), timeout=240.0))
+
+                        if eval_res.fact_check:
+                            factscore = eval_res.fact_check.factscore
+                            row[7] = _fmt_score(factscore, pct=True)
+                        if eval_res.safe_check:
+                            safe_score = eval_res.safe_check.safe_score
+                            row[8] = _fmt_score(safe_score, pct=True)
+                        if "relevance" in eval_res.scores:
+                            relevance = eval_res.scores["relevance"].score
+                            row[9] = f"{relevance:.1f}"
+                        if "literary" in eval_res.scores:
+                            literary = eval_res.scores["literary"].score
+                            row[10] = f"{literary:.1f}"
+                        if "compliance" in eval_res.scores:
+                            compliance = eval_res.scores["compliance"].score
+                            row[11] = f"{compliance:.1f}"
+                    except Exception as e:
+                        error_msg = (error_msg + " | " if error_msg else "") + f"评估: {e}"
+
+                seg_elapsed = time.monotonic() - seg_start
+                row[12] = f"{seg_elapsed:.1f}"
+                row[13] = "✅ 完成" if not error_msg else f"⚠️ {_truncate(error_msg, 30)}"
+
+            except Exception as e:
+                seg_elapsed = time.monotonic() - seg_start
+                row[12] = f"{seg_elapsed:.1f}"
+                row[13] = f"❌ {_truncate(str(e), 30)}"
+                error_msg = (error_msg + " | " if error_msg else "") + str(e)
+
+            rows.append(row)
+            detail_records.append({
+                "id": seg_id,
+                "chapter": chapter,
+                "historical_tag": tags,
+                "original_text": original_text,
+                "generated_text": generated_text,
+                "scores": {
+                    "ndcg_at_5": ndcg5,
+                    "mrr": mrr,
+                    "factscore": factscore,
+                    "safe_score": safe_score,
+                    "relevance": relevance,
+                    "literary": literary,
+                    "compliance": compliance,
+                },
+                "elapsed_seconds": round(seg_elapsed, 2),
+                "error": error_msg or None,
+            })
+            yield (base_status, rows, None, None, None)
+
+        # ── 处理结束（正常完成或中途停止）：导出 JSON / Markdown / CSV ──
+        done_count = len(rows)
+        yield (
+            f"💾 已处理 {done_count} / {total} 条段落"
+            f"{'（已停止）' if stopped_early else ''}，"
+            f"共耗时 {time.monotonic() - bench_start:.1f}s，正在导出…",
+            rows, None, None, None,
+        )
+
+        out_dir = Path(tempfile.mkdtemp(prefix="benchmark_"))
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        json_path = out_dir / f"benchmark_{ts}.json"
+        md_path = out_dir / f"benchmark_{ts}.md"
+        csv_path = out_dir / f"benchmark_{ts}.csv"
+
+        run_settings = {
+            "provider": provider,
+            "model": model,
+            "style": style,
+            "length_bucket": length_bucket,
+            "temperature": temperature,
+            "retrieval_mode": retrieval_mode,
+            "evals": {
+                "retrieval_quality": enable_retrieval_quality,
+                "fact_check": enable_fact_check,
+                "safe_check": enable_safe_check,
+                "llm_judge": enable_llm_judge,
+            },
+            "batch_size": int(batch_size),
+            "use_rule_decompose": use_rule_decompose,
+            "timestamp": ts,
+            "total_segments": total,
+            "completed_segments": len(detail_records),
+            "stopped_early": stopped_early,
+            "total_elapsed_seconds": round(time.monotonic() - bench_start, 2),
+        }
+
+        # JSON
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"settings": run_settings, "results": detail_records}, f, ensure_ascii=False, indent=2)
+
+        # CSV
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow([
+                "id", "chapter", "historical_tag",
+                "original_text", "generated_text",
+                "ndcg_at_5", "mrr", "factscore", "safe_score",
+                "relevance", "literary", "compliance",
+                "elapsed_seconds", "error",
+            ])
+            for r in detail_records:
+                s = r["scores"]
+                w.writerow([
+                    r["id"], r["chapter"], "|".join(r["historical_tag"]),
+                    r["original_text"], r["generated_text"],
+                    s["ndcg_at_5"], s["mrr"], s["factscore"], s["safe_score"],
+                    s["relevance"], s["literary"], s["compliance"],
+                    r["elapsed_seconds"], r["error"] or "",
+                ])
+
+        # Markdown
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(f"# 批量测试结果 ({ts})\n\n")
+            f.write(f"- LLM: `{provider}`{f' / `{model}`' if model else ''}\n")
+            f.write(f"- 风格: `{style}` | 字数: `{length_bucket}` | 温度: `{temperature}` | 检索: `{retrieval_mode}`\n")
+            f.write(
+                f"- 评估: 检索质量={enable_retrieval_quality}, "
+                f"FActScore={enable_fact_check}, SAFE={enable_safe_check}, LLM-Judge={enable_llm_judge}\n"
+            )
+            f.write(f"- 段落数: {total} | 总耗时: {run_settings['total_elapsed_seconds']}s\n\n---\n\n")
+            for r in detail_records:
+                s = r["scores"]
+                f.write(f"## {r['id']} — {r['chapter']}\n\n")
+                f.write(f"**历史标签**: {'、'.join(r['historical_tag'])}\n\n")
+                f.write(f"### 原文\n\n{r['original_text']}\n\n")
+                f.write(f"### 扩写\n\n{r['generated_text'] or '_未生成_'}\n\n")
+                f.write("### 评分\n\n")
+                f.write(f"- nDCG@5: {_fmt_score(s['ndcg_at_5'])}\n")
+                f.write(f"- MRR: {_fmt_score(s['mrr'])}\n")
+                f.write(f"- FActScore: {_fmt_score(s['factscore'], pct=True)}\n")
+                f.write(f"- SAFE: {_fmt_score(s['safe_score'], pct=True)}\n")
+                f.write(f"- 相关性: {_fmt_score(s['relevance'])}\n")
+                f.write(f"- 文学性: {_fmt_score(s['literary'])}\n")
+                f.write(f"- 合规性: {_fmt_score(s['compliance'])}\n")
+                f.write(f"- 耗时: {r['elapsed_seconds']}s\n")
+                if r["error"]:
+                    f.write(f"\n**错误**: {r['error']}\n")
+                f.write("\n---\n\n")
+
+        final_icon = "🛑" if stopped_early else "✅"
+        final_label = "已停止" if stopped_early else "完成"
+        yield (
+            f"{final_icon} {final_label}！已处理 {len(detail_records)} / {total} 条段落，"
+            f"导出完毕（总耗时 {run_settings['total_elapsed_seconds']}s）。",
+            rows,
+            str(json_path),
+            str(md_path),
+            str(csv_path),
+        )
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
 
 
 def build_index(llm_provider: str) -> str:
@@ -923,23 +1260,41 @@ def create_ui():
                             info="选择知识图谱检索策略",
                         )
 
-                        fact_check_checkbox = gr.Checkbox(
-                            value=False,
-                            label="\U0001f50d 启用评估",
-                            info="检测生成内容的事实准确性（注意：会增加3-5次API调用，可能导致速率限制）",
-                        )
-
-                        rule_decompose_checkbox = gr.Checkbox(
-                            value=False,
-                            label="\u26a1 使用规则拆分",
-                            info="使用规则而非LLM进行原子事实拆分，大幅提高速度",
-                        )
-
-                        safe_check_checkbox = gr.Checkbox(
-                            value=False,
-                            label="\U0001f310 独立知识验证 (SAFE)",
-                            info="使用LLM自身知识独立验证事实，不依赖知识库，帮助评估知识库完整性",
-                        )
+                        with gr.Group():
+                            gr.Markdown("**\U0001f50d 评估模块**（可独立开关）")
+                            retrieval_quality_checkbox = gr.Checkbox(
+                                value=True,
+                                label="\U0001f3af 检索质量",
+                                info="LLM 评判检索到的实体/关系与回忆录的契合度",
+                            )
+                            fact_check_checkbox = gr.Checkbox(
+                                value=True,
+                                label="\u2705 事实准确性 (FActScore)",
+                                info="基于知识库逐条核查原子事实",
+                            )
+                            safe_check_checkbox = gr.Checkbox(
+                                value=True,
+                                label="\U0001f310 事实准确性 (SAFE独立知识验证)",
+                                info="使用 LLM + SAFE 框架独立验证事实，不依赖知识库",
+                            )
+                            llm_judge_checkbox = gr.Checkbox(
+                                value=True,
+                                label="\u270d\ufe0f 相关性 / 文学性 / 合规性",
+                                info="由 LLM 对生成内容进行多维度打分",
+                            )
+                            rule_decompose_checkbox = gr.Checkbox(
+                                value=False,
+                                label="\u26a1 使用规则拆分（事实检查加速）",
+                                info="使用规则而非 LLM 进行原子事实拆分；仅在事实准确性/SAFE 启用时生效",
+                            )
+                            batch_size_slider = gr.Slider(
+                                minimum=1,
+                                maximum=20,
+                                value=5,
+                                step=1,
+                                label="\U0001f9ee 事实验证批次大小 (batch_size)",
+                                info="每次 LLM 调用同时验证的原子事实数；越大调用越少但单次响应更长。仅在事实准确性/SAFE 启用时生效",
+                            )
 
                         chapter_mode_checkbox = gr.Checkbox(
                             value=False,
@@ -982,16 +1337,16 @@ def create_ui():
                         with gr.Accordion("\U0001f3af 检索质量", open=False):
                             retrieval_quality_output = gr.Markdown(label="检索质量")
 
-                        with gr.Accordion("\u2705 事实准确性 (KB)", open=True):
-                            accuracy_output = gr.Markdown(label="事实准确性")
-
-                        with gr.Accordion("\U0001f310 独立知识验证 (SAFE)", open=False):
+                        with gr.Accordion("\u2705 事实准确性", open=True):
+                            gr.Markdown("#### \U0001f4da 基于知识库 (FActScore)")
+                            accuracy_output = gr.Markdown(label="事实准确性 (KB)")
+                            gr.Markdown("---\n#### \U0001f310 独立知识验证 (SAFE)")
                             safe_check_output = gr.Markdown(label="独立知识验证")
 
-                        with gr.Accordion("\U0001f517 相关性 (LLM-as-a-Judge)", open=False):
+                        with gr.Accordion("\U0001f517 相关性", open=False):
                             relevance_output = gr.Markdown(label="相关性")
 
-                        with gr.Accordion("\u270d\ufe0f 文学性 (LLM-as-a-Judge)", open=False):
+                        with gr.Accordion("\u270d\ufe0f 文学性", open=False):
                             literary_output = gr.Markdown(label="文学性")
 
                         with gr.Accordion("\U0001f6e1\ufe0f 合规性", open=False):
@@ -1010,7 +1365,10 @@ def create_ui():
                         retrieval_mode_select,
                         rule_decompose_checkbox,
                         safe_check_checkbox,
+                        retrieval_quality_checkbox,
+                        llm_judge_checkbox,
                         chapter_mode_checkbox,
+                        batch_size_slider,
                     ],
                     outputs=[
                         output_text,
@@ -1091,6 +1449,76 @@ def create_ui():
                     fn=compare_providers,
                     inputs=[compare_input, providers_checkbox, compare_temp],
                     outputs=[compare_output],
+                )
+
+            # 批量测试标签页
+            with gr.TabItem("\U0001f9ea 批量测试"):
+                gr.Markdown(
+                    f"""
+                    ## 批量测试 (Benchmark)
+
+                    在固定测试集 `{BENCHMARK_DATASET_PATH.name}` 上系统性地跑扩写生成。
+
+                    - **参数复用**：LLM / 模型 / 风格 / 字数 / 温度 / 检索模式 / 评估开关 / batch_size 等，
+                      全部沿用「\U0001f4dd 生成历史背景」标签页当前的设置。
+                    - **扩写文本**：每次都会生成（与评估开关无关）。
+                    - **评估模块**：按主标签页当前勾选状态执行；未勾选的不跑。
+                    - **进度**：逐条流式更新，结束后导出 JSON / Markdown / CSV 三种格式供下载。
+                    """
+                )
+
+                with gr.Row():
+                    bench_btn = gr.Button("▶️ 开始批量测试", variant="primary")
+                    bench_stop_btn = gr.Button("⏹️ 停止", variant="stop")
+
+                bench_status = gr.Markdown(
+                    value="点击「开始批量测试」启动；运行中可点「停止」让任务在当前段落跑完后中止。",
+                )
+
+                bench_table = gr.Dataframe(
+                    headers=BENCHMARK_COLUMNS,
+                    value=[],
+                    interactive=False,
+                    wrap=True,
+                    label="结果（逐条更新）",
+                )
+
+                with gr.Row():
+                    bench_json_file = gr.File(label="\U0001f4c4 JSON")
+                    bench_md_file = gr.File(label="\U0001f4dd Markdown")
+                    bench_csv_file = gr.File(label="\U0001f4ca CSV")
+
+                bench_btn.click(
+                    fn=batch_benchmark_stream,
+                    inputs=[
+                        provider_select,
+                        ollama_model_select,
+                        style_select,
+                        length_bucket_select,
+                        temperature_slider,
+                        fact_check_checkbox,
+                        retrieval_mode_select,
+                        rule_decompose_checkbox,
+                        safe_check_checkbox,
+                        retrieval_quality_checkbox,
+                        llm_judge_checkbox,
+                        batch_size_slider,
+                    ],
+                    outputs=[
+                        bench_status,
+                        bench_table,
+                        bench_json_file,
+                        bench_md_file,
+                        bench_csv_file,
+                    ],
+                )
+
+                # 停止按钮：queue=False 让它绕过队列，立刻把停止标志位置上
+                bench_stop_btn.click(
+                    fn=request_benchmark_stop,
+                    inputs=[],
+                    outputs=[bench_status],
+                    queue=False,
                 )
 
             # 索引管理标签页

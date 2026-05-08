@@ -44,6 +44,7 @@ def build_long_form_eval_options(
     use_llm_eval: bool = False,
     max_atomic_facts_per_segment: int = 12,
     fact_check_timeout_per_segment: float = 45.0,
+    batch_size: int = 5,
 ) -> Dict[str, Any]:
     """
     统一 evaluate_long_form 的常用参数，避免 Web/API 分散硬编码。
@@ -55,4 +56,5 @@ def build_long_form_eval_options(
         "max_atomic_facts_per_segment": max_atomic_facts_per_segment,
         "fact_check_timeout_per_segment": fact_check_timeout_per_segment,
         "use_rule_decompose": use_rule_decompose,
+        "batch_size": batch_size,
     }

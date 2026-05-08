@@ -133,7 +133,10 @@ class MemoirParser:
 1. year: 年份（如"1988"）
 2. month: 月份（如"8"）
 3. location: 地点（城市或更具体的地点）
-4. keywords: 3-5个关键词（描述主要事件或主题）
+4. keywords: 3-5个关键词，要求：
+   - 优先提取历史事件、机构、政策、重要概念（如"恢复高考"、"大学"、"入学"）
+   - 避免提取叙事性词汇（如"梦想"、"憧憬"、"激动"）
+   - 避免提取动词和形容词（如"发生变化"、"没睡"、"聊着"）
 5. entities: 涉及的重要实体列表，每个实体包含name和type（人物/组织/事件/地点）
 
 只返回JSON，不要其他内容。如果某项信息无法提取，设为null。
@@ -146,11 +149,26 @@ class MemoirParser:
                 temperature=0.1,
                 max_tokens=500
             )
-            
+
             # 解析LLM响应
             import json
-            result = json.loads(response.content)
-            
+
+            # 去除可能的 markdown 代码块标记
+            content = response.content.strip()
+            if content.startswith("```"):
+                # 移除开头的 ```json 或 ```
+                lines = content.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                # 移除结尾的 ```
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                content = "\n".join(lines)
+
+            result = json.loads(content)
+
+            print(f"[DEBUG] LLM 提取结果: {result}")
+
             # 合并LLM提取的信息
             if result.get("year") and not context.year:
                 context.year = str(result["year"])
@@ -159,10 +177,18 @@ class MemoirParser:
             if result.get("location") and not context.location:
                 context.location = result["location"]
             if result.get("keywords"):
-                context.keywords = list(set(context.keywords + result["keywords"]))
+                # 优先使用 LLM 提取的关键词（质量更高）
+                # 只有在 LLM 关键词不足时才补充 TF-IDF 的结果
+                llm_keywords = result["keywords"]
+                if len(llm_keywords) >= 3:
+                    context.keywords = llm_keywords[:5]  # 直接使用 LLM 结果
+                else:
+                    # LLM 关键词不足，补充 TF-IDF 结果
+                    context.keywords = llm_keywords + [k for k in context.keywords if k not in llm_keywords]
+                    context.keywords = context.keywords[:5]
             if result.get("entities"):
                 context.entities = result["entities"]
-                
+
         except Exception as e:
             # LLM解析失败时，使用规则提取的结果
             pass
