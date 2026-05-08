@@ -607,7 +607,7 @@ class LiteraryMetrics:
         )
 
 
-def calculate_all_metrics(
+async def calculate_all_metrics(
     memoir_text: str,
     generated_text: str,
     reference_entities: Optional[List[str]] = None,
@@ -622,6 +622,7 @@ def calculate_all_metrics(
     novel_content_brief: Optional[Any] = None,
     task_type: str = "expansion",
     min_required_entities: int = 2,
+    llm_adapter: Optional[Any] = None,
 ) -> Dict[str, MetricResult]:
     """
     计算所有指标
@@ -630,6 +631,7 @@ def calculate_all_metrics(
     novel_content_brief: NovelContentBrief 对象（可选），用于计算新内容指标
     task_type: 任务类型 ("expansion" 或 "summarization")
     min_required_entities: expansion任务要求的最少实体数
+    llm_adapter: LLM 适配器（可选），用于 LLM 实体提取
 
     Returns:
         Dict[str, MetricResult]: 指标名称到结果的映射
@@ -678,17 +680,17 @@ def calculate_all_metrics(
             hallucination_metric,
         )
 
-        results["information_gain"] = information_gain_metric(
-            memoir_text, generated_text, novel_content_brief
+        results["information_gain"] = await information_gain_metric(
+            memoir_text, generated_text, novel_content_brief, llm_adapter
         )
-        results["expansion_grounding"] = expansion_grounding_metric(
-            memoir_text, generated_text, novel_content_brief
+        results["expansion_grounding"] = await expansion_grounding_metric(
+            memoir_text, generated_text, novel_content_brief, llm_adapter
         )
-        results["rag_utilization"] = rag_utilization_metric(
-            memoir_text, generated_text, novel_content_brief
+        results["rag_utilization"] = await rag_utilization_metric(
+            memoir_text, generated_text, novel_content_brief, llm_adapter
         )
-        results["hallucination"] = hallucination_metric(
-            memoir_text, generated_text, novel_content_brief
+        results["hallucination"] = await hallucination_metric(
+            memoir_text, generated_text, novel_content_brief, llm_adapter
         )
 
     return results

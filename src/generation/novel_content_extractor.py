@@ -73,7 +73,15 @@ class NovelContentBrief:
 
         # 新知识：原文未提及的实体（白名单式格式）
         if self.novel_entities:
-            novel_parts.append("可用的新知识（可改写表述，但不可添加未提供的实体或细节）：\n")
+            novel_parts.append("【可用的新知识实体白名单】")
+            novel_parts.append("以下是检索到的、原文未提及的实体。你只能使用这些实体，不得添加其他实体。\n")
+
+            # 先列出实体名称清单
+            entity_names = [e.get("name", e.get("title", "")) for e in self.novel_entities[:8]]
+            novel_parts.append("✓ 允许使用的实体名称：" + "、".join(entity_names))
+            novel_parts.append("")
+
+            # 再列出详细描述
             for i, entity in enumerate(self.novel_entities[:8], 1):
                 name = entity.get("name", entity.get("title", ""))
                 desc = entity.get("description", "")
@@ -83,13 +91,17 @@ class NovelContentBrief:
                     sentences = desc.split("。")
                     desc = sentences[0] + "。" if sentences else desc[:200]
 
-                novel_parts.append(f"{i}. [{name}]")
+                novel_parts.append(f"{i}. {name} ({entity.get('type', 'ENTITY')})")
                 novel_parts.append(f"   {desc}")
 
         # 新知识：原文未提及的关系/事件
         if self.novel_relationships:
             if not self.novel_entities:
-                novel_parts.append("可用的新知识（可改写表述，但不可添加未提供的实体或细节）：\n")
+                novel_parts.append("【可用的新知识白名单】")
+                novel_parts.append("以下是检索到的关系和事件。你只能使用这些内容，不得添加其他实体或事实。\n")
+            else:
+                novel_parts.append("\n【可用的关系和事件】")
+
             start_idx = len(self.novel_entities[:8]) + 1
             for i, rel in enumerate(self.novel_relationships[:5], start_idx):
                 source = rel.get("source", "")
@@ -99,7 +111,7 @@ class NovelContentBrief:
                     sentences = desc.split("。")
                     desc = sentences[0] + "。" if sentences else desc[:200]
 
-                novel_parts.append(f"{i}. [{source} → {target}]")
+                novel_parts.append(f"{i}. {source} → {target}")
                 novel_parts.append(f"   {desc}")
 
         # 新知识：背景片段
@@ -110,12 +122,25 @@ class NovelContentBrief:
 
         # 添加使用规则
         if self.novel_entities or self.novel_relationships:
-            novel_parts.append("\n使用规则：")
-            novel_parts.append("✓ 可以改写上述内容的表述方式，调整语序，使其自然融入叙事")
-            novel_parts.append("✓ 可以选择性使用（不必全部使用），选择与叙事最相关的 1-3 条")
-            novel_parts.append("✗ 不可添加上述列表中未提及的实体、人名、地名、机构名")
-            novel_parts.append("✗ 不可添加上述内容中未提及的具体数据、政策名称、时间节点")
-            novel_parts.append("✗ 不可推断上述内容中未提及的因果关系、影响或评价")
+            novel_parts.append("\n" + "="*60)
+            novel_parts.append("【严格使用规则 - 必须遵守】")
+            novel_parts.append("="*60)
+            novel_parts.append("\n✓ 允许的操作：")
+            novel_parts.append("  • 从上述白名单中选择 1-3 个与叙事最相关的实体或事件")
+            novel_parts.append("  • 改写上述内容的表述方式，调整语序，使其自然融入叙事")
+            novel_parts.append("  • 将这些背景知识作为人物对话、环境描写或叙事者见闻的一部分")
+
+            novel_parts.append("\n✗ 严格禁止的操作（违反将导致生成失败）：")
+            novel_parts.append("  • 添加白名单中未列出的任何实体（人名、地名、机构名、事件名）")
+            novel_parts.append("  • 添加上述内容中未提及的具体数据、数字、政策名称、时间节点")
+            novel_parts.append("  • 推断或编造上述内容中未提及的因果关系、影响或评价")
+            novel_parts.append("  • 使用你的训练知识中的历史事实（如果未在上述白名单中提供）")
+
+            novel_parts.append("\n⚠️  重要提醒：")
+            novel_parts.append("  如果你在生成中提到了任何实体（人名、地名、机构、事件），")
+            novel_parts.append("  该实体必须出现在上述白名单中，或者出现在原文中。")
+            novel_parts.append("  例如：如果白名单中没有'深圳'，你就不能写'深圳速度'；")
+            novel_parts.append("        如果白名单中没有'邓小平'，你就不能提到邓小平。")
 
         return {
             "aligned_context": "\n".join(aligned_parts) if aligned_parts else "（无）",

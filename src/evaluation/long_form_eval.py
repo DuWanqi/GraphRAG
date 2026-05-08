@@ -177,7 +177,7 @@ class LongFormEvalResult:
     raw_json_ready: Dict[str, Any] = field(default_factory=dict)
 
 
-def _metrics_for_segment(
+async def _metrics_for_segment(
     memoir_snippet: str,
     generated_snippet: str,
     length_hint: str,
@@ -187,6 +187,7 @@ def _metrics_for_segment(
     novel_content_brief: Optional[Any] = None,
     task_type: str = "expansion",
     min_required_entities: int = 2,
+    llm_adapter: Optional[Any] = None,
 ) -> Dict[str, MetricResult]:
     lo, hi = _parse_length_hint_range(length_hint)
 
@@ -210,7 +211,7 @@ def _metrics_for_segment(
         literary_optimal_min = max(50, lo)
         literary_optimal_max = max(lo + 1, hi)
 
-    return calculate_all_metrics(
+    return await calculate_all_metrics(
         memoir_snippet,
         generated_snippet,
         reference_entities=retrieval_entities or [],
@@ -241,14 +242,12 @@ async def evaluate_long_form(
 ) -> LongFormEvalResult:
     """
     对分章生成结果跑通评估 pipeline：
-    1. 段级指标 + 可选 LLM-as-Judge + 可选事实检查
+    1. 段级指标 + 可选事实检查
     2. 篇级跨章指标（重复度、风格一致性、总结句比率）
     3. 质量门控（通过/不通过 + 修复建议）
     """
-    from .evaluator import Evaluator
     from .factscore_adapter import FActScoreChecker
 
-    evaluator = Evaluator(llm_adapter=llm_adapter)
     fact_checker: Optional[Any] = None
     if enable_fact_check:
         fact_checker = FActScoreChecker(
@@ -257,7 +256,7 @@ async def evaluate_long_form(
         )
 
     async def _eval_one_chapter(ch: Any) -> SegmentEvalRecord:
-        """评估单章（指标 + evaluator + fact_check），可并发。"""
+        """评估单章（指标 + fact_check），可并发。使用 LLM 进行实体提取。"""
         gen_text = ch.generation.content
 
         # 获取 novel_content_brief（如果可用）
@@ -277,7 +276,7 @@ async def evaluate_long_form(
         ctx = ch.retrieval_result.context
         hint = ch.length_hint or f"{max(80, len(gen_text) // 2)}-{max(100, len(gen_text) + 100)}字"
 
-        metrics = _metrics_for_segment(
+        metrics = await _metrics_for_segment(
             ch.segment_text, gen_text, hint,
             retrieval_entities=ref_entities,
             reference_year=ctx.year,
@@ -285,6 +284,7 @@ async def evaluate_long_form(
             novel_content_brief=novel_brief,
             task_type="expansion",
             min_required_entities=2,
+            llm_adapter=llm_adapter,
         )
 
         # 提取新内容评估信息
@@ -293,10 +293,11 @@ async def evaluate_long_form(
             # 调用 analyze_novel_content 获取完整分析结果
             from .novel_content_metrics import analyze_novel_content
 
-            analysis = analyze_novel_content(
+            analysis = await analyze_novel_content(
                 memoir_text=ch.segment_text,
                 generated_text=gen_text,
                 novel_content_brief=novel_brief,
+                llm_adapter=llm_adapter,
             )
 
             novel_content_info = {
@@ -316,17 +317,8 @@ async def evaluate_long_form(
             if "expansion_grounding" in metrics:
                 novel_content_info["expansion_grounding"] = metrics["expansion_grounding"].value
 
+        # 移除 LLM 整体风格评估，改用 LLM 实体提取
         eval_result: Optional[Any] = None
-        try:
-            eval_result = await evaluator.evaluate(
-                memoir_text=ch.segment_text,
-                generated_text=gen_text,
-                retrieval_result=ch.retrieval_result,
-                use_llm=use_llm_eval and llm_adapter is not None,
-                enable_fact_check=False,
-            )
-        except Exception:
-            eval_result = None
 
         fc: Optional[Any] = None
         skip_reason: Optional[str] = None
