@@ -70,11 +70,11 @@ class MemoirParser:
         r'([一二三四五六七八九十]+)月',        # 八月
     ]
     
-    # 常见地点关键词
-    LOCATION_KEYWORDS = [
-        '省', '市', '县', '区', '镇', '村',
+    # 常见城市名称（用于优先匹配）
+    CITY_NAMES = [
         '北京', '上海', '广州', '深圳', '杭州', '南京', '武汉', '成都', '重庆',
-        '香港', '澳门', '台湾',
+        '天津', '苏州', '西安', '郑州', '长沙', '青岛', '沈阳', '大连',
+        '佛山', '东莞', '宁波', '无锡', '合肥', '昆明', '厦门', '济南',
     ]
     
     def __init__(self, llm_adapter: Optional[LLMAdapter] = None):
@@ -224,75 +224,135 @@ class MemoirParser:
     
     def _extract_location(self, text: str) -> Optional[str]:
         """
-        提取地点（使用jieba词性标注）
+        提取地点
         
-        改进：不再硬编码城市列表，而是用词性标注识别地名
+        策略：
+        1. 优先从文本中提取常见城市名称
+        2. 然后使用正则匹配"在XX"、"到XX"等模式
+        3. 最后使用jieba词性标注识别地名
         """
         import jieba.posseg as pseg
         
-        # 使用jieba词性标注识别地名（ns表示地名）
-        words = pseg.cut(text)
-        locations = []
-        for word, flag in words:
-            if flag in ['ns', 'nsf']:  # ns=地名, nsf=音译地名
-                locations.append(word)
+        # 策略1：优先匹配常见城市名称
+        for city in self.CITY_NAMES:
+            if city in text:
+                # 检查是否是来源地（如"从广州来"）
+                pattern = rf'从{city}(?:来|出发|离开)'
+                if re.search(pattern, text):
+                    continue  # 跳过来源地
+                return city
         
-        if locations:
-            return locations[0]
-        
-        # 备选：尝试匹配"在XX"、"到XX"等模式
+        # 策略2：匹配"在XX"、"到XX"等模式（事件发生地）
         location_patterns = [
-            r'(?:在|到|来到|去|前往|抵达)\s*([^\s,，。！？\n]{2,10}(?:省|市|县|区|镇|村)?)',
-            r'([^\s,，。！？\n]{2,6}(?:省|市|县|区))',
+            r'(?:在|到|来到|去|前往|抵达|位于)\s*([^\s,，。！？\n]{2,6}(?:省|市|区|镇|村)?)',
         ]
         
         for pattern in location_patterns:
             match = re.search(pattern, text)
             if match:
-                return match.group(1)
+                loc = match.group(1)
+                # 过滤掉不相关的词
+                if not any(word in loc for word in ['老家', '家乡', '故乡', '屋里', '房子', '房间']):
+                    # 如果匹配到的是区名，尝试找到对应的城市
+                    if loc.endswith('区'):
+                        for city in self.CITY_NAMES:
+                            if city in text and loc in text:
+                                return city
+                    return loc
+        
+        # 策略3：使用jieba词性标注识别地名（ns表示地名）
+        words = pseg.cut(text)
+        locations = []
+        for word, flag in words:
+            if flag in ['ns', 'nsf']:  # ns=地名, nsf=音译地名
+                # 过滤掉"老家"等词
+                if word not in ['老家', '家乡', '故乡'] and '老家' not in word:
+                    locations.append(word)
+        
+        if locations:
+            return locations[0]
         
         return None
     
     def _extract_keywords(self, text: str) -> List[str]:
         """
-        提取关键词（使用jieba TF-IDF）
+        提取关键词（使用jieba TF-IDF + 过滤）
         
-        改进：不再硬编码关键词，而是用TF-IDF自动提取
+        过滤掉无意义的通用词，保留有检索价值的事件相关词
         """
+        # 需要过滤的无意义词（包括地名、无检索价值的词）
+        STOP_WORDS = {
+            '广州', '深圳', '上海', '北京', '湖南', '四川', '湖北', '河南', '河北',
+            '中国', '广东', '广西', '福建', '江西', '安徽', '江苏', '浙江',
+            '天河', '白云', '越秀', '海珠', '番禺', '珠海', '东莞', '佛山',
+            '香港', '澳门', '台湾', '老家', '家乡', '故乡',
+            '到处', '处都', '那个', '什么', '怎么', '为什么', '哪里',
+            '时候', '那年', '每天', '早上', '晚上', '周末', '年底', '春天', '夏天', '秋天', '冬天',
+            '云吞面', '肠粉', '美食', '骑楼', '步行街', '图书馆',
+            '老板', '同事', '员工', '公司', '客户', '外商',
+            # 新增：人称代词和无意义词
+            '我们', '他们', '你们', '我', '他', '她', '它', '这', '那', '此',
+            '但', '但是', '却', '而', '和', '与', '及', '以及',
+            '的', '了', '是', '在', '有', '不', '人', '都', '一', '上', '也',
+            '很', '到', '说', '要', '去', '会', '着', '没有', '看', '好',
+            '自己', '知道', '下', '还', '就', '把', '给', '做', '让', '能',
+            '可以', '应该', '觉得', '时间', '事情', '东西', '问题', '方面',
+            # 数字和无意义词
+            '800', '100', '10', '5', '20', '30', '1', '2', '3', '4', '5',
+            '但离', '不远', '心里', '充满', '干劲', '努力', '介绍', '产品',
+            '意向', '表扬', '高兴', '温暖', '活力', '未来', '开始', '过来',
+        }
+        
         keywords = []
         
         # 使用jieba的TF-IDF提取关键词
         try:
-            tfidf_keywords = jieba.analyse.extract_tags(text, topK=5, withWeight=False)
-            keywords.extend(tfidf_keywords)
+            tfidf_keywords = jieba.analyse.extract_tags(text, topK=15, withWeight=False)
+            for kw in tfidf_keywords:
+                # 过滤条件：不在停用词中，长度>=2，不是纯数字
+                if kw not in STOP_WORDS and len(kw) >= 2 and not kw.isdigit():
+                    keywords.append(kw)
         except Exception:
             pass
         
-        # 补充：历史事件相关关键词（保留一些重要的）
-        event_patterns = [
-            r'(改革开放)',
-            r'(经济特区)',
-            r'(南方谈话)',
-            r'(下海创业)',
-            r'(国企改革)',
+        # 补充：基于规则提取重要事件相关词（这些词应该优先）
+        event_keywords = [
+            '外贸', '出口', '金融危机', '亚运会', '亚运', '广交会', '交易会',
+            '经济', '创业', '改革', '开放', '建设', '发展', '投资', '产业',
+            '制造业', '电子', '纺织', '服装', '科技', '互联网', '电商',
+            '创业板', '股票', '金融', '房地产', '楼市', '政策', '政策变化',
+            '地铁', '交通', '基建', '城市建设', '环境', '环保', '污染',
         ]
         
-        for pattern in event_patterns:
-            match = re.search(pattern, text)
-            if match and match.group(1) not in keywords:
-                keywords.append(match.group(1))
+        for kw in event_keywords:
+            if kw in text and kw not in keywords and kw not in STOP_WORDS:
+                keywords.append(kw)
         
-        return keywords[:5]
+        # 去重并保留前10个关键词
+        keywords = list(dict.fromkeys(keywords))[:10]
+        
+        return keywords
     
-    def _chinese_to_number(self, chinese: str) -> str:
-        """汉字数字转阿拉伯数字"""
-        mapping = {
-            '零': '0', '〇': '0', '一': '1', '二': '2', '三': '3',
-            '四': '4', '五': '5', '六': '6', '七': '7', '八': '8', '九': '9',
-            '十': '10',
+    def _chinese_to_number(self, chinese_num: str) -> str:
+        """
+        将中文数字转换为阿拉伯数字
+        
+        Args:
+            chinese_num: 中文数字字符串（如"八八"、"二零"）
+            
+        Returns:
+            str: 阿拉伯数字字符串
+        """
+        digit_map = {
+            '零': '0', '一': '1', '二': '2', '三': '3', '四': '4',
+            '五': '5', '六': '6', '七': '7', '八': '8', '九': '9',
         }
-        result = ""
-        for char in chinese:
-            if char in mapping:
-                result += mapping[char]
-        return result or chinese
+        
+        result = ''
+        for char in chinese_num:
+            if char in digit_map:
+                result += digit_map[char]
+            else:
+                result += char
+        
+        return result

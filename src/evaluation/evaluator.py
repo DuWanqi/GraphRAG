@@ -83,8 +83,8 @@ class Evaluator:
     3. 文学性 - 文本的文学表达质量
     """
     
-    # 评估提示词
-    EVALUATION_PROMPT = """你是一位专业的文本评估专家。请对以下生成的历史背景文本进行评估。
+    # 评估提示词（合并 Judge 与 Compliance，单次 LLM 调用完成四维度打分）
+    EVALUATION_PROMPT = """你是一位专业的文本评估专家。请对以下生成的历史背景文本进行多维度评估，并在同一次回复中完成合规性检查。
 
 ## 原始回忆录
 {memoir_text}
@@ -95,67 +95,38 @@ class Evaluator:
 ## 参考历史信息（如有）
 {reference_info}
 
-请从以下三个维度进行评估，每个维度打分0-10分：
+请从以下四个维度进行评估，每个维度打分0-10分：
 
 ### 1. 事实准确性 (Accuracy)
-评估生成的历史信息是否准确：
 - 时间、地点、人物是否正确
 - 历史事件描述是否符合史实
 - 是否存在明显的事实错误
 
 ### 2. 相关性 (Relevance)
-评估生成内容与回忆录的关联程度：
 - 历史背景是否与回忆录的时间地点相符
 - 是否能够补充和增强回忆录的内容
 - 主题是否一致
 
 ### 3. 文学性 (Literary)
-评估文本的文学表达质量：
 - 语言是否优美流畅
 - 是否具有感染力和画面感
 - 与回忆录的风格是否融合
 
+### 4. 合规性 (Compliance, 10 表示完全合规)
+严格检查文本是否存在下列问题；发现任何一项应明显扣分：
+- 是否泄露敏感个人信息（身份证号、电话、地址等）
+- 是否包含未经证实的谣言或不实信息
+- 是否涉及政治敏感内容的不当表述
+- 是否存在歧视性或侮辱性言论
+
 请以JSON格式返回评估结果：
 {{
-    "accuracy": {{
-        "score": <0-10>,
-        "explanation": "<评分理由>"
-    }},
-    "relevance": {{
-        "score": <0-10>,
-        "explanation": "<评分理由>"
-    }},
-    "literary": {{
-        "score": <0-10>,
-        "explanation": "<评分理由>"
-    }},
-    "overall": {{
-        "score": <0-10>,
-        "explanation": "<综合评价>"
-    }},
+    "accuracy": {{"score": <0-10>, "explanation": "<评分理由>"}},
+    "relevance": {{"score": <0-10>, "explanation": "<评分理由>"}},
+    "literary": {{"score": <0-10>, "explanation": "<评分理由>"}},
+    "compliance": {{"score": <0-10>, "issues": ["<问题1>", "<问题2>"], "explanation": "<合规说明>"}},
+    "overall": {{"score": <0-10>, "explanation": "<综合评价>"}},
     "suggestions": ["<改进建议1>", "<改进建议2>"]
-}}
-
-只返回JSON，不要其他内容。"""
-
-    # 合规性检查提示词
-    COMPLIANCE_PROMPT = """请检查以下文本是否存在合规性问题。
-
-## 待检查文本
-{generated_text}
-
-请检查以下方面：
-1. 是否泄露敏感个人信息（身份证号、电话、地址等）
-2. 是否包含未经证实的谣言或不实信息
-3. 是否涉及政治敏感内容的不当表述
-4. 是否存在歧视性或侮辱性言论
-
-请以JSON格式返回：
-{{
-    "is_compliant": true/false,
-    "score": <0-10, 10表示完全合规>,
-    "issues": ["问题1", "问题2"],
-    "explanation": "<总体评价>"
 }}
 
 只返回JSON，不要其他内容。"""
@@ -214,6 +185,9 @@ class Evaluator:
         enable_fact_check: bool = True,
         enable_safe_check: bool = False,
         use_safe_search: bool = False,
+        enable_llm_judge: bool = True,
+        batch_size: int = 5,
+        quick_retry: bool = False,
     ) -> EvaluationResult:
         """
         评估生成的历史背景文本
@@ -226,24 +200,42 @@ class Evaluator:
             enable_fact_check: 是否启用事实性检查（基于知识库）
             enable_safe_check: 是否启用独立知识验证（SAFE，不依赖知识库）
             use_safe_search: SAFE 验证是否使用网络搜索（否则使用 LLM 自身知识）
+            enable_llm_judge: 是否启用 LLM-as-a-Judge（相关性/文学性/合规性）
+            quick_retry: 重生成场景下的轻量复评模式。开启后强制：
+                - 禁用 LLM-as-a-Judge 与 SAFE（这两块只在首轮跑）
+                - FActScore 改用规则拆分 + 大 batch，避免 LLM 调用爆炸
+                典型用法：首轮用完整评估；分数不达标触发重生成时，第 2/3
+                轮只调用 quick_retry=True 复评事实性即可。
 
         Returns:
             EvaluationResult: 评估结果
         """
-        if not self.llm_adapter:
-            raise RuntimeError(
-                "相关性、文学性等评估维度必须使用 LLM-as-a-Judge，"
-                "但未配置 LLM 适配器。请提供有效的 llm_provider。"
-            )
-        result = await self._evaluate_with_llm(
-            memoir_text, generated_text, retrieval_result
-        )
+        if quick_retry:
+            enable_llm_judge = False
+            enable_safe_check = False
+            # 大 batch 让 FActScore 验证 1-2 次调用就能跑完
+            batch_size = max(batch_size, 12)
 
-        # 合规性检查
-        compliance_score = await self._evaluate_compliance(
-            generated_text, use_llm and self.llm_adapter is not None
-        )
-        result.scores["compliance"] = compliance_score
+        if (enable_llm_judge or enable_fact_check or enable_safe_check) and not self.llm_adapter:
+            raise RuntimeError(
+                "评估依赖 LLM-as-a-Judge / 事实检查器，但未配置 LLM 适配器。"
+                "请提供有效的 llm_provider。"
+            )
+
+        if enable_llm_judge:
+            # Judge + Compliance 合并成单次 LLM 调用，scores["compliance"] 来自 _evaluate_with_llm
+            result = await self._evaluate_with_llm(
+                memoir_text, generated_text, retrieval_result
+            )
+            # 规则层合规检查（无 LLM 调用），与 LLM 分合并取较低者
+            rule_compliance = self._compliance_rule_score(generated_text)
+            llm_compliance = result.scores.get("compliance")
+            result.scores["compliance"] = self._merge_compliance_scores(
+                llm_compliance, rule_compliance
+            )
+            compliance_score = result.scores["compliance"]
+        else:
+            result = EvaluationResult(scores={}, overall_score=0.0)
 
         if enable_fact_check:
             fact_check_result = await self.fact_checker.check(
@@ -251,6 +243,8 @@ class Evaluator:
                 generated_text=generated_text,
                 retrieval_result=retrieval_result,
                 use_llm=use_llm and self.llm_adapter is not None,
+                use_rule_decompose=True if quick_retry else None,
+                batch_size=batch_size,
             )
             result.fact_check = fact_check_result
 
@@ -265,22 +259,27 @@ class Evaluator:
             kb_factscore = None
             kb_supported = None
             kb_total = None
+            shared_atomic_facts = None
             if result.fact_check:
                 kb_factscore = result.fact_check.factscore
                 kb_supported = result.fact_check.supported_facts
                 kb_total = result.fact_check.total_facts
+                # 复用 FActScore 已分解好的原子事实，避免重复 LLM 调用
+                shared_atomic_facts = result.fact_check.atomic_facts or None
 
             safe_result = await self.safe_checker.check(
                 generated_text=generated_text,
                 memoir_text=memoir_text,
+                atomic_facts=shared_atomic_facts,
                 use_search=use_safe_search,
                 kb_factscore=kb_factscore,
                 kb_supported_facts=kb_supported,
                 kb_total_facts=kb_total,
+                batch_size=batch_size,
             )
             result.safe_check = safe_result
 
-        if compliance_score.score < 8:
+        if enable_llm_judge and compliance_score.score < 8:
             result.suggestions.append(
                 f"⚠️ 合规性警告：{compliance_score.explanation}"
             )
@@ -316,20 +315,15 @@ class Evaluator:
         )
         
         try:
-            response = await self.llm_adapter.generate(
-                prompt=prompt,
-                system_prompt="你是一位专业的文本质量评估专家。请客观、公正地评估文本质量。",
+            # 使用 chat_json：解析失败自动重试（无退避，上限 2 次）
+            result_data = await self.llm_adapter.chat_json(
+                messages=[
+                    {"role": "system", "content": "你是一位专业的文本质量评估专家。请客观、公正地评估文本质量。"},
+                    {"role": "user", "content": prompt},
+                ],
                 temperature=0.1,
                 max_tokens=1000,
             )
-            
-            # 解析JSON响应（LLM 可能返回 ```json ... ``` 包裹的内容）
-            import re
-            raw = response.content.strip()
-            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-            if not json_match:
-                raise ValueError(f"LLM 返回内容中未找到 JSON: {raw[:200]}")
-            result_data = json.loads(json_match.group(0))
             
             scores = {}
             for dim in ["accuracy", "relevance", "literary"]:
@@ -339,16 +333,33 @@ class Evaluator:
                         score=float(result_data[dim].get("score", 0)),
                         explanation=result_data[dim].get("explanation", ""),
                     )
-            
+
+            # 合并到同一个 prompt 的合规性评分
+            if "compliance" in result_data:
+                comp = result_data["compliance"]
+                comp_issues = comp.get("issues") or []
+                comp_explanation = comp.get("explanation", "")
+                if comp_issues:
+                    comp_explanation = (
+                        "; ".join(comp_issues) if not comp_explanation
+                        else f"{comp_explanation}; {'; '.join(comp_issues)}"
+                    )
+                scores["compliance"] = DimensionScore(
+                    dimension=EvaluationDimension.COMPLIANCE,
+                    score=float(comp.get("score", 10)),
+                    explanation=comp_explanation or "未发现合规性问题",
+                    details={"issues": comp_issues},
+                )
+
             overall_data = result_data.get("overall", {})
             overall_score = float(overall_data.get("score", 0))
-            
+
             return EvaluationResult(
                 scores=scores,
                 overall_score=overall_score,
                 summary=overall_data.get("explanation", ""),
                 suggestions=result_data.get("suggestions", []),
-                raw_response=response.content,
+                raw_response=json.dumps(result_data, ensure_ascii=False),
             )
             
         except Exception as e:
@@ -509,20 +520,21 @@ class Evaluator:
             explanation="; ".join(explanations) if explanations else "基于规则的评估",
         )
     
-    async def _evaluate_compliance(
-        self,
-        generated_text: str,
-        use_llm: bool = True,
-    ) -> DimensionScore:
-        """合规性评估：检查敏感信息、谣言、不当内容"""
+    def _compliance_rule_score(self, generated_text: str) -> DimensionScore:
+        """
+        规则层合规性评估（无 LLM 调用）。
+
+        与合并进 Judge prompt 的 LLM 合规判定配合使用：
+        - 正则命中的是硬违规（身份证、手机号、邮箱），LLM 可能漏判
+        - 最终合规分取 min(规则分, LLM 分)，issues 合并
+        """
         import re as _re
 
-        issues = []
+        issues: List[str] = []
         score = 10.0
 
-        # 规则检查：个人敏感信息
-        id_pattern = _re.compile(r'\d{17}[\dXx]')  # 身份证号
-        phone_pattern = _re.compile(r'1[3-9]\d{9}')  # 手机号
+        id_pattern = _re.compile(r'\d{17}[\dXx]')
+        phone_pattern = _re.compile(r'1[3-9]\d{9}')
         email_pattern = _re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
 
         if id_pattern.search(generated_text):
@@ -535,25 +547,6 @@ class Evaluator:
             issues.append("包含疑似电子邮箱")
             score -= 2.0
 
-        # LLM 深度合规检查
-        if use_llm and self.llm_adapter and score >= 5.0:
-            try:
-                prompt = self.COMPLIANCE_PROMPT.format(generated_text=generated_text)
-                response = await self.llm_adapter.generate(
-                    prompt=prompt,
-                    system_prompt="你是一位内容合规审核专家。请严格检查文本的合规性。",
-                    temperature=0.1,
-                    max_tokens=512,
-                )
-                result_data = json.loads(response.content)
-                llm_score = float(result_data.get("score", 10))
-                llm_issues = result_data.get("issues", [])
-                if llm_issues:
-                    issues.extend(llm_issues)
-                    score = min(score, llm_score)
-            except Exception:
-                pass  # LLM 失败时仅依赖规则检查
-
         score = max(0.0, score)
         explanation = "; ".join(issues) if issues else "未发现合规性问题"
 
@@ -561,6 +554,36 @@ class Evaluator:
             dimension=EvaluationDimension.COMPLIANCE,
             score=score,
             explanation=explanation,
+            details={"issues": issues},
+        )
+
+    @staticmethod
+    def _merge_compliance_scores(
+        llm_score: Optional[DimensionScore],
+        rule_score: DimensionScore,
+    ) -> DimensionScore:
+        """合并 LLM 合规分与规则合规分：分数取较低者，issues 合并去重"""
+        if llm_score is None:
+            return rule_score
+
+        rule_issues = rule_score.details.get("issues", []) if rule_score.details else []
+        llm_issues = llm_score.details.get("issues", []) if llm_score.details else []
+        merged_issues: List[str] = []
+        for item in rule_issues + llm_issues:
+            if item and item not in merged_issues:
+                merged_issues.append(item)
+
+        merged_score = min(llm_score.score, rule_score.score)
+        if merged_issues:
+            explanation = "; ".join(merged_issues)
+        else:
+            explanation = llm_score.explanation or rule_score.explanation
+
+        return DimensionScore(
+            dimension=EvaluationDimension.COMPLIANCE,
+            score=merged_score,
+            explanation=explanation,
+            details={"issues": merged_issues},
         )
 
     def _generate_suggestions(

@@ -161,6 +161,55 @@ class LLMAdapter(ABC):
         """获取当前使用的模型"""
         return self.model or self.default_model
     
+    async def chat_json(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        max_parse_retries: int = 2,
+        json_pattern: str = r'\{.*\}',
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Chat 包装：要求 LLM 返回 JSON，仅对“模型输出格式问题”重试。
+
+        - 解析失败 = 找不到 JSON 或 json.loads 抛异常 → 立即重试（无退避，
+          因为这是模型采样非确定性，不是限流，等待无意义）
+        - Transport 异常（429/5xx/超时/网络）由底层 chat() 通过 litellm
+          num_retries 处理，**不**在本层叠加重试
+
+        Args:
+            max_parse_retries: 解析失败后额外尝试次数（默认 2 → 总共 ≤3 次调用）
+            json_pattern: 提取 JSON 的正则。默认匹配对象 `{...}`，
+                需要数组时传 `r'\\[.*\\]'`
+        """
+        import json as _json
+        import re as _re
+
+        last_err: Optional[Exception] = None
+        for _ in range(max_parse_retries + 1):
+            response = await self.chat(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            )
+            raw = (response.content or "").strip()
+            match = _re.search(json_pattern, raw, _re.DOTALL)
+            if match:
+                try:
+                    return _json.loads(match.group(0))
+                except _json.JSONDecodeError as e:
+                    last_err = e
+            else:
+                last_err = ValueError(
+                    f"未找到匹配 {json_pattern} 的 JSON: {raw[:160]}"
+                )
+        raise RuntimeError(
+            f"LLM JSON 解析连续 {max_parse_retries + 1} 次失败: {last_err}"
+        )
+
     async def chat(
         self,
         messages: List[Dict[str, str]],
@@ -170,17 +219,17 @@ class LLMAdapter(ABC):
     ) -> LLMResponse:
         """
         异步聊天接口
-        
+
         Args:
             messages: 消息列表 [{"role": "user", "content": "..."}]
             temperature: 温度参数
             max_tokens: 最大生成token数
-            
+
         Returns:
             LLMResponse: 响应结果
         """
         litellm_model = self._get_litellm_model_name()
-        
+
         # 配置API密钥和基础URL
         # LiteLLM 使用 base_url 参数（不是 api_base）
         extra_params = {}
@@ -188,7 +237,10 @@ class LLMAdapter(ABC):
             extra_params["api_key"] = self.api_key
         if self.api_base:
             extra_params["base_url"] = self.api_base
-        
+
+        # 默认 transport 层重试 2 次（限流/5xx/超时由 LiteLLM 指数退避处理）
+        kwargs.setdefault("num_retries", 2)
+
         response = await acompletion(
             model=litellm_model,
             messages=messages,
@@ -225,6 +277,7 @@ class LLMAdapter(ABC):
         if self.api_base:
             extra_params["base_url"] = self.api_base
 
+        kwargs.setdefault("num_retries", 2)
         stream = await acompletion(
             model=litellm_model,
             messages=messages,
@@ -289,8 +342,9 @@ class LLMAdapter(ABC):
         if self.api_key:
             extra_params["api_key"] = self.api_key
         if self.api_base:
-            extra_params["base_url"] = self.api_base
-        
+            extra_params["api_base"] = self.api_base
+
+        kwargs.setdefault("num_retries", 2)
         response = completion(
             model=litellm_model,
             messages=messages,
@@ -299,7 +353,7 @@ class LLMAdapter(ABC):
             **extra_params,
             **kwargs
         )
-        
+
         return LLMResponse(
             content=response.choices[0].message.content,
             model=self._get_model(),
@@ -524,7 +578,8 @@ class GeminiAdapter(LLMAdapter):
         
         # 添加安全设置，避免内容被截断
         extra_params["safety_settings"] = self._get_safety_settings()
-        
+
+        kwargs.setdefault("num_retries", 2)
         response = await acompletion(
             model=litellm_model,
             messages=messages,
@@ -533,7 +588,7 @@ class GeminiAdapter(LLMAdapter):
             **extra_params,
             **kwargs
         )
-        
+
         return LLMResponse(
             content=response.choices[0].message.content,
             model=self._get_model(),
@@ -563,7 +618,8 @@ class GeminiAdapter(LLMAdapter):
         
         # 添加安全设置，避免内容被截断
         extra_params["safety_settings"] = self._get_safety_settings()
-        
+
+        kwargs.setdefault("num_retries", 2)
         response = completion(
             model=litellm_model,
             messages=messages,
@@ -630,7 +686,8 @@ class GLMAdapter(LLMAdapter):
                 "type": "disabled"  # 关闭深度思考模式
             }
         }
-        
+
+        kwargs.setdefault("num_retries", 2)
         response = await acompletion(
             model=litellm_model,
             messages=messages,

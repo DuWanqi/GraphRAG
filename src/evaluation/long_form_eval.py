@@ -236,6 +236,7 @@ async def evaluate_long_form(
     max_atomic_facts_per_segment: int = 12,
     fact_check_timeout_per_segment: float = 60.0,
     use_rule_decompose: bool = True,
+    batch_size: int = 5,
     quality_thresholds: Optional[QualityThresholds] = None,
     enable_quality_gate: bool = True,
 ) -> LongFormEvalResult:
@@ -340,6 +341,7 @@ async def evaluate_long_form(
                         use_llm=True,
                         use_rule_decompose=use_rule_decompose,
                         max_atomic_facts=max_atomic_facts_per_segment,
+                        batch_size=batch_size,
                     ),
                     timeout=fact_check_timeout_per_segment,
                 )
@@ -354,6 +356,7 @@ async def evaluate_long_form(
                 retrieval_result=ch.retrieval_result,
                 use_llm=False,
                 max_atomic_facts=max_atomic_facts_per_segment,
+                batch_size=batch_size,
             )
 
         return SegmentEvalRecord(
