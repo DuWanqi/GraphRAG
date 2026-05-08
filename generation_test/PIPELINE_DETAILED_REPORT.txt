@@ -41,95 +41,89 @@ Pipeline 详细测试报告
   → 关系: 10 个
 
 【新增实体】(原文未提到，可用于扩展)
-  1. 大学招生文化考试 (EVENT)
-     大学招生文化考试是张铁生写信的事件发生背景，他在此考试中写信扰乱了教育秩序"
-  2. 剑桥大学 (ORGANIZATION)
-     剑桥大学是一所大学，乔斯林·贝尔和安东尼·休伊什是其研究生和导师
-  3. 肯特州立大学 (ORGANIZATION)
-     Kent State University is a public research university in Kent, Ohio. It was the site of a protest against the Vietnam War where National Guard members...
-  4. 中国科学院 (ORGANIZATION)
-     The Chinese Academy of Sciences (CAS) is China's highest academic institution in science and technology, with its members referred to as academicians....
-  5. 工农兵大学生 (PERSON)
-     This refers to university students who were selected from the ranks of workers, peasants, and soldiers. Their enrollment was based on a specific metho...
-  6. 五七指示 (EVENT)
-     《五七指示》是毛泽东在1966年5月7日给林彪写的一封信，提出了各行各业都要办成“大学校”的思想，要求全国人民学政治、学军事、学文化等
-  7. 伯明翰大学医学院 (ORGANIZATION)
-     英国伯明翰大学医学院是发生天花病毒泄漏事故的地点，导致珍妮特·帕克感染身亡的机构。
-  8. 张铁生 (PERSON)
-     张铁生是辽宁知青，在大学招生文化考试中，在理化卷背面写信，后被树立为“反潮流的白卷英雄”"
-  9. 乔斯林·贝尔 (PERSON)
-     乔斯林·贝尔是剑桥大学的研究生，与导师安东尼·休伊什共同首次发现了脉冲星（中子星）
-  10. 安东尼·休伊什 (PERSON)
-     安东尼·休伊什是剑桥大学的导师，与研究生乔斯林·贝尔共同首次发现了脉冲星（中子星）
+  1. 中国 (GEO)
+     The People's Republic of China, commonly known as China, is a vast East Asian nation situated on the western shore of the Pacific Ocean. As of 2019, i...
+  2. SHANGHAI (GEO)
+     Shanghai is a prominent city and municipality in China, strategically located within the Changjiang Delta Region. It holds significant historical and ...
+  3. 中央 (ORGANIZATION)
+     The Central (中央), often referring to the central government or central leadership of China, and likely the Central Committee of the Communist Party of...
+  4. BEIJING (GEO)
+     Beijing (also referred to as "首都," meaning "capital," and "北京市") is the capital city of China, a major hub for various significant events, and a promi...
+  5. 美国 (GEO)
+     The United States of America (美国), also known as the USA, is a federal constitutional republic located primarily in central North America, with a popu...
+  6. 刘少奇 (PERSON)
+     Liu Shaoqi (November 24, 1898 – November 12, 1969) was a great Marxist, proletarian revolutionary, politician, and theorist, and one of the main leade...
+  7. 林彪 (PERSON)
+     林彪 (Lin Biao) was a prominent Chinese military officer, politician, and a Marshal of the People's Republic of China (1955), born on December 5, 1907, ...
+  8. CHINA (GEO)
+     China, officially known as the People's Republic of China, is a country in East Asia and the world's most populous nation. It is a significant engine ...
+  9. 瑞士 (GEO)
+     Switzerland is a European country renowned for its long-standing policy of permanent neutrality, which it maintained for an extended period before off...
+  10. 津巴布韦 (GEO)
+     津巴布韦是一个南部非洲国家，其前身为罗得西亚。该国于1980年4月18日正式独立并更名为津巴布韦共和国。
 
 【关系】(共 10 个)
-  1. 张铁生 → 大学招生文化考试
-     张铁生在大学招生文化考试中写信，这一行为使他成为“反潮流的白卷英雄”...
-  2. 肯特州立大学 → 越战
-     Students at Kent State University were protesting the expansion of the Vietnam War....
-  3. 全国部分高等院校 → 工农兵大学生
-     全国部分高等院校 adopted a method for enrolling 工农兵大学生...
-  4. 工农兵大学生 → 自愿报名、群众推荐、领导批准、学校复审
-     工农兵大学生 were enrolled through the "自愿报名、群众推荐、领导批准、学校复审" method...
-  5. 美国国民警卫队 → 肯特州立大学
-     The United States National Guard opened fire on students at Kent State University....
+  1. 恢复高考制度 → 中国
+     The event of restoring the Gaokao system took place in China....
+  2. 发现脉冲星 → 剑桥大学
+     Researchers from Cambridge University were responsible for the discovery of the pulsar....
+  3. 肯特州立大学枪击事件 → 肯特州立大学
+     The Kent State University shooting event took place at Kent State University....
+  4. 肯特州立大学枪击事件 → 美国国民警卫队
+     The U.S. National Guard was involved in the Kent State University shooting by opening fire on studen...
+  5. 肯特州立大学枪击事件 → 越战
+     The Kent State University shooting was triggered by student protests against the expansion of the Vi...
   ... 还有 5 个关系
 ----------------------------------------------------------------------------------------------------
 
 >>> 生成内容:
 ----------------------------------------------------------------------------------------------------
-父亲把信封从邮递员手里接过来的时候，连双手都有些颤抖。他站在院子里，抬头看了我一眼，又低头盯着那个盖着鲜红印章的信封，好像那是一件易碎的宝贝。我凑过去，心跳得厉害，甚至能听见耳边自己血液流动的声音。父亲很慢很慢地撕开封口，抽出那张薄薄的纸。他的眼镜滑到鼻梁上，一手扶着镜框，一手捏着通知书，目光像是粘在了上面，久久没有移开。
+父亲的呼吸声在黑暗里异常清晰，急促又沉重。他躺在床上，双手枕在脑后，眼睛却始终盯着天花板，一夜未眠。窗外秋虫的鸣叫断断续续，像在为这一晚的喜悦伴奏。母亲的眼圈红肿，却没有说话，只是低头轻轻抚摸着那张大学录取通知书，指尖的动作小心翼翼，仿佛怕弄皱了它。她的泪水落在封面上，晕开了一个浅浅的水印。我坐在桌旁，手里攥着一支钢笔，内心激动却又不安。这张通知书不仅是我的，它更是全家人多年来的梦想。
 
-“考上了！”他终于喊出来，声音有些颤，像是从胸腔里撞出来的。我看见他的眼角发红，嘴唇翕动着，却没再说出什么。母亲站在灶台旁，低着头，肩膀轻轻抖动。我知道，那是她在偷偷抹泪。
+那是1980年，恢复高考后的第三个年头。三年前，这项制度在文革结束后的中国重新启动时，邓小平曾在北京主持科学与教育工作座谈会，明确表示：“教育必须拨乱反正。”高考的恢复如同一道曙光，照亮了无数家庭的未来，也唤醒了无数年轻人沉睡的渴望。父亲常说，高考是一场“公平的战场”，只要肯努力，谁都可以改变命运。我的录取通知书正是这场战斗的胜利果实，承载了他们太多的期望。
 
-那一天，村里的伙伴们围到我们家门口，热热闹闹地议论着。有人说：“考上大学了，这可是咱们村头一桩大事！”也有人问：“这大学，是要学些什么呢？”父亲抬起头，语气里有一种难得的庄重：“学知识，学本事，将来不再面朝黄土背朝天。”
+入学那天，天刚蒙蒙亮，父亲便帮我收拾行李。一个棕色的帆布包，装满了母亲缝制的衣物和一本泛黄的《新华字典》。母亲在包里悄悄塞了一些干粮，都是她烤的香甜红薯干，带着家乡的味道。我从未走出过家乡，脚下的路似乎延展得比以往任何时候都长。车站里人头攒动，有些人拖着大箱子，有些人肩上扛着沉重的包裹，脸上都写满了期待。火车的汽笛声响起时，我看见母亲在站台上使劲挥手，眼里含着泪光，而父亲的手最终只是抬起了一下，像是挥别，又像是祝福。
 
-这句话像钉子一样扎进了我的心。我握紧手里的录取通知书，感觉那不仅仅是一张纸，而是一把通往新世界的钥匙。
+校园的入口是一片宽阔的空地，灰白色的教学楼在晨光中显得格外庄重。报到处的长桌旁挤满了新生，每个人脸上的表情都带着相似的兴奋和紧张。宿舍楼是一幢旧式的红砖建筑，楼道里弥漫着一种混合了潮湿和木材的气息。我的宿舍是四人间，屋子里铺着简单的木床，每张床都配有一张小书桌和一个铁皮柜。室友们来自天南海北，第一晚我们围坐在床边聊天，谈论各自的家乡和梦想。有人从东北带来了参茶，有人从西南带来了腊肉，还有人讲起了深圳经济特区的奇迹——“五天一层楼”的“深圳速度”让我们啧啧称奇。这座城市的名字在那个年代已经成了改革开放的象征，仿佛每个年轻人都能从中看到自己未来的影子。
 
-几天后，我背上行李，坐上了通往省城的长途汽车。车窗外，田野和村庄飞快地向后退去，父亲站在村头，目送着我，直到消失在视野里。我知道，他的目光一定还在追随我，就像追逐那张通知书一样，追逐着他未曾触碰的梦想。
-
-到校时天色已晚，校园的路灯散发着昏黄的光，几棵高大的法国梧桐在风中沙沙作响。宿舍里挤满了人，大家的行李五花八门，有人拎着用旧毛毯缝成的包袱，有人抱着母亲织的棉被，还有人竟然带来了一只木制的手工箱。那是恢复高考后的第三年，大学校园里已经不再有“工农兵大学生”的身影，但关于他们的故事仍在传颂。有人说，过去的学生是“自愿报名，群众推荐，领导批准，学校复审”，不需要考试。这让我们这些费尽心力通过高考的年轻人感到既羡慕又好奇。
-
-夜里，我们围坐在宿舍中央，昏暗的灯泡在头顶微微晃动。一个来自东北的小伙子兴奋地说：“听说高考恢复前，有个人在试卷背面写了一封信，居然成了‘白卷英雄’。这次咱们可是凭真本事进来的！”另一个同学接话：“那是张铁生，写信说考试不如种地有用。可现在呢？还是知识最重要！”
-
-大家聊得热火朝天，话题从家乡的方言、饮食聊到未来的梦想。窗外的风卷起几片落叶拍在玻璃上，发出清脆的声响。我坐在床边，听着他们的笑声，心里涌起一阵暖流。这间宿舍，这些陌生又亲切的面孔，将是我新的起点。
+夜深了，窗外传来阵阵虫鸣。房间里的灯光昏黄，映在每个人的脸上，带着一种温暖的柔和。我躺在床上，听着室友轻轻的鼾声，脑海中却浮现出父亲那双布满了皱纹的手，以及母亲含泪的微笑。我闭上眼睛，心里默念着：这是一个全新的开始，一个属于我的时代。
 ----------------------------------------------------------------------------------------------------
 
-生成长度: 964 字
+生成长度: 986 字
 
 >>> 评估结果:
 ----------------------------------------------------------------------------------------------------
 
 【新内容使用情况】
   可用新实体: 10 个
-  实际使用: 2 个
-  已使用的新实体: 工农兵大学生, 张铁生
-  未使用的新实体: 肯特州立大学, 中国科学院, 伯明翰大学医学院, 安东尼·休伊什, 乔斯林·贝尔
+  实际使用: 1 个
+  已使用的新实体: 中国
+  未使用的新实体: BEIJING, SHANGHAI, CHINA, 美国, 刘少奇
 
 【新事实提取与溯源】
-  生成文本中的新事实: 8 个
-    → 宝贝, 黄土背, 新世界, 田野, 法国梧桐, 东北, 英雄, 张铁生
+  生成文本中的新事实: 20 个
+    → 中国, 邓小平, 北京, 曙光, 改变命运, 天刚, 蒙蒙亮, 新华字典, 包里, 香甜
 
-  ✓ 有 RAG 支撑的新事实: 2 个
-    → 工农兵大学生, 张铁生
+  ✓ 有 RAG 支撑的新事实: 1 个
+    → 中国
 
-  ✗ 无 RAG 支撑的新事实 (疑似幻觉): 7 个
-    ⚠️  宝贝, 黄土背, 新世界, 田野, 法国梧桐, 东北, 英雄
+  ✗ 无 RAG 支撑的新事实 (疑似幻觉): 19 个
+    ⚠️  邓小平, 北京, 曙光, 改变命运, 天刚, 蒙蒙亮, 新华字典, 包里, 香甜, 祝福
 
 【评分】
-  信息增益: 70.0%
+  信息增益: 40.0%
   扩展溯源率: 100.0%
 
 【其他指标】
-  - entity_coverage: 1.00
-  - temporal_coherence: 0.30
+  - entity_coverage: 0.50
+  - temporal_coherence: 1.00
   - rag_entity_accuracy: 1.00
-  - topic_coherence: 0.67
+  - topic_coherence: 0.73
   - length_score: 0.95
   - paragraph_structure: 1.00
-  - transition_usage: 0.40
-  - descriptive_richness: 0.75
-  - information_gain: 0.70
+  - transition_usage: 1.00
+  - descriptive_richness: 1.00
+  - information_gain: 0.40
   - expansion_grounding: 1.00
 ----------------------------------------------------------------------------------------------------
 
@@ -137,10 +131,10 @@ Pipeline 详细测试报告
 【整体评估】
 ====================================================================================================
 
-综合分数: 9.50/10
+综合分数: 9.00/10
 
 文档级指标:
-  - year_diversity: 0.50
+  - year_diversity: 1.00
   - merged_length: 1.00
 
 质量门控: ✓ 通过
