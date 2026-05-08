@@ -27,6 +27,18 @@ from src.evaluation import evaluate_long_form, long_form_eval_to_json
 from src.indexing import GraphBuilder
 
 
+# 全局检索器实例（避免重复加载索引）
+_retriever: Optional[MemoirRetriever] = None
+
+
+def _get_retriever() -> MemoirRetriever:
+    """获取全局检索器实例"""
+    global _retriever
+    if _retriever is None:
+        _retriever = MemoirRetriever()
+    return _retriever
+
+
 # 创建 FastAPI 应用
 app = FastAPI(
     title="记忆图谱 API",
@@ -137,7 +149,11 @@ async def generate(request: GenerateRequest):
         t0 = time.perf_counter()
         # 创建组件
         llm_adapter = create_llm_adapter(provider=request.provider)
-        retriever = MemoirRetriever(llm_adapter=llm_adapter)
+        # 使用全局检索器，避免重复加载索引
+        global _retriever
+        if _retriever is None:
+            _retriever = MemoirRetriever(llm_adapter=llm_adapter)
+        retriever = _retriever
         generator = LiteraryGenerator(llm_adapter=llm_adapter)
 
         if request.chapter_mode:
@@ -267,10 +283,9 @@ async def compare(request: CompareRequest):
         # 创建路由器
         router = LLMRouter()
         generator = LiteraryGenerator(llm_router=router)
-        retriever = MemoirRetriever()
         
-        # 检索
-        retrieval_result = retriever.retrieve_sync(request.memoir_text, top_k=10)
+        # 使用全局检索器，避免重复加载索引
+        retrieval_result = _get_retriever().retrieve_sync(request.memoir_text, top_k=10)
         
         # 并行生成
         multi_result = await generator.generate_parallel(

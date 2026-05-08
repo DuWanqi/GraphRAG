@@ -15,7 +15,8 @@ from enum import Enum
 import pandas as pd
 
 from .memoir_parser import MemoirParser, MemoirContext
-from .vector_retriever import VectorRetriever, RetrievalMode
+from .vector_retriever import VectorRetriever, RetrievalMode, EmbeddingError
+from .reranker import get_reranker
 from ..config import get_settings
 from ..llm import LLMAdapter, create_llm_adapter
 
@@ -29,6 +30,7 @@ class RetrievalResult:
     relationships: List[Dict[str, Any]] = field(default_factory=list)
     communities: List[Dict[str, Any]] = field(default_factory=list)
     text_units: List[str] = field(default_factory=list)
+    error_message: Optional[str] = None  # 错误信息（如 Ollama 未运行）
     
     @property
     def has_results(self) -> bool:
@@ -46,11 +48,21 @@ class RetrievalResult:
                 desc = entity.get("description", "")
                 parts.append(f"- {name}: {desc[:200]}")
         
+        # 优先使用社区报告，如果没有则使用关系
         if self.communities:
             parts.append("\n## 相关历史背景")
             for comm in self.communities[:3]:
                 summary = comm.get("summary", comm.get("full_content", ""))
                 parts.append(summary[:500])
+        elif self.relationships:
+            # 社区报告为空时，使用关系作为历史背景补充
+            parts.append("\n## 相关历史事件关联")
+            for rel in self.relationships[:5]:
+                source = rel.get("source", "")
+                target = rel.get("target", "")
+                rel_type = rel.get("type", "关联")
+                desc = rel.get("description", "")
+                parts.append(f"- {source} → {target} ({rel_type}): {desc[:200]}")
         
         if self.text_units:
             parts.append("\n## 相关历史文本")
@@ -186,12 +198,21 @@ class MemoirRetriever:
         result = RetrievalResult(query=query, context=context)
         
         # 根据模式选择检索策略
+        vector_error = None
+        
         if mode == "vector" and self.vector_retriever.is_ready():
-            # 纯向量检索
+            # 纯向量检索（实体、社区、文本单元用向量，关系用关键词）
             t_v0 = time.perf_counter()
-            result.entities = await self.vector_retriever.search_entities(query, top_k)
-            result.communities = await self.vector_retriever.search_communities(query, top_k // 2)
-            result.text_units = await self.vector_retriever.search_text_units(query, top_k)
+            try:
+                result.entities = await self.vector_retriever.search_entities(query, top_k)
+                result.communities = await self.vector_retriever.search_communities(query, top_k // 2)
+                result.text_units = await self.vector_retriever.search_text_units(query, top_k)
+            except EmbeddingError as e:
+                vector_error = e.message
+                result.error_message = f"⚠️ {e.message}"
+            # 关系检索使用关键词（向量索引中没有关系）
+            if self._relationships_df is not None:
+                result.relationships = self._search_relationships(context, top_k)
             if timing:
                 print(f"[TEMP_TIMING] retriever.vector_search={time.perf_counter()-t_v0:.3f}s")
             
@@ -199,16 +220,32 @@ class MemoirRetriever:
             # 混合检索：关键词 + 向量融合
             t_h0 = time.perf_counter()
             keyword_entities = self._search_entities(context, top_k)
-            vector_entities = await self.vector_retriever.search_entities(query, top_k)
-            result.entities = self._merge_results(keyword_entities, vector_entities, top_k)
+            try:
+                vector_entities = await self.vector_retriever.search_entities(query, top_k)
+                result.entities = self._merge_results(keyword_entities, vector_entities, top_k, context)
+            except EmbeddingError as e:
+                vector_error = e.message
+                result.error_message = f"⚠️ {e.message}"
+                result.entities = keyword_entities  # 降级为关键词检索结果
+            
+            # 关系检索使用关键词（向量索引中没有关系）
+            if self._relationships_df is not None:
+                result.relationships = self._search_relationships(context, top_k)
             
             keyword_communities = self._search_communities(context, top_k // 2)
-            vector_communities = await self.vector_retriever.search_communities(query, top_k // 2)
-            result.communities = self._merge_results(keyword_communities, vector_communities, top_k // 2)
+            try:
+                vector_communities = await self.vector_retriever.search_communities(query, top_k // 2)
+                result.communities = self._merge_results(keyword_communities, vector_communities, top_k // 2, context)
+            except EmbeddingError:
+                result.communities = keyword_communities
             
             keyword_texts = self._search_text_units(context, top_k)
-            vector_texts = await self.vector_retriever.search_text_units(query, top_k)
-            result.text_units = self._merge_text_results(keyword_texts, vector_texts, top_k)
+            try:
+                vector_texts = await self.vector_retriever.search_text_units(query, top_k)
+                result.text_units = self._merge_text_results(keyword_texts, vector_texts, top_k)
+            except EmbeddingError:
+                result.text_units = keyword_texts
+            
             if timing:
                 print(f"[TEMP_TIMING] retriever.hybrid_search={time.perf_counter()-t_h0:.3f}s")
             
@@ -226,6 +263,25 @@ class MemoirRetriever:
             if timing:
                 print(f"[TEMP_TIMING] retriever.keyword_search={time.perf_counter()-t_k0:.3f}s")
         
+        # ── 重排序（如果可用）──
+        reranker = get_reranker()
+        if reranker.is_ready():
+            t_r0 = time.perf_counter()
+            if result.entities:
+                result.entities = reranker.rerank_entities(query, result.entities, top_k)
+            if result.relationships:
+                result.relationships = reranker.rerank_relationships(query, result.relationships, top_k)
+            if timing:
+                print(f"[TEMP_TIMING] retriever.rerank={time.perf_counter()-t_r0:.3f}s")
+        else:
+            # 重排序器未就绪，添加错误信息
+            reranker_error = reranker.get_error_message()
+            if reranker_error:
+                if result.error_message:
+                    result.error_message += f"\n\n📝 {reranker_error}"
+                else:
+                    result.error_message = f"📝 {reranker_error}"
+        
         if timing:
             total = time.perf_counter() - t0
             print(
@@ -239,29 +295,73 @@ class MemoirRetriever:
         keyword_results: List[Dict[str, Any]],
         vector_results: List[Dict[str, Any]],
         top_k: int,
+        context: Optional[MemoirContext] = None,
     ) -> List[Dict[str, Any]]:
-        """融合关键词和向量检索结果"""
+        """融合关键词和向量检索结果
+        
+        改进策略：
+        1. 优先使用关键词检索结果（更可靠）
+        2. 向量检索结果需要年份匹配才纳入
+        3. 如果关键词结果不足，才补充向量结果
+        """
         merged = {}
         
+        # 首先添加关键词结果（更可靠）
         for item in keyword_results:
             name = item.get("name", item.get("title", ""))
             if name:
                 merged[name] = item.copy()
-                merged[name]["score"] = item.get("score", 1) * 0.5
+                merged[name]["score"] = item.get("score", 1) * 1.0  # 关键词结果权重更高
                 merged[name]["source"] = "keyword"
         
-        for item in vector_results:
-            name = item.get("name", item.get("title", ""))
-            if name:
-                if name in merged:
-                    merged[name]["score"] += item.get("score", 1) * 0.5
-                    merged[name]["source"] = "hybrid"
-                else:
-                    merged[name] = item.copy()
-                    merged[name]["score"] = item.get("score", 1) * 0.5
-                    merged[name]["source"] = "vector"
+        # 然后添加向量结果，但需要年份匹配
+        if context and context.year:
+            target_year = str(context.year)
+            for item in vector_results:
+                name = item.get("name", item.get("title", ""))
+                desc = item.get("description", "")
+                
+                if not name:
+                    continue
+                
+                # 检查是否包含目标年份
+                combined_text = f"{name} {desc}"
+                year_match = target_year in combined_text
+                
+                # 如果向量结果包含年份，才考虑纳入
+                if year_match:
+                    if name in merged:
+                        # 如果已有关键词结果，增加分数
+                        merged[name]["score"] += item.get("score", 0.5) * 0.5
+                        merged[name]["source"] = "hybrid"
+                    else:
+                        # 新结果，降低权重
+                        merged[name] = item.copy()
+                        merged[name]["score"] = item.get("score", 0.5) * 0.5
+                        merged[name]["source"] = "vector"
+        else:
+            # 没有年份信息，按原逻辑处理但降低向量权重
+            for item in vector_results:
+                name = item.get("name", item.get("title", ""))
+                if name:
+                    if name in merged:
+                        merged[name]["score"] += item.get("score", 0.5) * 0.3
+                        merged[name]["source"] = "hybrid"
+                    else:
+                        merged[name] = item.copy()
+                        merged[name]["score"] = item.get("score", 0.5) * 0.3
+                        merged[name]["source"] = "vector"
         
         sorted_results = sorted(merged.values(), key=lambda x: x.get("score", 0), reverse=True)
+        
+        # 如果关键词结果足够，优先返回关键词结果
+        if len(keyword_results) >= top_k // 2:
+            # 优先使用关键词结果
+            keyword_names = {item.get("name", item.get("title", "")) for item in keyword_results}
+            filtered = [r for r in sorted_results if r.get("name", r.get("title", "")) in keyword_names]
+            if len(filtered) >= top_k // 2:
+                return filtered[:top_k]
+        
         return sorted_results[:top_k]
     
     def _merge_text_results(
@@ -301,6 +401,7 @@ class MemoirRetriever:
     ) -> List[Dict[str, Any]]:
         """搜索相关实体"""
         if self._entities_df is None or self._entities_df.empty:
+            print(f"[_search_entities] 实体数据为空")
             return []
         
         results = []
@@ -308,7 +409,6 @@ class MemoirRetriever:
         # 构建搜索词（包含中英文变体）
         search_terms = []
         if context.year:
-            search_terms.append(context.year)
             search_terms.append(str(context.year))
         if context.location:
             search_terms.append(context.location)
@@ -320,6 +420,12 @@ class MemoirRetriever:
             if context.location in location_map:
                 search_terms.append(location_map[context.location])
         search_terms.extend(context.keywords)
+
+        # 去重（保持顺序）
+        search_terms = list(dict.fromkeys(search_terms))
+        
+        print(f"[_search_entities] 搜索词: {search_terms}")
+        print(f"[_search_entities] 实体总数: {len(self._entities_df)}")
         
         for _, row in self._entities_df.iterrows():
             # GraphRAG 2.x 使用 title 字段
@@ -343,6 +449,9 @@ class MemoirRetriever:
         
         # 按分数排序
         results.sort(key=lambda x: x["score"], reverse=True)
+        print(f"[_search_entities] 匹配结果数: {len(results)}")
+        if results:
+            print(f"[_search_entities] 前3个结果: {[(r['name'], r['score']) for r in results[:3]]}")
         return results[:top_k]
     
     def _search_relationships(

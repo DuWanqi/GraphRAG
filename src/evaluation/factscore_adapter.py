@@ -263,7 +263,8 @@ class FActScoreChecker:
         """
         FActScore原子化检查
 
-        将生成文本分解为原子事实，逐一验证
+        将生成文本分解为原子事实，逐一验证。
+        验证上下文包括：回忆录原文 + 检索到的历史背景。
 
         Returns:
             (inconsistencies, total_facts, supported_facts, atomic_facts)
@@ -271,13 +272,21 @@ class FActScoreChecker:
         logger = logging.getLogger(__name__)
         inconsistencies = []
 
-        # 准备上下文（历史背景证据）
-        context = ""
+        retrieval_context = ""
         if retrieval_result:
-            context = retrieval_result.get_context_text()
+            retrieval_context = retrieval_result.get_context_text()
+
+        # 合并上下文：原文 + 检索背景。润色改写后的内容大部分来自原文，
+        # 原文是最重要的验证依据。
+        context_parts = []
+        if memoir_text:
+            context_parts.append(f"【回忆录原文】\n{memoir_text}")
+        if retrieval_context:
+            context_parts.append(f"【历史背景】\n{retrieval_context}")
+        context = "\n\n".join(context_parts)
 
         if not context:
-            logger.warning("[FActScore] 无检索结果，跳过原子化检查")
+            logger.warning("[FActScore] 无上下文，跳过原子化检查")
             return [], 0, 0, []
 
         # 分解生成文本为原子事实
@@ -288,19 +297,35 @@ class FActScoreChecker:
                 f"[FActScore] 原子事实 {len(atomic_facts)} 条超过上限 {max_atomic_facts}，截断以控制成本"
             )
             atomic_facts = atomic_facts[:max_atomic_facts]
+
+        # 过滤纯文学描写，只保留可验证的事实性陈述
+        atomic_facts = self._filter_literary_sentences(atomic_facts)
+
         total_facts = len(atomic_facts)
-        logger.info(f"[FActScore] 分解得到 {total_facts} 个原子事实")
+        logger.info(f"[FActScore] 过滤后剩余 {total_facts} 个可验证事实")
 
         if total_facts == 0:
             return [], 0, 0, []
 
-        # 批量验证原子事实
-        logger.info(f"[FActScore] 开始批量验证 {total_facts} 个原子事实")
-        verification_results = await self._verify_facts_batch(atomic_facts, context, batch_size=batch_size)
+        # 先做快速规则匹配：如果事实能在原文中找到关键词对应，直接标记为支持
+        rule_supported, remaining_facts = self._rule_match_against_source(
+            atomic_facts, memoir_text
+        )
+        logger.info(
+            f"[FActScore] 规则匹配: {len(rule_supported)}/{total_facts} 个事实直接由原文支持"
+        )
 
-        # 为不支持的事实创建不一致项
+        # 对剩余事实用 LLM 批量验证
+        if remaining_facts:
+            logger.info(f"[FActScore] LLM 批量验证剩余 {len(remaining_facts)} 个事实 (batch_size={batch_size})")
+            verification_results = await self._verify_facts_batch(
+                remaining_facts, context, batch_size=batch_size
+            )
+        else:
+            verification_results = []
+
         unsupported_facts = []
-        for fact, is_supported in zip(atomic_facts, verification_results):
+        for fact, is_supported in zip(remaining_facts, verification_results):
             if not is_supported:
                 unsupported_facts.append(fact)
                 logger.info(f"[FActScore] 事实不支持: {fact[:50]}...")
@@ -309,21 +334,9 @@ class FActScoreChecker:
             inconsistencies.append({
                 "type": "unsupported_claim",
                 "generated_text": fact,
-                "explanation": "该事实缺乏历史背景证据支持",
+                "explanation": "该事实缺乏原文或历史背景证据支持",
                 "severity": 0.4,
             })
-
-        logger.info(f"[FActScore] 批量验证完成，发现 {len(unsupported_facts)} 个不支持的事实")
-
-        # 验证不支持的事实是否在回忆录原文中有依据
-        if inconsistencies:
-            logger.info("[FActScore] 验证不支持的事实是否在回忆录原文中有依据...")
-            verified_facts = await self._verify_against_memoir(
-                memoir_text, inconsistencies
-            )
-            inconsistencies = self._remove_false_positives(
-                inconsistencies, verified_facts
-            )
 
         supported_facts = total_facts - len(inconsistencies)
         logger.info(
@@ -458,6 +471,93 @@ class FActScoreChecker:
         logger.info(f"[RemoveFP] 总共移除 {removed_count} 个误报，剩余 {len(filtered)} 个问题")
         return filtered
     
+    # 纯文学修辞/感官描写模式，不含可验证事实
+    _LITERARY_PATTERNS = re.compile(
+        r"^(?:.*(?:仿佛|如同|像是|似乎|宛如|恰似|好像|犹如).*[。！？]?$)"
+        r"|^(?:.*(?:心中|内心|眼前|仿佛在|似乎在).*(?:涌动|荡漾|闪烁|浮现|回响).*$)"
+    )
+
+    @staticmethod
+    def _filter_literary_sentences(facts: List[str]) -> List[str]:
+        """
+        过滤纯文学描写句，只保留含可验证信息的陈述。
+
+        策略：
+        1. 保留包含时间、地点、数字的事实性陈述
+        2. 过滤纯感官描写、情感描写、场景描写
+        """
+        filtered = []
+        for fact in facts:
+            s = fact.strip()
+            if len(s) < 6:
+                continue
+
+            # 检查是否包含可验证信息（实体/事件标志）
+            has_verifiable = bool(re.search(
+                r"[\d一二三四五六七八九十百千万亿]"  # 包含数字
+                r"|[年月日号]"                        # 包含时间词
+                r"|(?:省|市|县|区|镇|村|塬|河|山)"    # 包含地名标志
+                r"|(?:会议|全会|政策|制度|法律|条例|特区|开发区)"  # 包含事件/制度标志
+                r"|(?:大学|学院|研究所|公司|企业|组织|团体)"  # 包含机构标志
+                r"|(?:主席|总理|部长|书记|院士|教授|队长)"  # 包含职位标志
+                r"|(?:叫|姓|名|是|在|从|到|去|来|做|当|任)", s  # 包含事实性动词
+            ))
+
+            # 检查是否是纯感官/情感描写（排除）
+            is_pure_narrative = bool(re.search(
+                r"^[^。！？]*(?:阳光|微风|树叶|灯光|气息|味道|声音|窗帘|缝隙|光影|斑驳)[^。！？]*[。！？]?$"  # 纯感官描写
+                r"|^[^。！？]*(?:激动|兴奋|幸福|期待|憧憬|沉甸甸)[^。！？]*[。！？]?$"  # 纯情感描写
+                r"|^[^。！？]*(?:坐在|站在|躺在|走进|打开|放下|抬头|低头|闭上)[^。！？]*[。！？]?$", s  # 纯动作描写
+            ))
+
+            if has_verifiable and not is_pure_narrative:
+                filtered.append(s)
+        return filtered
+
+    @staticmethod
+    def _rule_match_against_source(
+        facts: List[str], source_text: str,
+    ) -> tuple[list[str], list[str]]:
+        """
+        规则快速匹配：如果一个"事实"中的关键实词（去掉虚词后）
+        大部分能在原文中找到，就直接判定为"被支持"。
+
+        Returns:
+            (supported_facts, remaining_facts_for_llm)
+        """
+        supported = []
+        remaining = []
+        for fact in facts:
+            # 提取事实中的关键片段（人名、数字、地名等）
+            key_tokens = re.findall(
+                r"[\u4e00-\u9fff]{2,}"  # 中文词（2字以上）
+                r"|[A-Za-z]+\d+"        # 英文+数字
+                r"|\d+",               # 纯数字
+                fact,
+            )
+            if not key_tokens:
+                remaining.append(fact)
+                continue
+            # 去掉常见虚词
+            stop_words = {
+                "一个", "一些", "这个", "那个", "我们", "他们", "自己", "什么",
+                "可以", "已经", "开始", "成为", "不是", "没有", "但是", "因为",
+                "所以", "如果", "就是", "虽然", "仿佛", "似乎", "好像", "如同",
+                "依旧", "依然", "终于", "渐渐", "慢慢", "忽然", "不断", "只是",
+                "然而", "同时", "随着", "每个", "无数", "整个",
+            }
+            meaningful = [t for t in key_tokens if t not in stop_words]
+            if not meaningful:
+                remaining.append(fact)
+                continue
+            matched = sum(1 for t in meaningful if t in source_text)
+            ratio = matched / len(meaningful)
+            if ratio >= 0.5:
+                supported.append(fact)
+            else:
+                remaining.append(fact)
+        return supported, remaining
+
     def _decompose_text_rule_based(self, text: str) -> List[str]:
         """
         基于规则的原子事实分解（使用jieba）

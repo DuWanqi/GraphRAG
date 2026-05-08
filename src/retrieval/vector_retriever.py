@@ -18,6 +18,14 @@ from ..llm import LLMAdapter
 from ..llm.ollama_embedding import OllamaEmbedding, OllamaEmbeddingConfig
 
 
+class EmbeddingError(Exception):
+    """Embedding 获取失败异常"""
+    def __init__(self, message: str, is_ollama_error: bool = False):
+        self.message = message
+        self.is_ollama_error = is_ollama_error
+        super().__init__(self.message)
+
+
 class RetrievalMode(Enum):
     """检索模式"""
     KEYWORD = "keyword"
@@ -67,11 +75,42 @@ class VectorRetriever:
         self._community_table = None
         self._text_unit_table = None
         
+        # 加载实体和关系数据（用于关联向量检索结果）
+        self._entities_df = None
+        self._relationships_df = None
+        self._load_graph_data()
+        
         # 使用Ollama embedding
         if use_ollama_embedding:
             self._embedding = OllamaEmbedding()
         else:
             self._embedding = None
+    
+    def _load_graph_data(self):
+        """加载图谱数据（实体、关系等）用于关联向量检索结果"""
+        import pandas as pd
+        
+        output_dir = self.index_dir / "output"
+        if not output_dir.exists():
+            return
+        
+        # 加载实体数据
+        entities_path = output_dir / "entities.parquet"
+        if entities_path.exists():
+            try:
+                self._entities_df = pd.read_parquet(entities_path)
+                print(f"[VectorRetriever] 加载 {len(self._entities_df)} 个实体")
+            except Exception as e:
+                print(f"[VectorRetriever] 加载实体数据失败: {e}")
+        
+        # 加载关系数据
+        relationships_path = output_dir / "relationships.parquet"
+        if relationships_path.exists():
+            try:
+                self._relationships_df = pd.read_parquet(relationships_path)
+                print(f"[VectorRetriever] 加载 {len(self._relationships_df)} 个关系")
+            except Exception as e:
+                print(f"[VectorRetriever] 加载关系数据失败: {e}")
     
     def _connect(self):
         """连接LanceDB"""
@@ -111,8 +150,16 @@ class VectorRetriever:
                 return await self._embedding.embed(query)
             return None
         except Exception as e:
+            error_msg = str(e)
             print(f"[VectorRetriever] 获取embedding失败: {e}")
-            return None
+            # 检测是否是 Ollama 连接错误
+            if "Cannot connect to host" in error_msg or "远程计算机拒绝网络连接" in error_msg:
+                raise EmbeddingError(
+                    "Ollama 服务未运行，请启动 Ollama 服务后再试。\n"
+                    "启动命令: ollama serve",
+                    is_ollama_error=True
+                )
+            raise EmbeddingError(f"获取 embedding 失败: {e}", is_ollama_error=False)
     
     async def search_entities(
         self,
@@ -142,24 +189,48 @@ class VectorRetriever:
             query_vector = np.array(embedding, dtype=np.float32)
             
             results = self._entity_table.search(query_vector).limit(top_k).to_pandas()
+            print(f"[VectorRetriever] 向量检索返回 {len(results)} 个实体")
             
             entities = []
             for _, row in results.iterrows():
-                # LanceDB返回的列名是text，不是title/name
-                text = row.get("text", "")
-                name = text.split(":")[0] if ":" in text else text[:50]
+                entity_id = row.get("id", "")
+                score = float(row.get("_distance", 1.0))
+                
+                # 通过ID关联实体数据
+                entity_name = "未知实体"
+                entity_desc = ""
+                entity_type = "unknown"
+                
+                if self._entities_df is not None and entity_id:
+                    entity_row = self._entities_df[self._entities_df['id'] == entity_id]
+                    if not entity_row.empty:
+                        entity_name = entity_row.iloc[0].get('title', '未知实体')
+                        entity_desc = entity_row.iloc[0].get('description', '')
+                        entity_type = entity_row.iloc[0].get('type', 'unknown')
+                    else:
+                        print(f"[VectorRetriever] 警告: 找不到ID为 {entity_id[:20]}... 的实体")
+                else:
+                    if self._entities_df is None:
+                        print(f"[VectorRetriever] 警告: 实体数据未加载")
+                    if not entity_id:
+                        print(f"[VectorRetriever] 警告: 实体ID为空")
+                
                 entities.append({
-                    "name": name,
-                    "description": text,
-                    "type": "unknown",
-                    "score": float(row.get("_distance", 1.0)),
+                    "name": entity_name,
+                    "description": entity_desc,
+                    "type": entity_type,
+                    "score": score,
                     "source": "vector",
+                    "id": entity_id,
                 })
             
+            print(f"[VectorRetriever] 成功解析 {len(entities)} 个实体")
             return entities
             
         except Exception as e:
             print(f"[VectorRetriever] 实体检索失败: {e}")
+            import traceback
+            print(traceback.format_exc())
             return []
     
     async def search_communities(

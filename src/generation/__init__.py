@@ -4,8 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from .memoir_segmenter import MemoirSegment, segment_memoir
+from .memoir_segmenter import (
+    MemoirSegment,
+    SegmentMeta,
+    SegmentationReport,
+    SegmentationIssue,
+    segment_memoir,
+    validate_segmentation,
+    extract_years,
+)
 from .chapter_budget import SegmentBudget, allocate_segment_budgets, legacy_maps_for_single_segment
+from .chapter_context import ChapterContext, ChapterPosition, ChapterRecord
 from .prompts import PromptTemplates, get_system_prompt
 from .runtime_options import (
     single_segment_generation_config,
@@ -13,19 +22,29 @@ from .runtime_options import (
     estimate_long_form_evaluation_timeout,
     build_long_form_eval_options,
 )
+from .novel_content_extractor import NovelContentBrief, extract_novel_content
 
 __all__ = [
     "LiteraryGenerator",
     "GenerationResult",
     "MultiGenerationResult",
     "MemoirSegment",
+    "SegmentMeta",
+    "SegmentationReport",
+    "SegmentationIssue",
     "segment_memoir",
+    "validate_segmentation",
+    "extract_years",
     "SegmentBudget",
     "allocate_segment_budgets",
     "legacy_maps_for_single_segment",
+    "ChapterContext",
+    "ChapterPosition",
+    "ChapterRecord",
     "ChapterGenerationResult",
     "LongFormGenerationResult",
     "run_long_form_generation",
+    "regenerate_chapters",
     "format_chapter_progress",
     "PromptTemplates",
     "SYSTEM_PROMPTS",
@@ -34,6 +53,8 @@ __all__ = [
     "estimate_long_form_generation_timeout",
     "estimate_long_form_evaluation_timeout",
     "build_long_form_eval_options",
+    "NovelContentBrief",
+    "extract_novel_content",
 ]
 
 
@@ -50,6 +71,7 @@ def __getattr__(name: str) -> Any:
         "ChapterGenerationResult",
         "LongFormGenerationResult",
         "run_long_form_generation",
+        "regenerate_chapters",
         "format_chapter_progress",
     ):
         from . import long_form_orchestrator as lfo

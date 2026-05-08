@@ -27,16 +27,25 @@ class GenerationResult:
     model: str
     memoir_context: Optional[MemoirContext] = None
     retrieval_info: Optional[Dict[str, Any]] = None
-    
+    novel_content_brief: Optional[Any] = None  # NovelContentBrief from novel_content_extractor
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
-        return {
+        result = {
             "content": self.content,
             "provider": self.provider,
             "model": self.model,
             "memoir_context": self.memoir_context.to_dict() if self.memoir_context else None,
             "retrieval_info": self.retrieval_info,
         }
+        if self.novel_content_brief:
+            result["novel_content_brief"] = {
+                "has_novel_content": self.novel_content_brief.has_novel_content,
+                "novel_entity_count": len(self.novel_content_brief.novel_entities),
+                "novel_relationship_count": len(self.novel_content_brief.novel_relationships),
+                "summary": self.novel_content_brief.summary,
+            }
+        return result
 
 
 @dataclass
@@ -80,7 +89,15 @@ class LiteraryGenerator:
         """
         self.llm_adapter = llm_adapter
         self.llm_router = llm_router
-    
+
+    def _build_retrieval_info(self, retrieval_result: RetrievalResult) -> Dict[str, Any]:
+        """构建检索信息元数据（避免重复代码）"""
+        return {
+            "entities_count": len(retrieval_result.entities),
+            "communities_count": len(retrieval_result.communities),
+            "query": retrieval_result.query,
+        }
+
     async def generate(
         self,
         memoir_text: str,
@@ -89,6 +106,7 @@ class LiteraryGenerator:
         length_hint: str = "200-500字",
         temperature: float = 0.7,
         max_tokens: int = 1024,
+        chapter_context: str = "",
     ) -> GenerationResult:
         """
         生成历史背景描述
@@ -110,7 +128,7 @@ class LiteraryGenerator:
 
         # 构建提示词
         t_prompt0 = time.perf_counter()
-        prompt = self._build_prompt(memoir_text, retrieval_result, style=style, length_hint=length_hint)
+        prompt = self._build_prompt(memoir_text, retrieval_result, style=style, length_hint=length_hint, chapter_context=chapter_context)
         t_prompt = time.perf_counter() - t_prompt0
         if timing:
             print(f"[TEMP_TIMING] generator.build_prompt={t_prompt:.3f}s prompt_chars={len(prompt)}")
@@ -141,16 +159,18 @@ class LiteraryGenerator:
                 f"provider={response.provider.value} model={response.model}"
             )
         
+        # 检查是否因敏感内容被拦截
+        if response.is_sensitive:
+            error_msg = response.error_message or "内容因敏感词被模型拦截"
+            raise RuntimeError(error_msg)
+        
         return GenerationResult(
             content=response.content,
             provider=response.provider.value,
             model=response.model,
             memoir_context=retrieval_result.context,
-            retrieval_info={
-                "entities_count": len(retrieval_result.entities),
-                "communities_count": len(retrieval_result.communities),
-                "query": retrieval_result.query,
-            }
+            retrieval_info=self._build_retrieval_info(retrieval_result),
+            novel_content_brief=getattr(retrieval_result, '_novel_content_brief', None),
         )
 
     async def generate_stream(
@@ -161,6 +181,7 @@ class LiteraryGenerator:
         length_hint: str = "200-500字",
         temperature: float = 0.7,
         max_tokens: int = 1024,
+        chapter_context: str = "",
     ) -> AsyncIterator[str]:
         """
         流式生成：逐步产出新增文本片段（delta）。
@@ -168,7 +189,7 @@ class LiteraryGenerator:
         if not self.llm_adapter and not self.llm_router:
             raise ValueError("需要提供llm_adapter或llm_router")
 
-        prompt = self._build_prompt(memoir_text, retrieval_result, style=style, length_hint=length_hint)
+        prompt = self._build_prompt(memoir_text, retrieval_result, style=style, length_hint=length_hint, chapter_context=chapter_context)
 
         adapter = self.llm_adapter
         if adapter is None and self.llm_router:
@@ -181,6 +202,7 @@ class LiteraryGenerator:
         if not hasattr(adapter, "generate_stream"):
             raise ValueError("当前适配器不支持流式生成")
 
+        collected_content = []
         async for delta in adapter.generate_stream(
             prompt=prompt,
             system_prompt=get_system_prompt(self.DEFAULT_SYSTEM_PROMPT_KEY),
@@ -188,7 +210,15 @@ class LiteraryGenerator:
             max_tokens=max_tokens,
         ):
             if delta:
+                collected_content.append(delta)
                 yield delta
+        
+        # 流式生成结束后，检查总内容是否为空（可能被敏感拦截）
+        full_content = "".join(collected_content)
+        if not full_content or len(full_content.strip()) < 10:
+            # 内容过短，可能是被拦截了
+            error_msg = "生成内容为空或太短，可能是：\n1. 模型触发了敏感内容检测\n2. 输入文本包含敏感词汇\n建议：更换模型或修改输入文本"
+            raise RuntimeError(error_msg)
     
     async def generate_parallel(
         self,
@@ -233,11 +263,7 @@ class LiteraryGenerator:
                 provider=response.provider.value,
                 model=response.model,
                 memoir_context=retrieval_result.context,
-                retrieval_info={
-                    "entities_count": len(retrieval_result.entities),
-                    "communities_count": len(retrieval_result.communities),
-                    "query": retrieval_result.query,
-                }
+                retrieval_info=self._build_retrieval_info(retrieval_result)
             )
         
         return MultiGenerationResult(
@@ -277,17 +303,31 @@ class LiteraryGenerator:
         retrieval_result: RetrievalResult,
         style: str = "standard",
         length_hint: str = "200-500字",
+        chapter_context: str = "",
     ) -> str:
         """构建生成提示词"""
+        from .novel_content_extractor import extract_novel_content
+
         context = retrieval_result.context
-        
+
+        # 提取并分类 RAG 内容
+        novel_brief = extract_novel_content(memoir_text, retrieval_result)
+
+        # 将 novel_brief 附加到 retrieval_result（供后续评估使用）
+        retrieval_result._novel_content_brief = novel_brief
+
+        # 格式化为 prompt 注入用的两个区块
+        formatted = novel_brief.format_for_prompt()
+
         template = PromptTemplates.get_template(style=style)
         return template.format(
             memoir_text=memoir_text,
             year=context.year or "未知",
             location=context.location or "未知",
-            context=retrieval_result.get_context_text() or "暂无相关历史信息",
+            aligned_context=formatted["aligned_context"],
+            novel_context=formatted["novel_context"],
             length_hint=length_hint,
+            chapter_context=chapter_context,
         )
     
     async def enhance_memoir(
