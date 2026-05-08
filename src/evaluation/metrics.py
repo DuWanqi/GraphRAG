@@ -674,12 +674,20 @@ def calculate_all_metrics(
         from .novel_content_metrics import (
             information_gain_metric,
             expansion_grounding_metric,
+            rag_utilization_metric,
+            hallucination_metric,
         )
 
         results["information_gain"] = information_gain_metric(
             memoir_text, generated_text, novel_content_brief
         )
         results["expansion_grounding"] = expansion_grounding_metric(
+            memoir_text, generated_text, novel_content_brief
+        )
+        results["rag_utilization"] = rag_utilization_metric(
+            memoir_text, generated_text, novel_content_brief
+        )
+        results["hallucination"] = hallucination_metric(
             memoir_text, generated_text, novel_content_brief
         )
 
@@ -713,6 +721,8 @@ def aggregate_scores(
             # 新内容指标权重
             "information_gain": 1.2,
             "expansion_grounding": 1.5,
+            "rag_utilization": 2.0,  # RAG 利用率（高优先级）
+            "hallucination": 2.0,  # 幻觉检测（高优先级）
         }
 
     total_weight = sum(weights.get(k, 1.0) for k in metrics)

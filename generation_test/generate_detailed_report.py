@@ -154,34 +154,60 @@ async def main():
             seg_eval = eval_result.segments[i]
             report_lines.append("\n>>> 评估结果:")
             report_lines.append("-" * 100)
-            
-            # 指标
-            report_lines.append("\n指标:")
-            for metric_name, metric_value in seg_eval.metrics.items():
-                if hasattr(metric_value, 'value'):
-                    report_lines.append(f"  - {metric_name}: {metric_value.value:.2f}")
-                else:
-                    report_lines.append(f"  - {metric_name}: {metric_value}")
-            
-            # 新内容分析
+
+            # 指标 - 分组显示
+            report_lines.append("\n【核心指标】")
+            core_metrics = ["entity_coverage", "temporal_coherence", "rag_entity_accuracy", "topic_coherence"]
+            for metric_name in core_metrics:
+                if metric_name in seg_eval.metrics:
+                    metric_value = seg_eval.metrics[metric_name]
+                    if hasattr(metric_value, 'value'):
+                        report_lines.append(f"  - {metric_name}: {metric_value.value:.2f}")
+                    else:
+                        report_lines.append(f"  - {metric_name}: {metric_value}")
+
+            report_lines.append("\n【文学性指标】")
+            literary_metrics = ["length_score", "paragraph_structure", "transition_usage", "descriptive_richness"]
+            for metric_name in literary_metrics:
+                if metric_name in seg_eval.metrics:
+                    metric_value = seg_eval.metrics[metric_name]
+                    if hasattr(metric_value, 'value'):
+                        report_lines.append(f"  - {metric_name}: {metric_value.value:.2f}")
+                    else:
+                        report_lines.append(f"  - {metric_name}: {metric_value}")
+
+            report_lines.append("\n【新内容指标】")
+            novel_metrics = ["information_gain", "expansion_grounding", "rag_utilization", "hallucination"]
+            for metric_name in novel_metrics:
+                if metric_name in seg_eval.metrics:
+                    metric_value = seg_eval.metrics[metric_name]
+                    if hasattr(metric_value, 'value'):
+                        report_lines.append(f"  - {metric_name}: {metric_value.value:.2f}")
+                        # 显示详细说明
+                        if hasattr(metric_value, 'explanation'):
+                            report_lines.append(f"    {metric_value.explanation}")
+                    else:
+                        report_lines.append(f"  - {metric_name}: {metric_value}")
+
+            # 新内容分析（保留旧格式以兼容）
             if seg_eval.novel_content_info:
                 nci = seg_eval.novel_content_info
-                report_lines.append(f"\n新内容分析:")
+                report_lines.append(f"\n【新内容分析（详细）】")
                 report_lines.append(f"  - 提取到的新事实: {len(nci.extracted_facts)} 个")
                 if nci.extracted_facts:
                     report_lines.append(f"    示例: {', '.join(nci.extracted_facts[:10])}")
-                
+
                 report_lines.append(f"  - 有依据的新事实: {len(nci.grounded_facts)} 个")
                 if nci.grounded_facts:
                     report_lines.append(f"    示例: {', '.join(nci.grounded_facts[:10])}")
-                
+
                 report_lines.append(f"  - 无依据的新事实: {len(nci.ungrounded_facts)} 个")
                 if nci.ungrounded_facts:
                     report_lines.append(f"    ⚠️  示例: {', '.join(nci.ungrounded_facts[:10])}")
 
                 report_lines.append(f"  - 信息增益: {nci.information_gain:.1%}")
                 report_lines.append(f"  - 扩展溯源率: {nci.expansion_grounding:.1%}")
-            
+
             report_lines.append("-" * 100)
     
     # 整体评估

@@ -422,11 +422,15 @@ async def evaluate_long_form(
     # ---- 质量门控 ----
     gate_result: Optional[QualityGateResult] = None
     if enable_quality_gate:
+        # 准备 segment_metrics 列表
+        segment_metrics_list = [r.metrics for r in records]
+
         gate_result = check_quality_gate(
             chapters_content,
             segment_scores=seg_scores,
             fact_scores=fact_scores_list,
             target_chars_per_chapter=target_chars_list,
+            segment_metrics=segment_metrics_list,
             thresholds=quality_thresholds,
         )
 

@@ -123,11 +123,25 @@ def _extract_entity_names_only(generated_text: str, memoir_text: str) -> List[st
         # Common objects (not entities)
         '树', '灯', '灯光', '铃', '自行车', '行李', '床铺', '宿舍', '校园',
         '通知书', '录取', '考试', '成绩', '分数', '名次',
+        '宿舍楼', '教学楼', '图书馆', '食堂', '操场',
         # Abstract concepts
         '梦想', '希望', '未来', '开始', '结束', '可能性', '机会',
+        '宝藏', '曙光', '苏醒', '命运', '责任', '期待', '憧憬',
+        '宝贝', '荣光', '春雷', '火焰', '阴影', '奔头',
         # Actions/states
         '生活', '学习', '工作', '发展', '变化', '建设', '改革', '开放',
-        '播种', '春播', '收获', '劳作',
+        '播种', '春播', '收获', '劳作', '中断', '重启',
+        # Generic descriptive words (from user feedback)
+        '城市', '楼宇', '阳光', '清香', '田野', '声音', '气息', '影子',
+        '光影', '微光', '节奏', '速度', '力量', '温度', '距离',
+        '革命家', '青年', '学生', '同学', '家人', '父母',
+        '烟熏', '山丘', '林立', '金黄', '霜花', '花纹', '竹林',
+        '竹叶', '晚霞', '夜幕', '灯泡', '世界',
+        # Common places (too generic)
+        '火车', '车厢', '窗外', '房间', '桌上', '一旁', '中央',
+        '堂屋', '灶台', '柴火', '稀饭', '早饭', '长途', '汽车',
+        '柏油', '路面', '梧桐', '树叶', '墙面', '油墨', '泥土',
+        '玻璃', '窗', '门口', '家门', '乡下', '地', '天边', '晚风',
     }
 
     generated_words = list(pseg.cut(generated_text))
@@ -218,6 +232,156 @@ def expansion_grounding_metric(
     return MetricResult(
         name="expansion_grounding",
         value=grounding,
+        max_value=1.0,
+        explanation=explanation,
+    )
+
+
+def rag_utilization_metric(
+    memoir_text: str,
+    generated_text: str,
+    novel_content_brief: Any,
+) -> MetricResult:
+    """
+    RAG 利用率指标（RAG Utilization）
+
+    衡量生成文本是否充分利用了 RAG 检索到的新实体。
+
+    评分标准（非线性）：
+    - 0个实体 → 0.0（未利用）
+    - 1个实体 → 0.3（利用不足）
+    - 2个实体 → 0.6（达到最低要求，门控通过）
+    - 3个实体 → 0.8（良好利用）
+    - 4+个实体 → 1.0（充分利用）
+
+    门控要求：≥2个实体（score ≥ 0.6）
+    """
+    analysis = analyze_novel_content(memoir_text, generated_text, novel_content_brief)
+
+    used = len(analysis.novel_entities_used)
+    available = len(analysis.novel_entities_available)
+
+    # 非线性评分
+    if used == 0:
+        score = 0.0
+        level = "未利用"
+    elif used == 1:
+        score = 0.3
+        level = "利用不足"
+    elif used == 2:
+        score = 0.6
+        level = "达到最低要求"
+    elif used == 3:
+        score = 0.8
+        level = "良好利用"
+    else:  # 4+
+        score = 1.0
+        level = "充分利用"
+
+    # 构建详细说明
+    explanation_parts = [
+        f"【评分】{score:.1f}/1.0 ({level})",
+        f"【计算依据】使用了 {used}/{available} 个 RAG 提供的新实体",
+    ]
+
+    if used > 0:
+        explanation_parts.append(f"【已使用实体】{', '.join(analysis.novel_entities_used[:5])}")
+        if len(analysis.novel_entities_used) > 5:
+            explanation_parts.append(f"  ... 还有 {len(analysis.novel_entities_used) - 5} 个")
+
+    if used < available:
+        unused = [e for e in analysis.novel_entities_available if e not in analysis.novel_entities_used]
+        explanation_parts.append(f"【未使用实体】{', '.join(unused[:5])}")
+        if len(unused) > 5:
+            explanation_parts.append(f"  ... 还有 {len(unused) - 5} 个")
+
+    # 门控判定
+    passed = score >= 0.6
+    gate_status = "✓ 通过" if passed else "✗ 未通过"
+    explanation_parts.append(f"【门控判定】{gate_status}（要求 ≥2 个实体，score ≥ 0.6）")
+
+    explanation = "\n  ".join(explanation_parts)
+
+    return MetricResult(
+        name="rag_utilization",
+        value=score,
+        max_value=1.0,
+        explanation=explanation,
+    )
+
+
+def hallucination_metric(
+    memoir_text: str,
+    generated_text: str,
+    novel_content_brief: Any,
+) -> MetricResult:
+    """
+    幻觉检测指标（Hallucination Detection）
+
+    检测生成文本中有多少实体缺乏 RAG 支撑（疑似幻觉）。
+
+    计算方法：
+    1. 从生成文本中提取所有实体（使用严格过滤，排除通用词）
+    2. 分类：回忆录实体、RAG实体、无支撑实体
+    3. 幻觉率 = 无支撑实体数 / 总提取实体数
+    4. 评分 = 1.0 - 幻觉率（越低幻觉越高分）
+
+    注：暂不设置门控，仅作为评分指标
+    """
+    analysis = analyze_novel_content(memoir_text, generated_text, novel_content_brief)
+
+    # 提取生成文本中的所有实体（使用改进的提取逻辑）
+    all_extracted = _extract_entity_names_only(generated_text, memoir_text)
+
+    # 分类实体
+    memoir_entities = [e for e in all_extracted if e in memoir_text]
+    rag_entities = analysis.novel_entities_used  # 已经在 RAG 中的
+    unsupported_entities = [
+        e for e in all_extracted
+        if e not in memoir_text and e not in analysis.novel_entities_available
+    ]
+
+    # 计算幻觉率
+    total_extracted = len(all_extracted)
+    unsupported_count = len(unsupported_entities)
+
+    if total_extracted == 0:
+        hallucination_rate = 0.0
+        score = 1.0
+        level = "无法评估"
+    else:
+        hallucination_rate = unsupported_count / total_extracted
+        score = 1.0 - hallucination_rate
+
+        if hallucination_rate <= 0.1:
+            level = "优秀"
+        elif hallucination_rate <= 0.3:
+            level = "良好"
+        elif hallucination_rate <= 0.5:
+            level = "一般"
+        else:
+            level = "较差"
+
+    # 构建详细说明
+    explanation_parts = [
+        f"【评分】{score:.2f}/1.0 ({level})",
+        f"【计算依据】幻觉率 = {unsupported_count}/{total_extracted} = {hallucination_rate:.1%}",
+        f"【实体分类】",
+        f"  - 回忆录实体: {len(memoir_entities)} 个",
+        f"  - RAG 支撑实体: {len(rag_entities)} 个",
+        f"  - 无支撑实体: {unsupported_count} 个（疑似幻觉）",
+    ]
+
+    if unsupported_entities:
+        explanation_parts.append(f"【无支撑实体列表】{', '.join(unsupported_entities[:10])}")
+        if len(unsupported_entities) > 10:
+            explanation_parts.append(f"  ... 还有 {len(unsupported_entities) - 10} 个")
+
+    explanation = "\n  ".join(explanation_parts)
+
+    return MetricResult(
+        name="hallucination",
+        value=score,
         max_value=1.0,
         explanation=explanation,
     )
