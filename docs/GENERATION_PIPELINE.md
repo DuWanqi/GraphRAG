@@ -54,13 +54,46 @@ def segment_memoir(
 ) -> List[MemoirSegment]
 ```
 
+### 2.3 分段流水线（实现顺序）
+
+`segment_memoir` 按**固定顺序**执行，与代码 `memoir_segmenter.py` 一致：
+
+1. **全文极短**：若 `len(text) < target_min_chars`，**不再切分**，直接返回单段 `MemoirSegment(0, text, …)`（`split_reason` 为 `single_short`）。此时下游仍按 **§3** 为该段分配生成预算。
+2. **结构块**：`_structural_blocks` —— 按空行 `\n\s*\n` 切块；多块内若某行匹配章节/小节标题正则 `_CHAPTER_LINE`，则在标题行前再切一刀。
+3. **超长块按句拆**：对每个结构块调用 `_split_oversized(block, target_max_chars)`：块长 ≤ `target_max_chars` 则保留；否则按中文句末 `。！？` 与换行累积句子，单句拼接到接近上限；**无语句边界时**按 `target_max_chars` **硬切**字符窗口。
+4. **过短块合并**：`_merge_short` 扫描相邻块。若当前缓冲 `buf` 字数小于 `target_min_chars`，且下一块**不是**「段首年份」时间边界（`_LEADING_YEAR` 不匹配），且 `len(buf)+len(b)+1 ≤ target_max_chars * 2`，则用 `\n\n` 拼接；否则先输出 `buf` 再开始新缓冲。**含义**：合并允许暂时超过 `target_max_chars`，上限放宽到 **`2 × target_max_chars`**，再由下一步兜底。
+5. **超长二次切分**：对合并后仍大于 `target_max_chars * 2` 的块再次 `_split_oversized(..., target_max_chars)`。
+6. **元数据**：每段 `_build_meta`（年份、地点关键词、人物称谓、`temporal_label`）并推断 `split_reason`（如 `temporal_boundary`、`chapter_heading` 等）。
+
+### 2.4 「分段长度」与「生成长度」的区别（易混）
+
+| 参数 | 控制对象 | 典型用途 |
+|------|-----------|---------|
+| `target_min_chars` / `target_max_chars`（传给 `segment_memoir`） | **输入回忆录**每段的字符数区间与切/并策略 | 决定有几章、每章对应**原文**多长 |
+| `length_bucket`（传给 `allocate_segment_budgets`） | **LLM 输出**每章的目标字数区间、`max_tokens` | 决定 prompt 里的 `{length_hint}` 与采样上限 |
+
+二者**独立**：把 `target_max_chars` 设为 200 只会让更多、更短的「原文段」；**不会**把模型输出限制在 200 字。生成长度由 **§3** 与 `prompts.json` 中「字数控制在 `{length_hint}`」共同约束（模型仍可能略超出）。
+
+### 2.5 分段校验 `validate_segmentation`
+
+分段完成后，`long_form_orchestrator` 可选地调用 `validate_segmentation(segments, target_min_chars, target_max_chars)` 生成 `SegmentationReport`（仅记录 / 打日志，**不自动改分段**）：
+
+- **过短警告**：某段字数小于 `target_min_chars * 0.5`。
+- **过长错误**：某段字数大于 `target_max_chars * 3`。
+- **跨年代警告**：同段内解析出多个年份且跨度大于 **15** 年。
+- **索引连续性**：段 `index` 须与枚举下标一致，否则 **error**。
+
 ---
 
 ## 三、章节预算分配
 
 **文件**: `src/generation/chapter_budget.py`
 
-### 3.1 扩展系数
+本节描述 **`length_bucket` → 每章 `length_hint` + `max_tokens`**，供 `LiteraryGenerator.generate` 注入模板（见 **§4.4**）。**主入口默认**：`run_long_form_generation(..., length_bucket="400-800")`；若调用方未传 `length_bucket`，即使用该默认值。
+
+### 3.1 扩展系数（多段模式）
+
+当 **`len(segments) > 1`** 时，`allocate_segment_budgets` 按**每段原文字数**与下表系数计算该章生成目标（`bucket` 非法时回退 `"400-800"`）：
 
 | length_bucket | 扩展系数 | 说明 |
 |--------------|---------|------|
@@ -69,11 +102,44 @@ def segment_memoir(
 | "800-1200"   | 1.6×    | 丰富扩写 |
 | "1200+"      | 2.0×    | 大幅扩写 |
 
+对每一段：
+
+- `src_len = max(80, len(seg.text))`
+- `center = max(150, int(src_len * expansion))`
+- `low = max(100, int(center * 0.85))`，`high = max(low + 50, int(center * 1.15))`
+- **`length_hint`** = `f"{low}-{high}字"`（经 `_hint_from_target`，`low` 不低于 50）
+- **`max_tokens`** = `min(8000, max(512, int(high * 2.2)))`
+
+### 3.2 单段模式（全书只有一章）
+
+当 **`len(segments) == 1`** 时走 `_allocate_single_segment`，**不再按原文字数 × 扩展系数**，而是按 bucket 对应的「全书生成目标中位」`_BUCKET_TOTAL_CENTER[bucket]` 分配：
+
+| length_bucket | 总目标中位 `total_center`（字） |
+|---------------|--------------------------------|
+| "200-400"     | 300 |
+| "400-800"     | 600 |
+| "800-1200"    | 1000 |
+| "1200+"       | 2000 |
+
+单段时权重和为单段字数：`center = max(80, int(total_center * (len(seg) / sum_lens)))`（通常即整段一篇）。再算：
+
+- `low = max(50, int(center * 0.85))`，`high = max(low + 10, int(center * 1.15))`
+- **`length_hint`** = `"{low}-{high}字"`
+- **`max_tokens`** = `min(8000, max(256, int(high * 2.2)))`
+
+因此：**短原文 + 单段 + 默认 `length_bucket="400-800"`** 时，prompt 中常见约 **510–690 字** 一类的区间，与 `target_min_chars=100` 等分段参数无关。
+
+### 3.3 `legacy_maps_for_single_segment`（兼容性）
+
+`chapter_budget.legacy_maps_for_single_segment` 为 Web 等场景提供固定字符串档位（如 `"400-800字"`）与离散 `max_tokens` 映射；长文 orchestrator 主路径使用的是上文 **§3.1 / §3.2** 的 `allocate_segment_budgets` 动态计算。
+
 ---
 
 ## 四、逐章处理循环
 
 **文件**: `src/generation/long_form_orchestrator.py`
+
+主函数 `run_long_form_generation` 的先后次序与 **§一** 一致：先 **`segment_memoir(..., target_min_chars, target_max_chars)`**（**§二**），再 **`validate_segmentation`**（可选日志），再 **`allocate_segment_budgets(segments, length_bucket)`**（**§三**），最后对每一段顺序执行检索 → 新内容提取 → 组 prompt →（可选）跨章上下文 → **LLM 生成**，并用 `chapter_separator` 拼接各章正文为 `merged_content`。
 
 ### 4.1 并行优化
 
@@ -109,7 +175,7 @@ def segment_memoir(
 4. **对齐内容**: 原文已提及的实体
 5. **新知识**: 原文未提及的实体（白名单格式）
 6. 跨章上下文
-7. 长度提示
+7. **长度提示**：来自 **§3** 的 `SegmentBudget.length_hint`（如 `510-690字`），经 `LiteraryGenerator._build_prompt` 填入 `prompts.json` 中 `{length_hint}`，对应模板里「字数控制在……」一条；同段的 **`max_tokens`** 一并传入 LLM，作硬上限。
 
 **注入时的实体 / 关系描述截断**（`novel_content_extractor.NovelContentBrief.format_for_prompt`）:
 
@@ -747,5 +813,5 @@ if not gate_result.passed:
 
 ---
 
-**文档版本**: v2.6  
+**文档版本**: v2.7  
 **最后更新**: 2026-05-10
