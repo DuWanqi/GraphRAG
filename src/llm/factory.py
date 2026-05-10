@@ -3,7 +3,7 @@ LLM适配器工厂
 提供统一的适配器创建和管理接口
 """
 
-from typing import Optional, Dict, Type
+from typing import Optional, Dict, Type, List
 from .adapter import (
     LLMAdapter,
     LLMProvider,
@@ -14,6 +14,7 @@ from .adapter import (
     GLMAdapter,
     OpenAIAdapter,
     OllamaAdapter,
+    list_ollama_models_sync,
 )
 from ..config import get_settings
 
@@ -39,6 +40,44 @@ DEFAULT_MODELS: Dict[LLMProvider, str] = {
     LLMProvider.OPENAI: "gpt-4o-mini",
     LLMProvider.OLLAMA: "qwen3:32b",
 }
+
+# Web UI 与各路由可选模型（Ollama 由 /api/tags 动态填充，见 get_provider_models）
+PROVIDER_MODELS: Dict[LLMProvider, List[str]] = {
+    LLMProvider.DEEPSEEK: ["deepseek-chat"],
+    LLMProvider.QWEN: ["qwen-plus"],
+    LLMProvider.HUNYUAN: ["hunyuan-lite"],
+    LLMProvider.GEMINI: ["gemini-2.5-flash"],
+    LLMProvider.GLM: ["glm-4.7-flash"],
+    LLMProvider.OPENAI: ["gpt-4o", "gpt-5"],
+}
+
+
+def get_provider_models(provider: str) -> List[str]:
+    """
+    返回某供应商在 UI 中可选的模型 id 列表。
+    Ollama：从本地服务拉取；失败或未启动时回退到 DEFAULT_MODELS[ollama]。
+    """
+    if not (provider or "").strip():
+        return []
+    try:
+        provider_enum = LLMProvider(provider.lower())
+    except ValueError:
+        return []
+
+    if provider_enum == LLMProvider.OLLAMA:
+        settings = get_settings()
+        try:
+            names = list_ollama_models_sync(settings.ollama_api_base)
+        except Exception:
+            names = []
+        if names:
+            return names
+        return [DEFAULT_MODELS[LLMProvider.OLLAMA]]
+
+    models = PROVIDER_MODELS.get(provider_enum)
+    if models:
+        return list(models)
+    return [DEFAULT_MODELS[provider_enum]]
 
 
 def create_llm_adapter(

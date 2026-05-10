@@ -11,17 +11,18 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+import html
 import gradio as gr
 
 from src.config import get_settings
 from src.llm import (
     create_llm_adapter,
     get_available_providers,
+    get_provider_models,
     LLMRouter,
-    build_ollama_model_choices,
 )
-from src.indexing import GraphBuilder, DataLoader
+from src.indexing import GraphBuilder
 from src.retrieval import MemoirRetriever
 from src.generation import (
     LiteraryGenerator,
@@ -35,12 +36,13 @@ from src.generation import (
 )
 from src.evaluation import (
     Evaluator,
-    EvaluationDimension,
     FActScoreChecker,
     SAFECheckResult,
+    aggregate_scores,
     evaluate_retrieval_quality,
     evaluate_long_form,
     long_form_eval_to_json,
+    QualityThresholds,
 )
 
 
@@ -49,31 +51,28 @@ settings = get_settings()
 retriever: Optional[MemoirRetriever] = None
 generator: Optional[LiteraryGenerator] = None
 current_provider: Optional[str] = None  # 跟踪当前使用的 provider
-current_model: Optional[str] = None  # 跟踪当前使用的模型（目前仅用于 ollama）
-
-# 8 个输出的空元组，用于错误/提前返回
-_EMPTY_8 = ("", "", "", "", "", "", "", "")
+current_model: Optional[str] = None  # 跟踪当前使用的模型名（与各供应商共用）
 
 
 def init_components(provider: str = "gemini", model: Optional[str] = None):
     """初始化组件"""
     global retriever, generator, current_provider, current_model
 
-    # 如果 provider 相同且组件已初始化，则跳过
+    # 如果 provider / model 相同且组件已初始化，则跳过
     if (
         provider == current_provider
-        and (provider != "ollama" or model == current_model)
+        and model == current_model
         and retriever is not None
         and generator is not None
     ):
         return f"✅ 已使用 {provider}{f'/{model}' if model else ''} 模型"
 
     try:
-        llm_adapter = create_llm_adapter(provider=provider, model=(model if provider == "ollama" else None))
+        llm_adapter = create_llm_adapter(provider=provider, model=model)
         retriever = MemoirRetriever(llm_adapter=llm_adapter)
         generator = LiteraryGenerator(llm_adapter=llm_adapter)
         current_provider = provider
-        current_model = model if provider == "ollama" else None
+        current_model = model
         return f"✅ 初始化成功！使用 {provider}{f'/{model}' if model else ''} 模型"
     except Exception as e:
         return f"❌ 初始化失败: {str(e)}"
@@ -81,7 +80,7 @@ def init_components(provider: str = "gemini", model: Optional[str] = None):
 
 def _make_llm(provider, model):
     """创建 LLM 适配器的快捷方式"""
-    return create_llm_adapter(provider=provider, model=(model if provider == "ollama" else None))
+    return create_llm_adapter(provider=provider, model=model)
 
 
 def _format_retrieval_quality(eval_result):
@@ -157,6 +156,484 @@ def _format_safe_check(safe_result: SAFECheckResult) -> str:
     return md
 
 
+METRIC_DEFINITIONS: Dict[str, Dict[str, str]] = {
+    "entity_coverage": {
+        "name": "实体覆盖率",
+        "definition": "扩充文本对 RAG「参考实体」的引用满足程度（扩展任务至少使用指定个数即视为满分）。",
+        "formula": "已使用实体数 / min(要求最少实体数, 可用实体数)，扩展任务中为分段计分，上限 1.0",
+    },
+    "temporal_coherence": {
+        "name": "时间一致性",
+        "definition": "生成文本中出现的年份是否落在回忆录参考年份±容忍范围内。",
+        "formula": "合理年份个数 / 生成文本中出现的不同四位年份个数",
+    },
+    "rag_entity_accuracy": {
+        "name": "RAG 实体准确性",
+        "definition": "在扩展任务中对「已选用的 RAG 实体」是否与知识库一致的粗粒度检查（启用即视作描述可用）。",
+        "formula": "基于是否使用 RAG 实体及简述一致性（当前实现偏乐观）",
+    },
+    "topic_coherence": {
+        "name": "主题一致性",
+        "definition": "生成内容与回忆录主题的词汇/语义重叠程度（规则度量）。",
+        "formula": "关键词与回忆录重叠度等指标的组合规则评分",
+    },
+    "length_score": {
+        "name": "长度得分",
+        "definition": "生成长度是否在允许区间及最佳区间附近（随任务与 length_hint 动态校准）。",
+        "formula": "区间外惩罚 + 区间内距最优区间距离的分段打分",
+    },
+    "paragraph_structure": {
+        "name": "段落结构",
+        "definition": "是否具备合理分段与段落长度分布。",
+        "formula": "基于段落数量、平均长度等的规则评分（长文可 relaxed）",
+    },
+    "transition_usage": {
+        "name": "衔接词使用",
+        "definition": "过渡语、衔接短语的使用是否合理。",
+        "formula": "命中衔接词模式的密度与多样性规则分",
+    },
+    "descriptive_richness": {
+        "name": "描写丰富度",
+        "definition": "形容词、场景描写等字面丰富程度。",
+        "formula": "基于描写类词的比例与长度的规则评分",
+    },
+    "information_gain": {
+        "name": "信息增益",
+        "definition": "引入了多少回忆录之外、由 RAG 提供的新实体知识。",
+        "formula": "按使用的新实体个数分段：0→0；1→0.4；2→0.7；3+→1.0",
+    },
+    "expansion_grounding": {
+        "name": "扩展溯源率",
+        "definition": "扩展内容是否可溯源到 RAG（与 hallucination/novel_facts 等指标互补）。",
+        "formula": "当前实现对「所用新实体均来自 RAG」作 sanity check；无新事实时视作 1.0",
+    },
+    "rag_utilization": {
+        "name": "RAG 利用率",
+        "definition": "在可用新实体集合中实际写入正文的比例强度（分段非线性打分）。",
+        "formula": "按使用的新实体个数映射到 0~1（≥2 个通常达门控要求）",
+    },
+    "hallucination": {
+        "name": "幻觉风险控制",
+        "definition": "从生成文本抽出的专有实体中缺乏回忆录与 RAG 支撑的比例越低越好。",
+        "formula": "1 - （无支撑实体数 / 抽取实体总数）",
+    },
+    "year_diversity": {
+        "name": "年代跨度（篇级）",
+        "definition": "合并长文中检出年代种类的多样性启发式 penalize。",
+        "formula": "规则：检出年份种类越少越稳定；过多年代略扣分",
+    },
+    "merged_length": {
+        "name": "合并篇幅（篇级）",
+        "definition": "合并全文总长是否落在合理长篇区间附近。",
+        "formula": "基于 min/max/optimal 区间的 length_score 变体",
+    },
+    "inter_chapter_repetition": {
+        "name": "跨章重复度",
+        "definition": "相邻章节 n-gram 重叠程度（越低越好，分数已转为质量分）。",
+        "formula": "基于跨章 jaccard/overlap 的规则指标",
+    },
+    "style_consistency": {
+        "name": "风格一致性",
+        "definition": "各章句式、标点的统计分布相似度近似。",
+        "formula": "篇章间标点/句式特征向量相似度规则分",
+    },
+    "summary_sentence_ratio": {
+        "name": "总结句比率",
+        "definition": "章末总结/套话式句子占比启发式检测。",
+        "formula": "匹配总结句式数量 / 分句总数",
+    },
+}
+
+
+def _metric_abbr_tip(metric_key: str) -> str:
+    meta = METRIC_DEFINITIONS.get(metric_key, {})
+    name = meta.get("name", metric_key)
+    definition = meta.get("definition", "")
+    formula = meta.get("formula", "")
+    tip = f"{name}: {definition}｜计算: {formula}"
+    return html.escape(tip.replace("\n", " "), quote=True)
+
+
+def _format_metric_line(metric_key: str, mr: Any, value_fmt: str = "{:.3f}") -> str:
+    meta = METRIC_DEFINITIONS.get(metric_key, {})
+    display = meta.get("name", metric_key)
+    mv = getattr(mr, "max_value", 1.0) or 1.0
+    val = getattr(mr, "value", 0.0)
+    expl = getattr(mr, "explanation", "") or ""
+    tip = _metric_abbr_tip(metric_key)
+    line = (
+        f"- **{display}** "
+        f'<abbr title="{tip}">\u2139\uFE0F</abbr> '
+        f"`{value_fmt.format(val)}` / `{mv:.3f}`  "
+        f"（归一约 **{100.0 * val / mv:.1f}%**）"
+    )
+    if expl.strip():
+        line += f"\n  \n*{expl.strip()}*"
+    return line
+
+
+def _entity_names_sorted_by_length(rr: Any) -> List[str]:
+    names: List[str] = []
+    for e in rr.entities or []:
+        n = e.get("name") or e.get("title") or ""
+        if n:
+            names.append(n)
+    seen: Set[str] = set()
+    uniq: List[str] = []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            uniq.append(n)
+    return sorted(uniq, key=len, reverse=True)
+
+
+def _bold_entities_in_text(text: str, names: List[str]) -> str:
+    if not text or not names:
+        return text
+    out = text
+    for name in names:
+        if len(name) < 2:
+            continue
+        if name not in out:
+            continue
+        out = out.replace(name, f"**{name}**")
+        out = out.replace(f"****{name}****", f"**{name}**")
+    out = out.replace("****", "**")
+    return out
+
+
+def _format_chapter_entities_block(
+    idx: int,
+    chapter: Any,
+    novel_used: Optional[Set[str]] = None,
+) -> List[str]:
+    lines: List[str] = []
+    rr = chapter.retrieval_result
+    ctx = rr.context
+    lines.append(f"### 第 {idx + 1} 章检索")
+    lines.append(
+        f"- **查询**: `{rr.query}`\n"
+        f"- **解析时间**: {ctx.year or '—'}｜**地点**: {ctx.location or '—'}\n"
+        f"- **实体数**: {len(rr.entities or [])}｜**关系数**: {len(rr.relationships or [])}"
+    )
+
+    brief = getattr(rr, "_novel_content_brief", None)
+    nu = novel_used or set()
+
+    if brief:
+        lines.append("")
+        lines.append(f"- **对齐实体**（回忆录已提及，约 {len(brief.aligned_entities)} 个）")
+        for ent in brief.aligned_entities[:20]:
+            name = ent.get("name") or ent.get("title") or "?"
+            et = ent.get("type") or ""
+            lines.append(f"  - `{name}`" + (f"（{et}）" if et else ""))
+        if len(brief.aligned_entities) > 20:
+            lines.append(f"  - … 共 {len(brief.aligned_entities)} 个，其余略")
+
+        lines.append("")
+        lines.append(f"- **新增实体**（RAG 提供、回忆录未提，约 {len(brief.novel_entities)} 个）")
+        for ent in brief.novel_entities[:25]:
+            name = ent.get("name") or ent.get("title") or "?"
+            et = ent.get("type") or ""
+            used = name in nu
+            line = f"  - "
+            line += (f"**`{name}`**" if used else f"`{name}`")
+            line += (f"（{et}）" if et else "") + (" ✓ 已写入生成文" if used else "")
+            lines.append(line)
+        if len(brief.novel_entities) > 25:
+            lines.append(f"  - … 共 {len(brief.novel_entities)} 个，其余略")
+    else:
+        lines.append("")
+        lines.append("- **检索实体（摘要）**")
+        for ent in (rr.entities or [])[:12]:
+            name = ent.get("name") or ent.get("title") or "?"
+            et = ent.get("type") or ""
+            lines.append(f"  - `{name}`" + (f"（{et}）" if et else ""))
+
+    rels = rr.relationships or []
+    if rels:
+        lines.append("")
+        lines.append(f"- **关系**（{len(rels)}）")
+        for j, rel in enumerate(rels[:15], 1):
+            src = rel.get("source", "")
+            tgt = rel.get("target", "")
+            desc = rel.get("description", "")
+            line = f"  {j}. `{src}` \u2192 `{tgt}`"
+            if desc:
+                desc_more = "\u2026" if len(desc) > 80 else ""
+                line += f" — _{desc[:80]}{desc_more}_"
+            lines.append(line)
+        if len(rels) > 15:
+            lines.append(f"  - … 其余 {len(rels) - 15} 条略")
+
+    if getattr(chapter, "repetition_warning", ""):
+        lines.append("")
+        lines.append(f"_跨章重复提示_: {chapter.repetition_warning}")
+    return lines
+
+
+def _format_long_form_facts_and_rules(ev: Any) -> str:
+    parts: List[str] = []
+    parts.append("## \u6458\u8981\n\n")
+    parts.append(ev.summary_text)
+    parts.append("\n\n---\n## \u6BB5\u843D\u7EA7 \u00B7 \u89C4\u5219\u4E0E\u51C6\u786E\u6027\u6307\u6807\n")
+
+    ACC_KEYS = (
+        "entity_coverage",
+        "temporal_coherence",
+        "rag_entity_accuracy",
+        "expansion_grounding",
+        "hallucination",
+    )
+
+    for r in ev.segments:
+        parts.append(f"\n### \u6BB5 {r.segment_index + 1}\n")
+
+        fc = getattr(r, "fact_check", None)
+        skip = getattr(r, "fact_check_skipped_reason", None)
+        if fc is not None:
+            icon = "\u2705" if fc.is_factual else "\u26a0\uFE0F"
+            verdict_cn = "\u4e8b\u5b9e\u4e00\u81f4\u503e\u5411" if fc.is_factual else "\u6709\u5f85\u590d\u6838"
+            parts.append(f"#### {icon} FActScore\uff08\u6BB5\u843D\uff09\n\n")
+            parts.append(
+                f"- **\u5F97\u5206**: {fc.factscore:.1%}\n"
+                f"- **\u5224\u5B9A**: {verdict_cn}\n"
+                f"- **\u6458\u8981**: {fc.summary}\n"
+            )
+        elif skip:
+            parts.append(f"_\u672C\u6BB5\u672A\u8DD1\u901A\u4E8B\u5B9E\u6838\u67E5: `{skip}`_\n")
+        else:
+            parts.append("_\u672C\u6BB5\u4E8B\u5B9E\u6838\u67E5\u672A\u542F\u7528\u6216\u8DF3\u8FC7_\n")
+
+        metrics = getattr(r, "metrics", {}) or {}
+        for k in ACC_KEYS:
+            if k in metrics:
+                parts.append(_format_metric_line(k, metrics[k]))
+                parts.append("\n")
+
+        other_keys = sorted(
+            set(metrics.keys()) - set(ACC_KEYS)
+            - {"topic_coherence", "length_score", "paragraph_structure", "transition_usage", "descriptive_richness",
+               "information_gain", "rag_utilization"}
+        )
+        if other_keys:
+            parts.append("\n<details><summary>\u5176\u5B83\u6BB5\u7EA7\u89C4\u5219\u6307\u6807\uff08\u5C55\u5F00\uff09</summary>\n\n")
+            for k in other_keys:
+                parts.append(_format_metric_line(k, metrics[k]))
+                parts.append("\n")
+            parts.append("\n</details>\n")
+
+    parts.append("\n---\n## \u6587\u6863\u7EA7\u89C4\u5219\u6307\u6807\n")
+    for k, mr in getattr(ev, "document_metrics", {}).items():
+        parts.append(_format_metric_line(k, mr))
+        parts.append("\n")
+
+    parts.append("\n<details><summary>\u5B8C\u6574 JSON\uff08\u622A\u65AD\uff09</summary>\n\n```json\n")
+    parts.append(long_form_eval_to_json(ev)[:12000])
+    parts.append("\n```\n</details>\n")
+    return "".join(parts)
+
+
+def _format_long_form_novel_content(ev: Any) -> str:
+    lines: List[str] = []
+    metric_order = ("information_gain", "rag_utilization", "expansion_grounding")
+
+    lines.append("## \u65B0\u5185\u5BB9\u7ED3\u6784\u5316\u6307\u6807\n")
+    for r in ev.segments:
+        lines.append(f"\n### \u6BB5 {r.segment_index + 1}\n")
+        metrics = getattr(r, "metrics", {}) or {}
+        for k in metric_order:
+            if k in metrics:
+                lines.append(_format_metric_line(k, metrics[k]))
+                lines.append("\n")
+
+        nci = getattr(r, "novel_content_info", None)
+        if not nci:
+            lines.append("_\u672C\u6BB5\u65E0\u53EF\u7528\u7684 novel_content_\n")
+            continue
+
+        lines.append("\n#### \u65B0\u5B9E\u4F53\u4F7F\u7528\u60C5\u51B5\n")
+        avail = nci.get("novel_entities_available") or []
+        used = nci.get("novel_entities_used") or []
+        lines.append(
+            f"- \u53EF\u7528\u65B0\u5B9E\u4F53 ({len(avail)}): `{', '.join(avail[:15])}`" + ("\u2026" if len(avail) > 15 else "")
+        )
+        lines.append(f"\n- **\u5DF2\u5199\u5165**: `{', '.join(used)}`\n")
+
+        nf = nci.get("new_facts_in_output") or []
+        gf = nci.get("grounded_facts") or []
+        ug = nci.get("ungrounded_facts") or []
+
+        ig = nci.get("information_gain")
+        eg = nci.get("expansion_grounding")
+        if ig is not None:
+            lines.append(f"\n- **\u4FE1\u606F\u589E\u76CA\uff08\u5206\u6790\u5B57\u6BB5 raw\uff09**: {float(ig):.1%}")
+        if eg is not None:
+            lines.append(f"\n- **\u6269\u5C55\u6EAF\u6EAF\uff08\u5206\u6790\u5B57\u6BB5\uff09**: {float(eg):.1%}")
+
+        lines.append("\n\n#### \u65B0\u4E8B\u5B9E / \u6EAF\u6EAF\n")
+        lines.append(f"- \u751F\u6210\u4E2D\u51FA\u73B0\u7684\u4E13\u6709\u4FE1\u606F\u6761\u76EE: {len(nf)}\n")
+        if nf:
+            for i, txt in enumerate(nf[:12], 1):
+                lines.append(f"  {i}. {txt}")
+            if len(nf) > 12:
+                lines.append(f"\n  \u2026 \u5176\u4ED6 {len(nf) - 12} \u6761")
+        lines.append(f"\n- \u2713 **\u6709 RAG \u652F\u6491**: {len(gf)}")
+        if gf:
+            for i, txt in enumerate(gf[:10], 1):
+                lines.append(f"\n  {i}. {txt}")
+        lines.append(f"\n- \u26a0 **\u7F3A\u4E4F RAG \u652F\u6491 (\u7591\u4F3C\u5E7D\u7075)** : {len(ug)}")
+        if ug:
+            for i, txt in enumerate(ug[:10], 1):
+                lines.append(f"\n  {i}. {txt}")
+
+        summary = nci.get("summary")
+        if summary:
+            lines.append(f"\n\n**\u7B80\u62A5**: {summary}\n")
+
+    return "".join(lines)
+
+
+def _format_long_form_relevance_literary(ev: Any, enable_llm_judge_dim: bool) -> Tuple[str, str]:
+    rel_lines: List[str] = []
+    lit_lines: List[str] = []
+
+    cc = getattr(ev, "cross_chapter_metrics", {}) or {}
+    if cc:
+        rel_lines.append("## \u8DE8\u7BC7\u7AE0\u89C4\u5219\u6307\u6807\n")
+        for k, mr in cc.items():
+            rel_lines.append(_format_metric_line(k, mr))
+            rel_lines.append("\n")
+
+    REL_KEYS = ("topic_coherence",)
+    LIT_KEYS = (
+        "length_score",
+        "paragraph_structure",
+        "transition_usage",
+        "descriptive_richness",
+    )
+
+    rel_lines.append("\n## \u5404\u6BB5\u76F8\u5173\u6027 (\u89C4\u5219)\n")
+    lit_lines.append("## \u5404\u6BB5\u6587\u5B66\u6027 (\u89C4\u5219)\n")
+
+    for r in ev.segments:
+        metrics = getattr(r, "metrics", {}) or {}
+        agg = aggregate_scores(metrics)
+        head = f"\n### \u6BB5 {r.segment_index + 1} \uff08\u6BB5\u7EA7\u89C4\u5219\u805A\u5408 `\u2248 {agg:.2f}`\uff09\n"
+        rel_lines.append(head)
+        lit_lines.append(head)
+        for k in REL_KEYS:
+            if k in metrics:
+                rel_lines.append(_format_metric_line(k, metrics[k]))
+                rel_lines.append("\n")
+        for k in LIT_KEYS:
+            if k in metrics:
+                lit_lines.append(_format_metric_line(k, metrics[k]))
+                lit_lines.append("\n")
+
+    if enable_llm_judge_dim:
+        rel_lines.append(
+            "\n> _\u5206\u7AE0\u6A21\u5F0F\u4E0E\u5355\u6BB5 LLM Judge \u7684「\u76F8\u5173\u6027」\u5E73\u884C\u5B58\u5728_\n"
+        )
+        lit_lines.append(
+            "\n> _\u5206\u7AE0\u6A21\u5F0F\u4E3A\u89C4\u5219\u6307\u6807+\u957F\u6587评估\uff1B\u5355\u6BB5 LLM 「\u6587\u5B66\u6027」\u4E92\u8865_\n"
+        )
+
+    return "".join(rel_lines), "".join(lit_lines)
+
+
+def _format_long_form_compliance_note() -> str:
+    return (
+        "### \u5408\u89C4\u6027\u8BF4\u660E\n\n"
+        "\u5206\u7AE0\u6A21\u5F0F\u4E0B\u672A\u5BF9\u6BCF\u6BB5\u5355\u72EC\u8C03\u7528 LLM \u5408\u89C4 Judge\u3002\n\n"
+        "LLM Judge \u4EC5\u5728**\u975E**\u5206\u7AE0\u5355\u6BB5\u6D41\u6C34\u7EBF\u4E2D\u751F\u6548\uFF1B\u4E0E\u6B64\u533A\u6570\u636E**\u517C\u5BB9\u5E76\u5B58**.\n"
+    )
+
+
+def _format_quality_gate_markdown(ev: Any) -> str:
+    gate = getattr(ev, "quality_gate", None)
+    if gate is None:
+        return "_\u672A\u542F\u7528\u6216\u65E0\u8D28\u91CF\u95E8\u63A7\u7ED3\u679C_\n"
+    tip = html.escape(
+        "\u5982\u6BB5\u5206\u6570/\u957F\u6BD4/\u5B9E\u4F53\u8986\u76D6/\u6EAF\u6EAF/\u8DE8\u7AE0\u91CD\u590D\u7B49\u9608\u503C\u68C0\u67E5\u3002", quote=True
+    )
+    gv = "\u2713 \u901A\u8FC7" if gate.passed else "\u2717 \u672A\u901A\u8FC7"
+    lines: List[str] = [
+        f"## <abbr title=\"{tip}\">\u2139\uFE0F</abbr> \u603B\u89C8\n\n",
+        f"- **\u5224\u5B9A**: {gv}\n",
+        f"- **\u7EFC\u5408\u5206**: `{gate.overall_score:.2f}`\n",
+    ]
+    lines.append("\n### \u7AE0\u8282\u68C0\u67E5\n")
+    for cr in gate.chapter_results or []:
+        st = "\u2713" if cr.passed else "\u2717"
+        lines.append(f"\n#### \u7B2C {cr.chapter_index + 1} \u7AE0 {st}\n")
+        for issue in getattr(cr, "issues", []) or []:
+            lines.append(
+                f"- **[{issue.severity}] `{issue.dimension}`**: {issue.message}\n"
+                f"  - *\u5EFA\u8BAE*: {issue.suggestion}\n"
+            )
+    if getattr(gate, "cross_chapter_issues", None):
+        lines.append("\n### \u8DE8\u7AE0\u95EE\u9898\n")
+        for ci in gate.cross_chapter_issues:
+            chs = ", ".join(str(x + 1) for x in (ci.chapters_involved or []))
+            lines.append(
+                f"- **[{ci.severity}] `{ci.dimension}`**\uff08\u6D89\u53CA\u7AE0\u8282: {chs}\uff09\n"
+                f"  - {ci.message}\n"
+                f"  - *\u5EFA\u8BAE*: {ci.suggestion}\n"
+            )
+    rem = getattr(gate, "remediation", None)
+    if rem and getattr(rem, "chapters_to_regenerate", None):
+        regen = ", ".join(str(c + 1) for c in rem.chapters_to_regenerate)
+        lines.append(f"\n### \u4FEE\u590D\u5EFA\u8BAE \u00B7 \u4F18\u5148\u91CD\u751F\u6210\n**\u7B2C {regen} \u7AE0**\n")
+        for ch_idx, reasons in (rem.reasons or {}).items():
+            lines.append(f"\n- \u7B2C **{int(ch_idx) + 1}** \u7AE0\u539F\u56E0:\n")
+            for rs in reasons or []:
+                lines.append(f"  - {rs}\n")
+
+    lines.append("\n<details><summary>plaintext</summary>\n\n```text\n")
+    lines.append(gate.to_text())
+    lines.append("\n```\n</details>\n")
+    return "".join(lines)
+
+
+def _clamp_chapter_char_bounds(a: int, b: int) -> Tuple[int, int]:
+    a, b = int(a), int(b)
+    lo, hi = (a, b) if a <= b else (b, a)
+    return max(50, lo), max(lo, hi)
+
+
+def _build_long_form_markdown_output(lf: Any, evaluated: Any) -> str:
+    blocks: List[str] = []
+    novel_by_seg: Dict[int, Set[str]] = {}
+    if evaluated is not None:
+        for r in getattr(evaluated, "segments", []) or []:
+            nci = getattr(r, "novel_content_info", None) or {}
+            used = set(nci.get("novel_entities_used") or [])
+            novel_by_seg[int(r.segment_index)] = used
+
+    for i, ch in enumerate(lf.chapters):
+        names = _entity_names_sorted_by_length(ch.retrieval_result)
+        body = getattr(ch.generation, "content", "") or ""
+        body = _bold_entities_in_text(body, names)
+        snippet = ch.segment_text.strip().replace("\n", " ")
+        if len(snippet) > 200:
+            snippet = snippet[:200] + "\u2026"
+        nu = novel_by_seg.get(int(ch.segment_index), set())
+        used_hint = ""
+        if nu:
+            used_hint = f"\n\n_\u672C\u6BB5\u5199\u5165\u7684\u65B0 RAG \u5B9E\u4F53_: **{', '.join(sorted(nu))}**"
+
+        hint = getattr(ch, "length_hint", "") or ""
+        blocks.append(
+            f"## \u7B2C {i + 1} \u7AE0\n\n"
+            f"> **\u539F\u6587\u8282\u9009**: {snippet}\n\n"
+            f"_\u957F\u5EA6\u63D0\u793A_: `{hint}`｜"
+            f"_\u751F\u6210\u5B57\u6570_: **{len(getattr(ch.generation, 'content', '') or '')}**{used_hint}\n\n"
+            f"{body.strip()}\n\n---\n"
+        )
+    return "\n".join(blocks)
+
+
 async def process_memoir_async(
     memoir_text: str,
     provider: str,
@@ -187,7 +664,7 @@ async def process_memoir_async(
         retriever is None
         or generator is None
         or current_provider != provider
-        or (provider == "ollama" and current_model != model)
+        or current_model != model
     ):
         init_result = init_components(provider, model=model)
         if "失败" in init_result:
@@ -233,7 +710,7 @@ async def process_memoir_async(
             if enable_fact_check:
                 try:
                     llm_adapter = create_llm_adapter(
-                        provider=provider, model=(model if provider == "ollama" else None)
+                        provider=provider, model=model
                     )
                     eval_kwargs = build_long_form_eval_options(
                         llm_adapter=llm_adapter,
@@ -325,7 +802,7 @@ async def process_memoir_async(
             """运行事实性检查"""
             check_start = time.time()
             try:
-                llm_adapter = create_llm_adapter(provider=provider, model=(model if provider == "ollama" else None))
+                llm_adapter = create_llm_adapter(provider=provider, model=model)
                 # 使用FActScoreChecker替代原来的FactChecker
                 fact_checker = FActScoreChecker(llm_adapter=llm_adapter)
                 
@@ -435,29 +912,35 @@ def process_memoir_stream(
     enable_llm_judge: bool = True,
     chapter_mode: bool = False,
     batch_size: int = 5,
+    chapter_target_min_chars: int = 300,
+    chapter_target_max_chars: int = 800,
+    chapter_use_llm_parsing: bool = False,
 ):
     """
     Gradio 流式生成。
-    yields: (output_text, extracted_info, retrieval_quality, accuracy, safe_check, relevance, literary, compliance)
+    yields: (
+        output_markdown, extracted_info, retrieval_quality, accuracy_kb,
+        safe_check, novel_content, relevance, literary, compliance, quality_gate
+    )
     """
     global retriever, generator, current_provider, current_model
 
     if not memoir_text.strip():
-        yield ("请输入回忆录文本",) + ("",) * 7
+        yield ("请输入回忆录文本",) + ("",) * 9
         return
     if not provider:
-        yield ("请先选择 LLM 模型（供应商）",) + ("",) * 7
+        yield ("请先选择 LLM 模型（供应商）",) + ("",) * 9
         return
 
     if (
         retriever is None
         or generator is None
         or current_provider != provider
-        or (provider == "ollama" and current_model != model)
+        or current_model != model
     ):
         init_result = init_components(provider, model=model)
         if "失败" in init_result:
-            yield (init_result,) + ("",) * 7
+            yield (init_result,) + ("",) * 9
             return
 
     single_cfg = single_segment_generation_config(length_bucket)
@@ -467,16 +950,26 @@ def process_memoir_stream(
     retrieval_q_md = ""
     accuracy_md = ""
     safe_md = ""
+    novel_md = ""
     relevance_md = ""
     literary_md = ""
     compliance_md = ""
+    gate_md = ""
 
     loop = asyncio.new_event_loop()
     try:
         if chapter_mode:
-            segs = segment_memoir(memoir_text)
-            n_ch = max(1, len(segs))
-            yield (f"[分章] 共 {len(segs)} 段，依次检索与生成…", "", "", "", "", "", "", "")
+            lo, hi = _clamp_chapter_char_bounds(chapter_target_min_chars, chapter_target_max_chars)
+            segs_preview = segment_memoir(
+                memoir_text.strip(),
+                target_min_chars=lo,
+                target_max_chars=hi,
+            )
+            n_ch = max(1, len(segs_preview))
+
+            yield (
+                f"⏳ **分章模式** 预计 {len(segs_preview)} 段（分段目标字数 {lo}–{hi}），正在检索与生成…",
+            ) + ("",) * 9
 
             async def _long_form():
                 return await run_long_form_generation(
@@ -487,53 +980,164 @@ def process_memoir_stream(
                     style=style,
                     temperature=temperature,
                     retrieval_mode=retrieval_mode,
-                    use_llm_parsing=False,
+                    use_llm_parsing=chapter_use_llm_parsing,
+                    target_min_chars=lo,
+                    target_max_chars=hi,
                 )
 
             budget_timeout = estimate_long_form_generation_timeout(n_ch)
             lf = loop.run_until_complete(asyncio.wait_for(_long_form(), timeout=budget_timeout))
-            lines_md = [f"**分章模式** 共 {len(lf.chapters)} 章"]
-            for i, ch in enumerate(lf.chapters):
-                ctx = ch.retrieval_result.context
-                lines_md.append(
-                    f"- 第{i + 1}章: 查询 `{ch.retrieval_result.query}` | "
-                    f"年 {ctx.year or '—'} 地 {ctx.location or '—'}"
-                )
-            extracted_md = "\n".join(lines_md)
-            rent = [len(ch.retrieval_result.entities) for ch in lf.chapters]
-            retrieval_q_md = f"**分章检索**: 各章实体数 {rent}"
-            content = lf.merged_content
-            yield (content, extracted_md, retrieval_q_md, "", "", "", "", "")
 
-            accuracy_md = ""
-            if enable_fact_check:
+            retrieval_q_md = ""
+            if enable_retrieval_quality and lf.chapters:
                 try:
-                    llm_adapter = create_llm_adapter(
-                        provider=provider, model=(model if provider == "ollama" else None)
-                    )
-                    eval_kwargs = build_long_form_eval_options(
-                        llm_adapter=llm_adapter,
-                        use_llm_eval=False,
-                        enable_fact_check=True,
-                        max_atomic_facts_per_segment=12,
-                        fact_check_timeout_per_segment=45.0,
-                        use_rule_decompose=use_rule_decompose,
-                        batch_size=int(batch_size),
-                    )
-                    ev = loop.run_until_complete(
+                    rr0 = lf.chapters[0].retrieval_result
+                    q0 = lf.chapters[0].segment_text
+                    eval_rq = loop.run_until_complete(
                         asyncio.wait_for(
-                            evaluate_long_form(lf, **eval_kwargs),
-                            timeout=estimate_long_form_evaluation_timeout(len(lf.chapters)),
+                            evaluate_retrieval_quality(
+                                query_text=q0,
+                                text_units=rr0.text_units,
+                                llm_adapter=_make_llm(provider, model),
+                            ),
+                            timeout=45.0,
                         )
                     )
-                    accuracy_md = "### 长文评估汇总\n\n" + ev.summary_text
-                    accuracy_md += "\n\n```json\n" + long_form_eval_to_json(ev)[:8000] + "\n```\n"
+                    retrieval_q_md = _format_retrieval_quality(eval_rq)
+                    retrieval_q_md = (
+                        "_分章模式：以下以第 1 章回忆录片段为 query 的检索质量（其它章见左侧实体与关系）_\n\n"
+                        + retrieval_q_md
+                    )
                 except Exception as e:
-                    accuracy_md = f"长文评估未完成: {e}"
-            yield (content, extracted_md, retrieval_q_md, accuracy_md, "", "", "", "")
+                    retrieval_q_md = f"_分章检索质量评估失败_: {e}"
+            elif not enable_retrieval_quality:
+                retrieval_q_md = "_未启用_"
+            else:
+                retrieval_q_md = "_无章节可评估_"
+
+            cfg_lines = [
+                "**分章模式配置**",
+                f"- `字数档 (length_bucket)`: `{length_bucket}`",
+                f"- `每段分割目标字数`: `{lo}` – `{hi}`",
+                f"- `use_llm_parsing`: `{chapter_use_llm_parsing}`",
+                f"- `写作风格`: `{style}` / `创意度`: `{temperature}` / `检索`: `{retrieval_mode}`",
+                "",
+                f"_共 **{len(lf.chapters)}** 章，输入约 **{len(memoir_text.strip())}** 字_",
+                "",
+            ]
+            ent_blocks: List[str] = []
+            for i, ch in enumerate(lf.chapters):
+                ent_blocks.extend(_format_chapter_entities_block(i, ch, None))
+                ent_blocks.append("")
+            extracted_md = "\n".join(cfg_lines + ent_blocks)
+
+            content_md = _build_long_form_markdown_output(lf, None)
+            safe_interim = (
+                "_分章模式本流程未调用 SAFE（与单段路径并行；需 SAFE 时请用非分章模式）_"
+                if enable_safe_check
+                else "_未启用_"
+            )
+            yield (
+                content_md,
+                extracted_md,
+                retrieval_q_md,
+                "_正在运行长文评估…_",
+                safe_interim,
+                "_正在汇总新内容指标…_",
+                "_汇总中…_",
+                "_汇总中…_",
+                "_分章合规说明待完成_",
+                "_质量门控计算中…_",
+            )
+
+            evaluated = None
+            try:
+                llm_adapter = create_llm_adapter(
+                    provider=provider,
+                    model=model,
+                )
+                eval_kwargs = build_long_form_eval_options(
+                    llm_adapter=llm_adapter,
+                    use_llm_eval=False,
+                    enable_fact_check=enable_fact_check,
+                    max_atomic_facts_per_segment=12,
+                    fact_check_timeout_per_segment=45.0,
+                    use_rule_decompose=use_rule_decompose,
+                    batch_size=int(batch_size),
+                )
+                evaluated = loop.run_until_complete(
+                    asyncio.wait_for(
+                        evaluate_long_form(
+                            lf,
+                            **eval_kwargs,
+                            quality_thresholds=QualityThresholds.for_expansion_task(),
+                            enable_quality_gate=True,
+                        ),
+                        timeout=estimate_long_form_evaluation_timeout(len(lf.chapters)),
+                    )
+                )
+
+                cfg_lines = [
+                    "**分章模式配置**",
+                    f"- `字数档 (length_bucket)`: `{length_bucket}`",
+                    f"- `每段分割目标字数`: `{lo}` – `{hi}`",
+                    f"- `use_llm_parsing`: `{chapter_use_llm_parsing}`",
+                    f"- `写作风格`: `{style}` / `创意度`: `{temperature}`",
+                    "",
+                    f"_长文 **聚合评分（段级加权）** ≈ `{evaluated.aggregated_score:.2f}`（内部尺度因任务而异）_",
+                    "",
+                ]
+                ent_blocks = []
+                for i, ch in enumerate(lf.chapters):
+                    seg_ix = int(ch.segment_index)
+                    nci = next(
+                        (
+                            s.novel_content_info
+                            for s in evaluated.segments
+                            if int(s.segment_index) == seg_ix
+                        ),
+                        None,
+                    )
+                    used_set = set((nci or {}).get("novel_entities_used") or [])
+                    ent_blocks.extend(_format_chapter_entities_block(i, ch, used_set))
+                    ent_blocks.append("")
+                extracted_md = "\n".join(cfg_lines + ent_blocks)
+
+                accuracy_md = _format_long_form_facts_and_rules(evaluated)
+                novel_md = _format_long_form_novel_content(evaluated)
+                relevance_md, literary_md = _format_long_form_relevance_literary(
+                    evaluated, enable_llm_judge
+                )
+                compliance_md = _format_long_form_compliance_note()
+                gate_md = _format_quality_gate_markdown(evaluated)
+
+            except Exception as e:
+                accuracy_md = f"_长文评估失败_: {e}\n"
+
+            safe_md = (
+                "_分章模式本流程未调用 SAFE（与单段路径并行）_"
+                if enable_safe_check
+                else "_未启用_"
+            )
+
+            if evaluated is not None:
+                content_md = _build_long_form_markdown_output(lf, evaluated)
+
+            yield (
+                content_md,
+                extracted_md,
+                retrieval_q_md,
+                accuracy_md,
+                safe_md,
+                novel_md if evaluated else "_评估未完成，无法展示_\n",
+                relevance_md if evaluated else "",
+                literary_md if evaluated else "",
+                compliance_md,
+                gate_md if evaluated else "",
+            )
             return
 
-        yield ("\u23f3 正在检索相关历史背景，请稍候\u2026", "", "", "", "", "", "", "")
+        yield ("⏳ 正在检索相关历史背景，请稍候…", "", "", "", "", "", "", "", "", "")
 
         # ── 1. 检索 ──
         retrieval_result = loop.run_until_complete(asyncio.wait_for(
@@ -554,7 +1158,7 @@ def process_memoir_stream(
             f"**社区报告**: {len(retrieval_result.communities)} 个  "
             f"**相关文本**: {len(retrieval_result.text_units)} 段"
         )
-        yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
+        yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, "", relevance_md, literary_md, compliance_md, "")
 
         # ── 2. 检索质量评估 (LLM-as-a-Judge) ──
         if enable_retrieval_quality:
@@ -572,7 +1176,7 @@ def process_memoir_stream(
                 retrieval_q_md = f"检索质量评估失败: {e}"
         else:
             retrieval_q_md = "_未启用_"
-        yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
+        yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, "", relevance_md, literary_md, compliance_md, "")
 
         # ── 3. 流式生成 ──
         async def _stream():
@@ -599,10 +1203,32 @@ def process_memoir_stream(
                 break
             except asyncio.TimeoutError:
                 content += "\n\n（\u26a0\ufe0f 生成超时：已达到 90s 上限，返回已生成的部分内容）"
-                yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
+                yield (
+                    content,
+                    extracted_md,
+                    retrieval_q_md,
+                    accuracy_md,
+                    safe_md,
+                    "",
+                    relevance_md,
+                    literary_md,
+                    compliance_md,
+                    "",
+                )
                 break
             content += delta
-            yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
+            yield (
+                content,
+                extracted_md,
+                retrieval_q_md,
+                accuracy_md,
+                safe_md,
+                "",
+                relevance_md,
+                literary_md,
+                compliance_md,
+                "",
+            )
 
         # ── 4. 综合评估（事实准确性 + SAFE + LLM-as-a-Judge） ──
         any_eval = enable_fact_check or enable_safe_check or enable_llm_judge
@@ -654,7 +1280,23 @@ def process_memoir_stream(
             if not compliance_md:
                 compliance_md = "_未启用_"
 
-        yield (content, extracted_md, retrieval_q_md, accuracy_md, safe_md, relevance_md, literary_md, compliance_md)
+        novel_note = (
+            "_单段模式的长文「新内容评估」指标见分章流水线；此处留空（与分章路径并存）_"
+        )
+        gate_note = "_单段模式无跨章质量门控；分章模式单独展示（两套逻辑并存）_"
+
+        yield (
+            content,
+            extracted_md,
+            retrieval_q_md,
+            accuracy_md,
+            safe_md,
+            novel_note,
+            relevance_md,
+            literary_md,
+            compliance_md,
+            gate_note,
+        )
     finally:
         try:
             loop.close()
@@ -808,7 +1450,7 @@ def batch_benchmark_stream(
         retriever is None
         or generator is None
         or current_provider != provider
-        or (provider == "ollama" and current_model != model)
+        or current_model != model
     ):
         init_msg = init_components(provider, model=model)
         if "失败" in init_msg:
@@ -1163,6 +1805,10 @@ def create_ui():
     if not available_providers:
         available_providers = ["deepseek"]  # 默认
 
+    _default_provider = available_providers[0] if available_providers else None
+    _initial_model_choices = get_provider_models(_default_provider) if _default_provider else []
+    _initial_model_value = _initial_model_choices[0] if _initial_model_choices else None
+
     with gr.Blocks(
         title="记忆图谱 - 历史背景注入系统",
     ) as app:
@@ -1215,14 +1861,14 @@ def create_ui():
                         with gr.Row():
                             provider_select = gr.Dropdown(
                                 choices=available_providers,
-                                value=None,
-                                label="LLM 模型",
+                                value=_default_provider,
+                                label="LLM 供应商",
                             )
-                            ollama_model_select = gr.Dropdown(
-                                choices=build_ollama_model_choices(settings.ollama_api_base),
-                                value=None,
-                                label="Ollama 模型",
-                                visible=False,
+                            model_select = gr.Dropdown(
+                                choices=_initial_model_choices,
+                                value=_initial_model_value,
+                                label="模型",
+                                visible=True,
                             )
                             style_select = gr.Dropdown(
                                 choices=list(PromptTemplates.list_styles().keys()),
@@ -1302,8 +1948,36 @@ def create_ui():
                             info="数千字长文：分段检索与生成后合并；默认仍为整篇单段",
                         )
 
+                        with gr.Column(visible=False) as chapter_advanced_col:
+                            gr.Markdown("**分章参数**（字数档 `length_bucket` 仍与各章预算相关；以下为分段与检索解析）")
+                            chapter_target_min_slider = gr.Slider(
+                                minimum=100,
+                                maximum=500,
+                                value=300,
+                                step=20,
+                                label="分段目标最少字",
+                                info="传给 segment_memoir / 长文编排的单段下限",
+                            )
+                            chapter_target_max_slider = gr.Slider(
+                                minimum=300,
+                                maximum=1500,
+                                value=800,
+                                step=50,
+                                label="分段目标最多字",
+                                info="单段回忆录片段长度上限偏好",
+                            )
+                            chapter_llm_parse_checkbox = gr.Checkbox(
+                                value=False,
+                                label="分章检索使用 LLM 解析",
+                                info="对应 run_long_form_generation(use_llm_parsing)",
+                            )
+
                         generate_btn = gr.Button("\U0001f680 生成历史背景", variant="primary")
-                        refresh_ollama_models_btn = gr.Button("\U0001f504 刷新 Ollama 模型列表", variant="secondary")
+                        refresh_ollama_models_btn = gr.Button(
+                            "\U0001f504 刷新 Ollama 模型列表",
+                            variant="secondary",
+                            visible=(_default_provider == "ollama"),
+                        )
 
                         gr.Markdown("**Demo 场景预置（位于底部，选择即载入）**")
                         demo_select = gr.Dropdown(
@@ -1324,11 +1998,20 @@ def create_ui():
                             outputs=[memoir_input],
                         )
 
+                        def _chapter_mode_visibility(on: bool):
+                            return gr.update(visible=on)
+
+                        chapter_mode_checkbox.change(
+                            fn=_chapter_mode_visibility,
+                            inputs=[chapter_mode_checkbox],
+                            outputs=[chapter_advanced_col],
+                        )
+
                     with gr.Column(scale=1):
-                        output_text = gr.Textbox(
-                            label="生成的历史背景",
-                            lines=10,
+                        output_text = gr.Markdown(
+                            value="",
                             elem_classes=["output-box"],
+                            label="生成的历史背景（Markdown）",
                         )
 
                         with gr.Accordion("\U0001f4cb 提取与检索信息", open=False):
@@ -1343,6 +2026,11 @@ def create_ui():
                             gr.Markdown("---\n#### \U0001f310 独立知识验证 (SAFE)")
                             safe_check_output = gr.Markdown(label="独立知识验证")
 
+                        with gr.Accordion("\U0001f4dd 新内容评估", open=False):
+                            novel_content_output = gr.Markdown(
+                                label="信息增益 · RAG 利用率 · 新事实溯源（分章）",
+                            )
+
                         with gr.Accordion("\U0001f517 相关性", open=False):
                             relevance_output = gr.Markdown(label="相关性")
 
@@ -1352,12 +2040,17 @@ def create_ui():
                         with gr.Accordion("\U0001f6e1\ufe0f 合规性", open=False):
                             compliance_output = gr.Markdown(label="合规性")
 
+                        with gr.Accordion("\U0001f6a6 质量门控", open=False):
+                            quality_gate_output = gr.Markdown(
+                                label="跨章阈值检查与修复建议（分章）",
+                            )
+
                 generate_btn.click(
                     fn=process_memoir_stream,
                     inputs=[
                         memoir_input,
                         provider_select,
-                        ollama_model_select,
+                        model_select,
                         style_select,
                         length_bucket_select,
                         temperature_slider,
@@ -1369,6 +2062,9 @@ def create_ui():
                         llm_judge_checkbox,
                         chapter_mode_checkbox,
                         batch_size_slider,
+                        chapter_target_min_slider,
+                        chapter_target_max_slider,
+                        chapter_llm_parse_checkbox,
                     ],
                     outputs=[
                         output_text,
@@ -1376,42 +2072,59 @@ def create_ui():
                         retrieval_quality_output,
                         accuracy_output,
                         safe_check_output,
+                        novel_content_output,
                         relevance_output,
                         literary_output,
                         compliance_output,
+                        quality_gate_output,
                     ],
                 )
 
-                def _update_ollama_model_ui(provider: str):
-                    if provider == "ollama":
-                        choices = build_ollama_model_choices(settings.ollama_api_base)
-                        value = choices[0][1] if choices else None
-                        return gr.update(visible=True, choices=choices, value=value)
-                    return gr.update(visible=False, value=None)
+                def _update_model_choices(provider: Optional[str]):
+                    """切换供应商时刷新模型列表，并控制「刷新 Ollama」按钮可见性。"""
+                    if not provider:
+                        return (
+                            gr.update(choices=[], value=None, visible=True),
+                            gr.update(visible=False),
+                        )
+                    models = get_provider_models(provider)
+                    value = models[0] if models else None
+                    show_ollama_refresh = provider == "ollama"
+                    return (
+                        gr.update(choices=models, value=value, visible=True),
+                        gr.update(visible=show_ollama_refresh),
+                    )
 
                 provider_select.change(
-                    fn=_update_ollama_model_ui,
+                    fn=_update_model_choices,
                     inputs=[provider_select],
-                    outputs=[ollama_model_select],
+                    outputs=[model_select, refresh_ollama_models_btn],
                 )
 
                 app.load(
-                    fn=_update_ollama_model_ui,
+                    fn=_update_model_choices,
                     inputs=[provider_select],
-                    outputs=[ollama_model_select],
+                    outputs=[model_select, refresh_ollama_models_btn],
                 )
 
                 def _refresh_ollama_models(provider: str, current_value: Optional[str]):
                     if provider != "ollama":
-                        return gr.update()
-                    choices = build_ollama_model_choices(settings.ollama_api_base)
-                    value = current_value if any(v == current_value for _, v in choices) else (choices[0][1] if choices else None)
-                    return gr.update(choices=choices, value=value, visible=True)
+                        return gr.update(), gr.update(visible=False)
+                    models = get_provider_models("ollama")
+                    value = (
+                        current_value
+                        if current_value and current_value in models
+                        else (models[0] if models else None)
+                    )
+                    return (
+                        gr.update(choices=models, value=value, visible=True),
+                        gr.update(visible=True),
+                    )
 
                 refresh_ollama_models_btn.click(
                     fn=_refresh_ollama_models,
-                    inputs=[provider_select, ollama_model_select],
-                    outputs=[ollama_model_select],
+                    inputs=[provider_select, model_select],
+                    outputs=[model_select, refresh_ollama_models_btn],
                 )
 
             # 多模型对比标签页
@@ -1492,7 +2205,7 @@ def create_ui():
                     fn=batch_benchmark_stream,
                     inputs=[
                         provider_select,
-                        ollama_model_select,
+                        model_select,
                         style_select,
                         length_bucket_select,
                         temperature_slider,
@@ -1535,7 +2248,7 @@ def create_ui():
                 | DeepSeek | `DEEPSEEK_API_KEY` | deepseek-chat |
                 | Qwen | `QWEN_API_KEY` | qwen-plus |
                 | 智谱GLM | `GLM_API_KEY` | glm-4.7-flash |
-                | OpenAI | `OPENAI_API_KEY` | gpt-4o-mini |
+                | OpenAI | `OPENAI_API_KEY` | gpt-4o / gpt-5（UI 可选） |
                 | 混元 | `HUNYUAN_API_KEY` | hunyuan-lite |
 
                 **注意**：首次构建索引需要几分钟时间，会产生一定的 API 费用。
@@ -1549,15 +2262,18 @@ def create_ui():
                         refresh_btn.click(fn=get_index_status, outputs=[index_status])
 
                     with gr.Column():
-                        # 完整的模型选择列表
-                        all_providers = ["gemini", "deepseek", "qwen", "openai", "hunyuan", "glm"]
-                        default_provider = available_providers[0] if available_providers else "gemini"
+                        index_provider_choices = list(available_providers)
+                        index_default_provider = (
+                            _default_provider
+                            if _default_provider in index_provider_choices
+                            else (index_provider_choices[0] if index_provider_choices else None)
+                        )
 
                         index_provider = gr.Dropdown(
-                            choices=all_providers,
-                            value=default_provider,
+                            choices=index_provider_choices,
+                            value=index_default_provider,
                             label="构建索引使用的 LLM",
-                            info="选择用于构建知识图谱的语言模型",
+                            info="选择用于构建知识图谱的语言模型（仅显示已在 .env 中配置密钥的供应商，含本地 Ollama）",
                         )
 
                         build_btn = gr.Button("\U0001f528 构建索引", variant="primary")
@@ -1583,7 +2299,7 @@ def create_ui():
                 ### 2. 生成历史背景
 
                 1. 在"生成历史背景"标签页输入回忆录片段
-                2. 选择 LLM 模型和写作风格
+                2. 选择 LLM 供应商、模型和写作风格
                 3. 调整创意度参数
                 4. 点击"生成历史背景"按钮
 
