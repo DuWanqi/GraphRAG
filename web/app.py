@@ -1047,16 +1047,21 @@ def process_memoir(
 
 
 def _loading_html(title: str, subtitle: str = "") -> str:
-    """生成生成中占位 UI（依赖全局 _CSS 中的 .loading-card 动画）。"""
+    """生成生成中占位 UI（依赖全局 _CSS 中的 .loading-card 动画）。
+
+    必须使用多行块级 HTML：Gradio 前端用 marked 解析 Markdown，单行紧挨的 <div>
+    不满足 GFM 块级 HTML 规则，会导致标签无法按 DOM 插入，动画样式全部失效。
+    """
     safe_title = html.escape(title)
     safe_sub = html.escape(subtitle) if subtitle else ""
-    sub_block = f"<br><span class='loading-sub'>{safe_sub}</span>" if safe_sub else ""
+    sub_block = f'<br />\n<span class="loading-sub">{safe_sub}</span>' if safe_sub else ""
+    # 每行独立、开标签后换行，便于 marked 识别为 raw HTML block（勿再拼成单行）
     return (
-        f'<div class="loading-card">'
-        f'<div class="loading-dots"><span></span><span></span><span></span></div>'
-        f'<div class="loading-bar"></div>'
-        f'<div class="loading-text"><strong>{safe_title}</strong>{sub_block}</div>'
-        f"</div>"
+        '<div class="graphrag-loading loading-card">\n'
+        '<div class="loading-dots"><span></span><span></span><span></span></div>\n'
+        '<div class="loading-bar"></div>\n'
+        f'<div class="loading-text"><strong>{safe_title}</strong>{sub_block}</div>\n'
+        "</div>\n"
     )
 
 
@@ -2624,7 +2629,7 @@ _THEME = gr.themes.Soft(primary_hue="blue", secondary_hue="gray")
 _CSS = """
 .main-title { text-align: center; margin-bottom: 20px; }
 .output-box { min-height: 200px; }
-.output-box .loading-card {
+div.prose.output-box .graphrag-loading.loading-card {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2633,26 +2638,30 @@ _CSS = """
   padding: 32px 20px 40px;
   gap: 20px;
   box-sizing: border-box;
+  margin: 0 auto;
+  max-width: 100%;
 }
-.output-box .loading-dots {
+div.prose.output-box .graphrag-loading .loading-dots {
   display: flex;
   gap: 10px;
   align-items: center;
 }
-.output-box .loading-dots span {
+div.prose.output-box .graphrag-loading .loading-dots span {
+  display: inline-block;
   width: 12px;
   height: 12px;
   border-radius: 50%;
   background: var(--primary-500, #3b82f6);
   animation: graphragDotPulse 1.4s ease-in-out infinite;
 }
-.output-box .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
-.output-box .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+div.prose.output-box .graphrag-loading .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+div.prose.output-box .graphrag-loading .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes graphragDotPulse {
   0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
   40% { transform: scale(1); opacity: 1; }
 }
-.output-box .loading-bar {
+div.prose.output-box .graphrag-loading .loading-bar {
+  display: block;
   width: 80%;
   max-width: 320px;
   height: 6px;
@@ -2660,7 +2669,7 @@ _CSS = """
   overflow: hidden;
   background: var(--neutral-200, #e5e7eb);
 }
-.output-box .loading-bar::after {
+div.prose.output-box .graphrag-loading .loading-bar::after {
   content: '';
   display: block;
   width: 38%;
@@ -2677,14 +2686,14 @@ _CSS = """
   0% { transform: translateX(-105%); }
   100% { transform: translateX(320%); }
 }
-.output-box .loading-text {
+div.prose.output-box .graphrag-loading .loading-text {
   font-size: 0.95rem;
   color: var(--body-text-color-subdued, #6b7280);
   text-align: center;
   line-height: 1.65;
   max-width: 36em;
 }
-.output-box .loading-text .loading-sub {
+div.prose.output-box .graphrag-loading .loading-text .loading-sub {
   display: inline-block;
   margin-top: 0.35em;
   font-size: 0.9em;
