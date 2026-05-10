@@ -28,6 +28,8 @@ class GenerationResult:
     memoir_context: Optional[MemoirContext] = None
     retrieval_info: Optional[Dict[str, Any]] = None
     novel_content_brief: Optional[Any] = None  # NovelContentBrief from novel_content_extractor
+    prompt: Optional[str] = None
+    system_prompt: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -171,6 +173,8 @@ class LiteraryGenerator:
             memoir_context=retrieval_result.context,
             retrieval_info=self._build_retrieval_info(retrieval_result),
             novel_content_brief=getattr(retrieval_result, '_novel_content_brief', None),
+            prompt=prompt,
+            system_prompt=get_system_prompt(self.DEFAULT_SYSTEM_PROMPT_KEY),
         )
 
     async def generate_stream(

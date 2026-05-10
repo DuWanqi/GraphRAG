@@ -53,17 +53,27 @@ class AccuracyMetrics:
             )
 
         covered = sum(1 for e in reference_entities if e in generated_text)
+        covered_entities = [e for e in reference_entities if e in generated_text]
+        uncovered_entities = [e for e in reference_entities if e not in generated_text]
 
         if task_type == "expansion":
             # 扩展任务：检查是否达到最低要求
             target = min(min_required, len(reference_entities))
             coverage = min(covered / target, 1.0)  # 上限为1.0
             status = "✓" if covered >= target else "✗"
-            explanation = f"{status} 使用了 {covered} 个实体（要求至少 {target} 个）"
+            explanation = f"{status} 使用了 {covered}/{len(reference_entities)} 个实体（要求至少 {target} 个）"
+            if covered_entities:
+                explanation += f"\n    已使用: {', '.join(covered_entities[:10])}"
+                if len(covered_entities) > 10:
+                    explanation += f" 等{len(covered_entities)}个"
+            if uncovered_entities and len(uncovered_entities) <= 10:
+                explanation += f"\n    未使用: {', '.join(uncovered_entities)}"
         else:
             # 摘要任务：使用百分比覆盖率
             coverage = covered / len(reference_entities)
             explanation = f"覆盖了 {covered}/{len(reference_entities)} 个参考实体"
+            if covered_entities:
+                explanation += f"\n    已覆盖: {', '.join(covered_entities[:10])}"
 
         return MetricResult(
             name="entity_coverage",
@@ -277,10 +287,14 @@ class AccuracyMetrics:
         # 生成说明
         if accuracy == 1.0:
             explanation = f"使用了 {len(used_entities)} 个RAG实体，描述均准确"
+            if used_entities:
+                explanation += f"\n    已使用: {', '.join(used_entities[:10])}"
         else:
             explanation = f"{len(accurate_entities)}/{len(used_entities)} 个实体描述准确"
             if inaccurate_entities:
-                explanation += f"；不准确: {', '.join(inaccurate_entities[:3])}"
+                explanation += f"\n    不准确: {', '.join(inaccurate_entities[:3])}"
+            if accurate_entities:
+                explanation += f"\n    准确: {', '.join(accurate_entities[:10])}"
 
         return MetricResult(
             name="rag_entity_accuracy",
@@ -439,18 +453,25 @@ class RelevanceMetrics:
         # 检查每个概念是否保留
         preserved = 0
         preserved_concepts = []
+        missing_concepts = []
 
         for concept in core_concepts:
             if _is_concept_preserved(concept, generated_text):
                 preserved += 1
                 preserved_concepts.append(concept)
+            else:
+                missing_concepts.append(concept)
 
         score = preserved / len(core_concepts)
 
         explanation = f"保留了 {preserved}/{len(core_concepts)} 个核心概念"
         if preserved_concepts:
-            examples = ', '.join(preserved_concepts[:3])
-            explanation += f"（如：{examples}）"
+            examples = ', '.join(preserved_concepts[:5])
+            explanation += f"\n    已保留: {examples}"
+            if len(preserved_concepts) > 5:
+                explanation += f" 等{len(preserved_concepts)}个"
+        if missing_concepts and len(missing_concepts) <= 5:
+            explanation += f"\n    未保留: {', '.join(missing_concepts)}"
 
         return MetricResult(
             name="topic_coherence",

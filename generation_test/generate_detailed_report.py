@@ -6,29 +6,30 @@ import asyncio
 import sys
 from pathlib import Path
 
-# 添加项目路径
-project_root = Path(__file__).parent
-sys.path.insert(0, str(project_root / 'src'))
-
-from llm.llm_adapter import LLMAdapter
-from retrieval.vector_retriever import VectorRetriever
-from generation.literary_generator import LiteraryGenerator
-from evaluation.long_form_eval import evaluate_long_form
-import json
+# 添加项目根目录到 Python 路径
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 
 async def main():
+    # 导入模块
+    from src.llm import create_llm_adapter
+    from src.retrieval import MemoirRetriever
+    from src.generation import LiteraryGenerator
+    from src.evaluation.long_form_eval import evaluate_long_form
+    import json
+
+
     print("=" * 80)
     print("详细 Pipeline 测试报告生成")
     print("=" * 80)
-    
+
     # 1. 初始化组件
     print("\n[1/5] 初始化组件...")
-    llm = LLMAdapter(provider='openai', model='gpt-4o')
-    retriever = VectorRetriever(
-        entity_path='data/graphrag_output/create_final_entities.parquet',
-        relationship_path='data/graphrag_output/create_final_relationships.parquet',
-        text_unit_path='data/graphrag_output/create_final_text_units.parquet'
+    llm = create_llm_adapter(provider='openai', model='gpt-4o')
+    retriever = MemoirRetriever(
+        index_dir='data/graphrag_output',
+        llm_adapter=llm
     )
     generator = LiteraryGenerator(llm)
     print("  ✓ 组件初始化完成")
@@ -61,11 +62,10 @@ async def main():
     # 4. 执行评估
     print("\n[4/5] 执行评估...")
     eval_result = await evaluate_long_form(
-        memoir_text=memoir_text,
-        generated_chapters=result.chapters,
-        retriever=retriever,
+        result,
+        llm_adapter=llm,
         use_llm_eval=False,
-        use_fact_check=True
+        enable_fact_check=True
     )
     print("  ✓ 评估完成")
     
@@ -96,33 +96,39 @@ async def main():
         # 原文片段
         report_lines.append("\n>>> 原文片段:")
         report_lines.append("-" * 100)
-        report_lines.append(chapter.original_segment)
+        report_lines.append(chapter.segment_text)
         report_lines.append("-" * 100)
-        
+
         # 检索结果
         report_lines.append("\n>>> 检索结果:")
         report_lines.append("-" * 100)
-        
+
         if hasattr(chapter, 'retrieval_result') and chapter.retrieval_result:
             rr = chapter.retrieval_result
-            
+
             # 实体
             if hasattr(rr, 'entities') and rr.entities:
                 report_lines.append(f"\n实体 (共 {len(rr.entities)} 个):")
                 for j, ent in enumerate(rr.entities[:10], 1):
-                    report_lines.append(f"\n  {j}. {ent.name} ({ent.type})")
-                    desc = ent.description[:150] + "..." if len(ent.description) > 150 else ent.description
-                    report_lines.append(f"     描述: {desc}")
+                    name = ent.get('name', ent.get('title', ''))
+                    ent_type = ent.get('type', 'ENTITY')
+                    desc = ent.get('description', '')
+                    report_lines.append(f"\n  {j}. {name} ({ent_type})")
+                    desc_short = desc[:150] + "..." if len(desc) > 150 else desc
+                    report_lines.append(f"     描述: {desc_short}")
                 if len(rr.entities) > 10:
                     report_lines.append(f"\n  ... 还有 {len(rr.entities) - 10} 个实体")
-            
+
             # 关系
             if hasattr(rr, 'relationships') and rr.relationships:
                 report_lines.append(f"\n关系 (共 {len(rr.relationships)} 个):")
                 for j, rel in enumerate(rr.relationships[:5], 1):
-                    report_lines.append(f"\n  {j}. {rel.source} -> {rel.target}")
-                    desc = rel.description[:150] + "..." if len(rel.description) > 150 else rel.description
-                    report_lines.append(f"     描述: {desc}")
+                    source = rel.get('source', '')
+                    target = rel.get('target', '')
+                    desc = rel.get('description', '')
+                    report_lines.append(f"\n  {j}. {source} -> {target}")
+                    desc_short = desc[:150] + "..." if len(desc) > 150 else desc
+                    report_lines.append(f"     描述: {desc_short}")
                 if len(rr.relationships) > 5:
                     report_lines.append(f"\n  ... 还有 {len(rr.relationships) - 5} 个关系")
             
@@ -141,13 +147,26 @@ async def main():
                         report_lines.append(f"       {desc}")
         
         report_lines.append("-" * 100)
-        
+
+        # 传入大模型的完整 prompt
+        if hasattr(chapter, 'generation') and hasattr(chapter.generation, 'prompt') and chapter.generation.prompt:
+            report_lines.append("\n>>> 传入大模型的完整 Prompt:")
+            report_lines.append("-" * 100)
+            report_lines.append("\n【System Prompt】")
+            if hasattr(chapter.generation, 'system_prompt') and chapter.generation.system_prompt:
+                report_lines.append(chapter.generation.system_prompt)
+            else:
+                report_lines.append("（未记录）")
+            report_lines.append("\n【User Prompt】")
+            report_lines.append(chapter.generation.prompt)
+            report_lines.append("-" * 100)
+
         # 生成内容
         report_lines.append("\n>>> 生成内容:")
         report_lines.append("-" * 100)
-        report_lines.append(chapter.content)
+        report_lines.append(chapter.generation.content)
         report_lines.append("-" * 100)
-        report_lines.append(f"\n生成长度: {len(chapter.content)} 字")
+        report_lines.append(f"\n生成长度: {len(chapter.generation.content)} 字")
         
         # 评估结果
         if i < len(eval_result.segments):
@@ -162,7 +181,13 @@ async def main():
                 if metric_name in seg_eval.metrics:
                     metric_value = seg_eval.metrics[metric_name]
                     if hasattr(metric_value, 'value'):
-                        report_lines.append(f"  - {metric_name}: {metric_value.value:.2f}")
+                        report_lines.append(f"  - {metric_name}: {metric_value.value:.4f}")
+                        # 显示详细说明
+                        if hasattr(metric_value, 'explanation'):
+                            # 处理多行 explanation
+                            explanation_lines = metric_value.explanation.split('\n')
+                            for line in explanation_lines:
+                                report_lines.append(f"    {line}")
                     else:
                         report_lines.append(f"  - {metric_name}: {metric_value}")
 
@@ -172,7 +197,12 @@ async def main():
                 if metric_name in seg_eval.metrics:
                     metric_value = seg_eval.metrics[metric_name]
                     if hasattr(metric_value, 'value'):
-                        report_lines.append(f"  - {metric_name}: {metric_value.value:.2f}")
+                        report_lines.append(f"  - {metric_name}: {metric_value.value:.4f}")
+                        # 显示详细说明
+                        if hasattr(metric_value, 'explanation'):
+                            explanation_lines = metric_value.explanation.split('\n')
+                            for line in explanation_lines:
+                                report_lines.append(f"    {line}")
                     else:
                         report_lines.append(f"  - {metric_name}: {metric_value}")
 
@@ -182,10 +212,12 @@ async def main():
                 if metric_name in seg_eval.metrics:
                     metric_value = seg_eval.metrics[metric_name]
                     if hasattr(metric_value, 'value'):
-                        report_lines.append(f"  - {metric_name}: {metric_value.value:.2f}")
+                        report_lines.append(f"  - {metric_name}: {metric_value.value:.4f}")
                         # 显示详细说明
                         if hasattr(metric_value, 'explanation'):
-                            report_lines.append(f"    {metric_value.explanation}")
+                            explanation_lines = metric_value.explanation.split('\n')
+                            for line in explanation_lines:
+                                report_lines.append(f"    {line}")
                     else:
                         report_lines.append(f"  - {metric_name}: {metric_value}")
 
@@ -193,20 +225,23 @@ async def main():
             if seg_eval.novel_content_info:
                 nci = seg_eval.novel_content_info
                 report_lines.append(f"\n【新内容分析（详细）】")
-                report_lines.append(f"  - 提取到的新事实: {len(nci.extracted_facts)} 个")
-                if nci.extracted_facts:
-                    report_lines.append(f"    示例: {', '.join(nci.extracted_facts[:10])}")
+                extracted_facts = nci.get('extracted_facts', [])
+                report_lines.append(f"  - 提取到的新事实: {len(extracted_facts)} 个")
+                if extracted_facts:
+                    report_lines.append(f"    示例: {', '.join(extracted_facts[:10])}")
 
-                report_lines.append(f"  - 有依据的新事实: {len(nci.grounded_facts)} 个")
-                if nci.grounded_facts:
-                    report_lines.append(f"    示例: {', '.join(nci.grounded_facts[:10])}")
+                grounded_facts = nci.get('grounded_facts', [])
+                report_lines.append(f"  - 有依据的新事实: {len(grounded_facts)} 个")
+                if grounded_facts:
+                    report_lines.append(f"    示例: {', '.join(grounded_facts[:10])}")
 
-                report_lines.append(f"  - 无依据的新事实: {len(nci.ungrounded_facts)} 个")
-                if nci.ungrounded_facts:
-                    report_lines.append(f"    ⚠️  示例: {', '.join(nci.ungrounded_facts[:10])}")
+                ungrounded_facts = nci.get('ungrounded_facts', [])
+                report_lines.append(f"  - 无依据的新事实: {len(ungrounded_facts)} 个")
+                if ungrounded_facts:
+                    report_lines.append(f"    ⚠️  示例: {', '.join(ungrounded_facts[:10])}")
 
-                report_lines.append(f"  - 信息增益: {nci.information_gain:.1%}")
-                report_lines.append(f"  - 扩展溯源率: {nci.expansion_grounding:.1%}")
+                report_lines.append(f"  - 信息增益: {nci.get('information_gain', 0):.1%}")
+                report_lines.append(f"  - 扩展溯源率: {nci.get('expansion_grounding', 0):.1%}")
 
             report_lines.append("-" * 100)
     
@@ -226,8 +261,20 @@ async def main():
                 report_lines.append(f"  - {metric_name}: {metric_value}")
     
     report_lines.append(f"\n质量门控: {'✓ 通过' if eval_result.quality_gate.passed else '✗ 未通过'}")
-    if eval_result.quality_gate.failed_checks:
-        report_lines.append(f"  失败检查: {', '.join(eval_result.quality_gate.failed_checks)}")
+
+    # 收集失败的检查项
+    failed_items = []
+    for cr in eval_result.quality_gate.chapter_results:
+        if not cr.passed:
+            for issue in cr.issues:
+                if issue.severity == "error":
+                    failed_items.append(f"第{cr.chapter_index+1}章-{issue.dimension}")
+    for ci in eval_result.quality_gate.cross_chapter_issues:
+        if ci.severity == "error":
+            failed_items.append(f"跨章-{ci.dimension}")
+
+    if failed_items:
+        report_lines.append(f"  失败检查: {', '.join(failed_items)}")
     
     report_lines.append("\n" + "=" * 100)
     report_lines.append("报告结束")

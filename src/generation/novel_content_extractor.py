@@ -139,8 +139,7 @@ class NovelContentBrief:
             novel_parts.append("\n⚠️  重要提醒：")
             novel_parts.append("  如果你在生成中提到了任何实体（人名、地名、机构、事件），")
             novel_parts.append("  该实体必须出现在上述白名单中，或者出现在原文中。")
-            novel_parts.append("  例如：如果白名单中没有'深圳'，你就不能写'深圳速度'；")
-            novel_parts.append("        如果白名单中没有'邓小平'，你就不能提到邓小平。")
+            novel_parts.append("  不在白名单中的实体一律不得使用。")
 
         return {
             "aligned_context": "\n".join(aligned_parts) if aligned_parts else "（无）",
