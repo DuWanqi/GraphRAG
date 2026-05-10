@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from src.config import get_settings
+from src.config.workspace_logging import setup_workspace_logging
 from src.llm import create_llm_adapter, get_available_providers, LLMRouter
 from src.retrieval import MemoirRetriever
 from src.generation import (
@@ -19,6 +20,7 @@ from src.generation import (
     PromptTemplates,
     run_long_form_generation,
     single_segment_generation_config,
+    single_segment_generation_config_from_range,
     estimate_long_form_generation_timeout,
     estimate_long_form_evaluation_timeout,
     build_long_form_eval_options,
@@ -26,6 +28,8 @@ from src.generation import (
 from src.evaluation import evaluate_long_form, long_form_eval_to_json
 from src.indexing import GraphBuilder
 
+
+setup_workspace_logging()
 
 # 全局检索器实例（避免重复加载索引）
 _retriever: Optional[MemoirRetriever] = None
@@ -65,7 +69,27 @@ class GenerateRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0.1, le=1.0, description="创意度")
     length_bucket: str = Field(
         default="400-800",
-        description="生成字数档：200-400 / 400-800 / 800-1200 / 1200+",
+        description="兼容旧客户端：在未提供 generation_min/max 时用于单段模式档位映射",
+    )
+    generation_min_chars: Optional[int] = Field(
+        default=None,
+        ge=80,
+        description="单段模式：目标生成字数下限；与 generation_max_chars 同时给出时优先生效",
+    )
+    generation_max_chars: Optional[int] = Field(
+        default=None,
+        ge=100,
+        description="单段模式：目标生成字数上限",
+    )
+    chapter_generation_min_chars: Optional[int] = Field(
+        default=None,
+        ge=80,
+        description="分章模式：每章目标下限；若缺省则尝试用 generation_*，否则默认 400",
+    )
+    chapter_generation_max_chars: Optional[int] = Field(
+        default=None,
+        ge=100,
+        description="分章模式：每章目标上限；若缺省则尝试用 generation_*，否则默认 800",
     )
     retrieval_mode: str = Field(default="keyword", description="keyword / vector / hybrid")
     chapter_mode: bool = Field(default=False, description="分章/长文：按段检索与生成后合并")
@@ -159,7 +183,34 @@ async def generate(request: GenerateRequest):
         if request.chapter_mode:
             from src.generation.memoir_segmenter import segment_memoir
 
-            n_ch = max(1, len(segment_memoir(request.memoir_text)))
+            seg_lo, seg_hi = 300, 800
+            cg_lo: int
+            cg_hi: int
+            if (
+                request.chapter_generation_min_chars is not None
+                and request.chapter_generation_max_chars is not None
+            ):
+                cg_lo = max(50, int(request.chapter_generation_min_chars))
+                cg_hi = max(cg_lo + 1, int(request.chapter_generation_max_chars))
+            elif (
+                request.generation_min_chars is not None
+                and request.generation_max_chars is not None
+            ):
+                cg_lo = max(80, int(request.generation_min_chars))
+                cg_hi = max(cg_lo + 50, int(request.generation_max_chars))
+            else:
+                cg_lo, cg_hi = 400, 800
+
+            n_ch = max(
+                1,
+                len(
+                    segment_memoir(
+                        request.memoir_text,
+                        target_min_chars=seg_lo,
+                        target_max_chars=seg_hi,
+                    )
+                ),
+            )
             budget_timeout = estimate_long_form_generation_timeout(n_ch)
             t_gen0 = time.perf_counter()
             lf = await asyncio.wait_for(
@@ -167,11 +218,14 @@ async def generate(request: GenerateRequest):
                     request.memoir_text,
                     retriever,
                     generator,
-                    length_bucket=request.length_bucket,
                     style=request.style,
                     temperature=request.temperature,
                     retrieval_mode=request.retrieval_mode,
                     use_llm_parsing=False,
+                    target_min_chars=seg_lo,
+                    target_max_chars=seg_hi,
+                    chapter_gen_min_chars=cg_lo,
+                    chapter_gen_max_chars=cg_hi,
                 ),
                 timeout=budget_timeout,
             )
@@ -226,7 +280,15 @@ async def generate(request: GenerateRequest):
         if timing:
             print(f"[TEMP_TIMING] api.generate.retrieve={time.perf_counter()-t_ret0:.3f}s")
 
-        single_cfg = single_segment_generation_config(request.length_bucket)
+        if (
+            request.generation_min_chars is not None
+            and request.generation_max_chars is not None
+        ):
+            g_lo = max(80, int(request.generation_min_chars))
+            g_hi = max(g_lo + 50, int(request.generation_max_chars))
+            single_cfg = single_segment_generation_config_from_range(g_lo, g_hi)
+        else:
+            single_cfg = single_segment_generation_config(request.length_bucket)
         t_gen0 = time.perf_counter()
         gen_result = await asyncio.wait_for(
             generator.generate(

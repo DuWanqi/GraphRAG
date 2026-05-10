@@ -312,7 +312,8 @@ class MemoirRetriever:
         print(f"[_search_entities] 匹配结果数: {len(results)}, 去重后: {len(unique_results)}")
         if unique_results:
             print(f"[_search_entities] 前3个结果: {[(r['name'], r['score']) for r in unique_results[:3]]}")
-        return unique_results[:min(top_k, 10)]  # 限制最多返回10个
+        out = unique_results[: min(top_k, 10)]  # 限制最多返回10个
+        return out
     
     def _search_relationships(
         self,

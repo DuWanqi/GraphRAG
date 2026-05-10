@@ -34,7 +34,7 @@ ADAPTER_REGISTRY: Dict[LLMProvider, Type[LLMAdapter]] = {
 DEFAULT_MODELS: Dict[LLMProvider, str] = {
     LLMProvider.DEEPSEEK: "deepseek-chat",
     LLMProvider.QWEN: "qwen-plus",
-    LLMProvider.HUNYUAN: "hunyuan-lite",
+    LLMProvider.HUNYUAN: "hy3-preview",
     LLMProvider.GEMINI: "gemini-2.5-flash",
     LLMProvider.GLM: "glm-4.7-flash",
     LLMProvider.OPENAI: "gpt-4o-mini",
@@ -43,9 +43,9 @@ DEFAULT_MODELS: Dict[LLMProvider, str] = {
 
 # Web UI 与各路由可选模型（Ollama 由 /api/tags 动态填充，见 get_provider_models）
 PROVIDER_MODELS: Dict[LLMProvider, List[str]] = {
-    LLMProvider.DEEPSEEK: ["deepseek-chat"],
+    LLMProvider.DEEPSEEK: ["deepseek-chat", "deepseek-v4-flash", "deepseek-v4-pro"],
     LLMProvider.QWEN: ["qwen-plus"],
-    LLMProvider.HUNYUAN: ["hunyuan-lite"],
+    LLMProvider.HUNYUAN: ["hy3-preview", "hunyuan-lite"],
     LLMProvider.GEMINI: ["gemini-2.5-flash"],
     LLMProvider.GLM: ["glm-4.7-flash"],
     LLMProvider.OPENAI: ["gpt-4o", "gpt-5"],
@@ -134,18 +134,7 @@ def create_llm_adapter(
             f"缺少 {provider} 的API密钥。"
             f"请在 .env 文件中设置对应的 API_KEY 环境变量。"
         )
-    
-    # 特殊处理混元适配器
-    if provider_enum == LLMProvider.HUNYUAN:
-        return adapter_class(
-            api_key=api_key,
-            secret_id=settings.hunyuan_secret_id,
-            secret_key=settings.hunyuan_secret_key,
-            api_base=api_base,
-            model=model,
-            **kwargs
-        )
-    
+
     return adapter_class(
         api_key=api_key,
         api_base=api_base,
@@ -173,7 +162,7 @@ def _get_api_base_from_settings(provider: LLMProvider, settings) -> Optional[str
     base_mapping = {
         LLMProvider.DEEPSEEK: settings.deepseek_api_base,
         LLMProvider.QWEN: settings.qwen_api_base,
-        LLMProvider.HUNYUAN: None,  # 混元使用默认
+        LLMProvider.HUNYUAN: settings.hunyuan_api_base,
         LLMProvider.GEMINI: None,   # Gemini使用默认
         LLMProvider.GLM: "https://open.bigmodel.cn/api/paas/v4",  # 智谱API地址
         LLMProvider.OPENAI: settings.openai_api_base,

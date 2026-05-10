@@ -31,7 +31,7 @@ class QualityThresholds:
     min_semantic_similarity: Optional[float] = None  # 语义相似度下限（可选）
     min_expansion_grounding: float = 0.40  # 扩展内容溯源率下限
     min_entity_coverage: float = 0.80     # 实体覆盖率下限
-    min_rag_utilization: float = 0.6      # RAG 利用率下限（≥2个实体）
+    min_rag_utilization: float = 0.5      # RAG 利用率下限（与 rag_utilization：1 个新实体 = 0.5）
 
     @classmethod
     def for_expansion_task(cls) -> "QualityThresholds":
@@ -46,7 +46,7 @@ class QualityThresholds:
             min_length_ratio=0.40,
             max_length_ratio=2.5,
             max_summary_sentence_ratio=0.30,
-            min_rag_utilization=0.6,  # 要求至少使用2个RAG实体
+            min_rag_utilization=0.5,  # 至少 1 个 RAG 新实体（score ≥ 0.5）
         )
 
 

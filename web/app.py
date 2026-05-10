@@ -6,6 +6,7 @@
 import asyncio
 import csv
 import json
+import logging
 import tempfile
 import threading
 import time
@@ -16,6 +17,7 @@ import html
 import gradio as gr
 
 from src.config import get_settings
+from src.config.workspace_logging import setup_workspace_logging
 from src.llm import (
     create_llm_adapter,
     get_available_providers,
@@ -29,7 +31,8 @@ from src.generation import (
     PromptTemplates,
     segment_memoir,
     run_long_form_generation,
-    single_segment_generation_config,
+    regenerate_chapters,
+    single_segment_generation_config_from_range,
     estimate_long_form_generation_timeout,
     estimate_long_form_evaluation_timeout,
     build_long_form_eval_options,
@@ -45,6 +48,11 @@ from src.evaluation import (
     QualityThresholds,
 )
 
+
+setup_workspace_logging()
+
+
+logger = logging.getLogger(__name__)
 
 # 全局变量
 settings = get_settings()
@@ -312,7 +320,6 @@ def _format_chapter_entities_block(
     ctx = rr.context
     lines.append(f"### 第 {idx + 1} 章检索")
     lines.append(
-        f"- **查询**: `{rr.query}`\n"
         f"- **解析时间**: {ctx.year or '—'}｜**地点**: {ctx.location or '—'}\n"
         f"- **实体数**: {len(rr.entities or [])}｜**关系数**: {len(rr.relationships or [])}"
     )
@@ -366,9 +373,6 @@ def _format_chapter_entities_block(
         if len(rels) > 15:
             lines.append(f"  - … 其余 {len(rels) - 15} 条略")
 
-    if getattr(chapter, "repetition_warning", ""):
-        lines.append("")
-        lines.append(f"_跨章重复提示_: {chapter.repetition_warning}")
     return lines
 
 
@@ -428,9 +432,6 @@ def _format_long_form_facts_and_rules(ev: Any) -> str:
         parts.append(_format_metric_line(k, mr))
         parts.append("\n")
 
-    parts.append("\n<details><summary>\u5B8C\u6574 JSON\uff08\u622A\u65AD\uff09</summary>\n\n```json\n")
-    parts.append(long_form_eval_to_json(ev)[:12000])
-    parts.append("\n```\n</details>\n")
     return "".join(parts)
 
 
@@ -590,16 +591,145 @@ def _format_quality_gate_markdown(ev: Any) -> str:
             for rs in reasons or []:
                 lines.append(f"  - {rs}\n")
 
-    lines.append("\n<details><summary>plaintext</summary>\n\n```text\n")
-    lines.append(gate.to_text())
-    lines.append("\n```\n</details>\n")
     return "".join(lines)
 
 
-def _clamp_chapter_char_bounds(a: int, b: int) -> Tuple[int, int]:
+def _log_long_form_chapter_generation(lf: Any) -> None:
+    """记录分章初次生成后各章字数与重复警告（便于分析门控失败原因）。"""
+    for i, ch in enumerate(getattr(lf, "chapters", []) or []):
+        gen = getattr(ch, "generation", None)
+        content = getattr(gen, "content", "") if gen else ""
+        hint = getattr(ch, "length_hint", "") or ""
+        rep = getattr(ch, "repetition_warning", "") or "无"
+        logger.info(
+            "[LongForm] 第%d章生成完毕: %d字, hint=%s, rep_warn=%s",
+            i + 1,
+            len(content),
+            hint,
+            rep,
+        )
+
+
+def _log_long_form_quality_gate(evaluated: Any, round_label: str = "初始") -> None:
+    """结构化记录质量门控与各章 issues。"""
+    gate = getattr(evaluated, "quality_gate", None)
+    if gate is None:
+        logger.info("[LongForm] 质量门控(%s): 无结果", round_label)
+        return
+    logger.info(
+        "[LongForm] 质量门控(%s): passed=%s overall=%.2f",
+        round_label,
+        gate.passed,
+        getattr(gate, "overall_score", 0.0) or 0.0,
+    )
+    for cr in getattr(gate, "chapter_results", []) or []:
+        issues_repr = [
+            (iss.dimension, iss.severity, iss.message)
+            for iss in (getattr(cr, "issues", None) or [])
+        ]
+        logger.info(
+            "  第%d章: passed=%s issues=%s",
+            getattr(cr, "chapter_index", -1) + 1,
+            cr.passed,
+            issues_repr,
+        )
+    for ci in getattr(gate, "cross_chapter_issues", []) or []:
+        logger.info(
+            "  跨章: %s severity=%s chapters=%s",
+            ci.message,
+            ci.severity,
+            getattr(ci, "chapters_involved", None),
+        )
+
+
+def _segment_by_chapter_index(evaluated: Any, ch_idx: int) -> Any:
+    """按 segment_index（0-based 与章节索引一致）查找段评估记录。"""
+    for seg in getattr(evaluated, "segments", []) or []:
+        if int(getattr(seg, "segment_index", -1)) == int(ch_idx):
+            return seg
+    return None
+
+
+def _entity_avail_used_for_chapter(lf: Any, evaluated: Any, ch_idx: int) -> Tuple[List[str], List[str]]:
+    """
+    返回 (novel_entities_available, novel_entities_used)。
+    优先用评估里的 novel_content_info；若无则从当前章 retrieval 的 brief 回填 available。
+    """
+    seg = _segment_by_chapter_index(evaluated, ch_idx) if evaluated is not None else None
+    avail: List[str] = []
+    used: List[str] = []
+    if seg is not None:
+        nci = getattr(seg, "novel_content_info", None) or {}
+        avail = list(nci.get("novel_entities_available") or [])
+        used = list(nci.get("novel_entities_used") or [])
+    if not avail and lf is not None and 0 <= ch_idx < len(getattr(lf, "chapters", []) or []):
+        rr = lf.chapters[ch_idx].retrieval_result
+        brief = getattr(rr, "_novel_content_brief", None)
+        if brief is not None:
+            names = getattr(brief, "novel_entity_names", None) or []
+            avail = [n for n in names if n]
+    return avail, used
+
+
+def _log_long_form_segment_rag_entities(evaluated: Any, round_label: str = "") -> None:
+    """每章记录 RAG 利用率与 novel 实体可用/已用/未用，便于对照门控。"""
+    if not evaluated:
+        return
+    suffix = f" ({round_label})" if round_label else ""
+    for seg in getattr(evaluated, "segments", []) or []:
+        idx = int(getattr(seg, "segment_index", 0))
+        metrics = getattr(seg, "metrics", {}) or {}
+        rag_m = metrics.get("rag_utilization")
+        rag_v: Optional[float] = None
+        if rag_m is not None and hasattr(rag_m, "value"):
+            rag_v = float(rag_m.value)
+        nci = getattr(seg, "novel_content_info", None) or {}
+        avail = list(nci.get("novel_entities_available") or [])
+        used = list(nci.get("novel_entities_used") or [])
+        used_set = set(used)
+        unused = [e for e in avail if e not in used_set]
+        logger.info(
+            "[LongForm][RAG实体]%s 第%d章: rag_util=%s | used_n=%d avail_n=%d | used=%s | unused=%s | avail(前15)=%s",
+            suffix,
+            idx + 1,
+            f"{rag_v:.3f}" if rag_v is not None else "n/a",
+            len(used),
+            len(avail),
+            used,
+            unused[:25],
+            avail[:15],
+        )
+
+
+def _rag_entity_retry_instruction(avail: List[str], used: List[str]) -> str:
+    """门控重试时追加：点名未使用的新实体，抬高写入概率。"""
+    if not avail:
+        return ""
+    used_set = set(used)
+    unused = [e for e in avail if e not in used_set]
+    picks = unused[:8] if unused else avail[:8]
+    if not picks:
+        return ""
+    joined = "、".join(picks)
+    return (
+        "【RAG新实体】正文中须自然融入至少1个下列名称（须在叙事场景/对话/叙述中出现，禁止单独开列清单）："
+        + joined
+    )
+
+
+# 分章模式下回忆录切段偏好（不再占用主界面滑块；与用户「每章生成字数」解耦）
+_MEMOIR_SEG_TARGET_MIN = 300
+_MEMOIR_SEG_TARGET_MAX = 800
+
+
+def _clamp_generation_char_bounds(a: int, b: int) -> Tuple[int, int]:
+    """用户设定的「生成成文」字数区间上下限（用于 length_hint）。"""
     a, b = int(a), int(b)
     lo, hi = (a, b) if a <= b else (b, a)
-    return max(50, lo), max(lo, hi)
+    lo = max(80, lo)
+    hi = max(lo + 50, hi)
+    hi = min(hi, 50_000)
+    return lo, hi
 
 
 def _build_long_form_markdown_output(lf: Any, evaluated: Any) -> str:
@@ -623,12 +753,13 @@ def _build_long_form_markdown_output(lf: Any, evaluated: Any) -> str:
         if nu:
             used_hint = f"\n\n_\u672C\u6BB5\u5199\u5165\u7684\u65B0 RAG \u5B9E\u4F53_: **{', '.join(sorted(nu))}**"
 
-        hint = getattr(ch, "length_hint", "") or ""
+        src_n = len((ch.segment_text or "").strip())
+        gen_n = len(getattr(ch.generation, "content", "") or "")
         blocks.append(
             f"## \u7B2C {i + 1} \u7AE0\n\n"
             f"> **\u539F\u6587\u8282\u9009**: {snippet}\n\n"
-            f"_\u957F\u5EA6\u63D0\u793A_: `{hint}`｜"
-            f"_\u751F\u6210\u5B57\u6570_: **{len(getattr(ch.generation, 'content', '') or '')}**{used_hint}\n\n"
+            f"- **\u672C\u6BB5\u539F\u6587\u5B57\u6570**: {src_n}\n"
+            f"- **\u5B9E\u9645\u751F\u6210\u5B57\u6570**: **{gen_n}**{used_hint}\n\n"
             f"{body.strip()}\n\n---\n"
         )
     return "\n".join(blocks)
@@ -639,12 +770,15 @@ async def process_memoir_async(
     provider: str,
     model: Optional[str],
     style: str,
-    length_bucket: str,
+    total_gen_min_chars: int,
+    total_gen_max_chars: int,
     temperature: float,
     enable_fact_check: bool = True,
     retrieval_mode: str = "keyword",
     use_rule_decompose: bool = False,
     chapter_mode: bool = False,
+    chapter_gen_min_chars: int = 400,
+    chapter_gen_max_chars: int = 800,
 ) -> Tuple[str, str, str, str]:
     """
     异步处理回忆录
@@ -676,7 +810,13 @@ async def process_memoir_async(
         print(f"[DEBUG] 开始处理回忆录，长度: {len(memoir_text)} 字符")
 
         if chapter_mode:
-            segs = segment_memoir(memoir_text)
+            seg_lo, seg_hi = _MEMOIR_SEG_TARGET_MIN, _MEMOIR_SEG_TARGET_MAX
+            cg_lo, cg_hi = _clamp_generation_char_bounds(chapter_gen_min_chars, chapter_gen_max_chars)
+            segs = segment_memoir(
+                memoir_text,
+                target_min_chars=seg_lo,
+                target_max_chars=seg_hi,
+            )
             n_ch = max(1, len(segs))
             budget_timeout = estimate_long_form_generation_timeout(n_ch)
             lf = await asyncio.wait_for(
@@ -684,11 +824,14 @@ async def process_memoir_async(
                     memoir_text,
                     retriever,
                     generator,
-                    length_bucket=length_bucket,
                     style=style,
                     temperature=temperature,
                     retrieval_mode=retrieval_mode,
                     use_llm_parsing=False,
+                    target_min_chars=seg_lo,
+                    target_max_chars=seg_hi,
+                    chapter_gen_min_chars=cg_lo,
+                    chapter_gen_max_chars=cg_hi,
                 ),
                 timeout=budget_timeout,
             )
@@ -697,8 +840,7 @@ async def process_memoir_async(
             for i, ch in enumerate(lf.chapters):
                 ctx = ch.retrieval_result.context
                 lines.append(
-                    f"- 第{i + 1}章: 查询 `{ch.retrieval_result.query}` | "
-                    f"年 {ctx.year or '—'} 地 {ctx.location or '—'}"
+                    f"- 第{i + 1}章: 年 {ctx.year or '—'} 地 {ctx.location or '—'}"
                 )
             extracted_info = "\n".join(lines)
             rent = [len(ch.retrieval_result.entities) for ch in lf.chapters]
@@ -769,7 +911,8 @@ async def process_memoir_async(
         # 生成文本
         gen_start = time.time()
         print("[DEBUG] 开始生成文本...")
-        single_cfg = single_segment_generation_config(length_bucket)
+        t_lo, t_hi = _clamp_generation_char_bounds(total_gen_min_chars, total_gen_max_chars)
+        single_cfg = single_segment_generation_config_from_range(t_lo, t_hi)
 
         gen_result = await asyncio.wait_for(
             generator.generate(
@@ -873,12 +1016,15 @@ def process_memoir(
     provider: str,
     model: Optional[str],
     style: str,
-    length_bucket: str,
+    total_gen_min_chars: int,
+    total_gen_max_chars: int,
     temperature: float,
     enable_fact_check: bool = True,
     retrieval_mode: str = "keyword",
     use_rule_decompose: bool = False,
     chapter_mode: bool = False,
+    chapter_gen_min_chars: int = 400,
+    chapter_gen_max_chars: int = 800,
 ) -> Tuple[str, str, str, str]:
     """处理回忆录（同步包装）"""
     return asyncio.run(
@@ -887,13 +1033,30 @@ def process_memoir(
             provider,
             model,
             style,
-            length_bucket,
+            total_gen_min_chars,
+            total_gen_max_chars,
             temperature,
             enable_fact_check,
             retrieval_mode,
             use_rule_decompose,
             chapter_mode,
+            chapter_gen_min_chars,
+            chapter_gen_max_chars,
         )
+    )
+
+
+def _loading_html(title: str, subtitle: str = "") -> str:
+    """生成生成中占位 UI（依赖全局 _CSS 中的 .loading-card 动画）。"""
+    safe_title = html.escape(title)
+    safe_sub = html.escape(subtitle) if subtitle else ""
+    sub_block = f"<br><span class='loading-sub'>{safe_sub}</span>" if safe_sub else ""
+    return (
+        f'<div class="loading-card">'
+        f'<div class="loading-dots"><span></span><span></span><span></span></div>'
+        f'<div class="loading-bar"></div>'
+        f'<div class="loading-text"><strong>{safe_title}</strong>{sub_block}</div>'
+        f"</div>"
     )
 
 
@@ -902,7 +1065,8 @@ def process_memoir_stream(
     provider: str,
     model: Optional[str],
     style: str,
-    length_bucket: str,
+    total_gen_min_chars: int,
+    total_gen_max_chars: int,
     temperature: float,
     enable_fact_check: bool = True,
     retrieval_mode: str = "keyword",
@@ -912,9 +1076,10 @@ def process_memoir_stream(
     enable_llm_judge: bool = True,
     chapter_mode: bool = False,
     batch_size: int = 5,
-    chapter_target_min_chars: int = 300,
-    chapter_target_max_chars: int = 800,
+    chapter_gen_min_chars: int = 400,
+    chapter_gen_max_chars: int = 800,
     chapter_use_llm_parsing: bool = False,
+    chapter_max_gate_retries: int = 2,
 ):
     """
     Gradio 流式生成。
@@ -943,7 +1108,8 @@ def process_memoir_stream(
             yield (init_result,) + ("",) * 9
             return
 
-    single_cfg = single_segment_generation_config(length_bucket)
+    t_lo, t_hi = _clamp_generation_char_bounds(total_gen_min_chars, total_gen_max_chars)
+    single_cfg = single_segment_generation_config_from_range(t_lo, t_hi)
 
     # 各栏目状态
     extracted_md = ""
@@ -959,16 +1125,21 @@ def process_memoir_stream(
     loop = asyncio.new_event_loop()
     try:
         if chapter_mode:
-            lo, hi = _clamp_chapter_char_bounds(chapter_target_min_chars, chapter_target_max_chars)
+            seg_lo, seg_hi = _MEMOIR_SEG_TARGET_MIN, _MEMOIR_SEG_TARGET_MAX
+            cg_lo, cg_hi = _clamp_generation_char_bounds(chapter_gen_min_chars, chapter_gen_max_chars)
             segs_preview = segment_memoir(
                 memoir_text.strip(),
-                target_min_chars=lo,
-                target_max_chars=hi,
+                target_min_chars=seg_lo,
+                target_max_chars=seg_hi,
             )
             n_ch = max(1, len(segs_preview))
 
             yield (
-                f"⏳ **分章模式** 预计 {len(segs_preview)} 段（分段目标字数 {lo}–{hi}），正在检索与生成…",
+                _loading_html(
+                    "分章模式 · 正在检索与生成…",
+                    f"预计 {len(segs_preview)} 段｜每章目标生成字数 {cg_lo}–{cg_hi}｜"
+                    f"回忆录切段内部默认偏好 {seg_lo}–{seg_hi} 字",
+                ),
             ) + ("",) * 9
 
             async def _long_form():
@@ -976,17 +1147,21 @@ def process_memoir_stream(
                     memoir_text,
                     retriever,
                     generator,
-                    length_bucket=length_bucket,
                     style=style,
                     temperature=temperature,
                     retrieval_mode=retrieval_mode,
                     use_llm_parsing=chapter_use_llm_parsing,
-                    target_min_chars=lo,
-                    target_max_chars=hi,
+                    target_min_chars=seg_lo,
+                    target_max_chars=seg_hi,
+                    chapter_gen_min_chars=cg_lo,
+                    chapter_gen_max_chars=cg_hi,
                 )
 
             budget_timeout = estimate_long_form_generation_timeout(n_ch)
             lf = loop.run_until_complete(asyncio.wait_for(_long_form(), timeout=budget_timeout))
+            _log_long_form_chapter_generation(lf)
+
+            max_gate_retries = int(max(0, min(10, int(chapter_max_gate_retries))))
 
             retrieval_q_md = ""
             if enable_retrieval_quality and lf.chapters:
@@ -1015,21 +1190,11 @@ def process_memoir_stream(
             else:
                 retrieval_q_md = "_无章节可评估_"
 
-            cfg_lines = [
-                "**分章模式配置**",
-                f"- `字数档 (length_bucket)`: `{length_bucket}`",
-                f"- `每段分割目标字数`: `{lo}` – `{hi}`",
-                f"- `use_llm_parsing`: `{chapter_use_llm_parsing}`",
-                f"- `写作风格`: `{style}` / `创意度`: `{temperature}` / `检索`: `{retrieval_mode}`",
-                "",
-                f"_共 **{len(lf.chapters)}** 章，输入约 **{len(memoir_text.strip())}** 字_",
-                "",
-            ]
             ent_blocks: List[str] = []
             for i, ch in enumerate(lf.chapters):
                 ent_blocks.extend(_format_chapter_entities_block(i, ch, None))
                 ent_blocks.append("")
-            extracted_md = "\n".join(cfg_lines + ent_blocks)
+            extracted_md = "\n".join(ent_blocks).strip()
 
             content_md = _build_long_form_markdown_output(lf, None)
             safe_interim = (
@@ -1051,6 +1216,8 @@ def process_memoir_stream(
             )
 
             evaluated = None
+            gate_retry_round = 0
+
             try:
                 llm_adapter = create_llm_adapter(
                     provider=provider,
@@ -1076,17 +1243,88 @@ def process_memoir_stream(
                         timeout=estimate_long_form_evaluation_timeout(len(lf.chapters)),
                     )
                 )
+                _log_long_form_segment_rag_entities(evaluated, "初始评估")
+                _log_long_form_quality_gate(evaluated, "初始评估")
 
-                cfg_lines = [
-                    "**分章模式配置**",
-                    f"- `字数档 (length_bucket)`: `{length_bucket}`",
-                    f"- `每段分割目标字数`: `{lo}` – `{hi}`",
-                    f"- `use_llm_parsing`: `{chapter_use_llm_parsing}`",
-                    f"- `写作风格`: `{style}` / `创意度`: `{temperature}`",
-                    "",
-                    f"_长文 **聚合评分（段级加权）** ≈ `{evaluated.aggregated_score:.2f}`（内部尺度因任务而异）_",
-                    "",
-                ]
+                # 仅在质量门控未通过且存在可执行修复计划时定向重生成（不在初版生成阶段因跨章重复等单独重试）
+                while (
+                    evaluated is not None
+                    and evaluated.quality_gate is not None
+                    and not evaluated.quality_gate.passed
+                    and evaluated.quality_gate.remediation is not None
+                    and gate_retry_round < max_gate_retries
+                ):
+                    gate_retry_round += 1
+                    remed = evaluated.quality_gate.remediation
+                    to_regen = remed.chapters_to_regenerate
+                    regen_str = ", ".join(str(c + 1) for c in to_regen)
+                    logger.info(
+                        "[LongForm] 门控重试 %d/%d: 重新生成第 %s 章",
+                        gate_retry_round,
+                        max_gate_retries,
+                        regen_str,
+                    )
+                    yield (
+                        _loading_html(
+                            "质量门控未通过，正在重新生成章节…",
+                            f"第 {regen_str} 章｜重试 {gate_retry_round}/{max_gate_retries}",
+                        ),
+                    ) + ("",) * 9
+
+                    merged_adj: Dict[int, str] = dict(remed.prompt_adjustments or {})
+                    for ch_idx in to_regen:
+                        avail_e, used_e = _entity_avail_used_for_chapter(lf, evaluated, ch_idx)
+                        hint_txt = _rag_entity_retry_instruction(avail_e, used_e)
+                        if hint_txt:
+                            prev_adj = merged_adj.get(ch_idx, "")
+                            merged_adj[ch_idx] = f"{prev_adj}；{hint_txt}" if prev_adj else hint_txt
+                        unused_n = len([e for e in avail_e if e not in set(used_e)])
+                        logger.info(
+                            "[LongForm][重试指令] 第%d章: avail_n=%d used_n=%d unused_n=%s entity_hint=%s",
+                            ch_idx + 1,
+                            len(avail_e),
+                            len(used_e),
+                            unused_n,
+                            bool(hint_txt),
+                        )
+
+                    gen_to = estimate_long_form_generation_timeout(max(1, len(to_regen)))
+                    lf = loop.run_until_complete(
+                        asyncio.wait_for(
+                            regenerate_chapters(
+                                lf,
+                                retriever,
+                                generator,
+                                chapters_to_regenerate=to_regen,
+                                prompt_adjustments=merged_adj,
+                                style=style,
+                                temperature=temperature,
+                                retrieval_mode=retrieval_mode,
+                                use_llm_parsing=chapter_use_llm_parsing,
+                            ),
+                            timeout=gen_to,
+                        )
+                    )
+                    _log_long_form_chapter_generation(lf)
+
+                    evaluated = loop.run_until_complete(
+                        asyncio.wait_for(
+                            evaluate_long_form(
+                                lf,
+                                **eval_kwargs,
+                                quality_thresholds=QualityThresholds.for_expansion_task(),
+                                enable_quality_gate=True,
+                            ),
+                            timeout=estimate_long_form_evaluation_timeout(len(lf.chapters)),
+                        )
+                    )
+                    _log_long_form_segment_rag_entities(
+                        evaluated, f"定向重试第{gate_retry_round}轮后"
+                    )
+                    _log_long_form_quality_gate(
+                        evaluated, f"定向重试第{gate_retry_round}轮后"
+                    )
+
                 ent_blocks = []
                 for i, ch in enumerate(lf.chapters):
                     seg_ix = int(ch.segment_index)
@@ -1101,7 +1339,7 @@ def process_memoir_stream(
                     used_set = set((nci or {}).get("novel_entities_used") or [])
                     ent_blocks.extend(_format_chapter_entities_block(i, ch, used_set))
                     ent_blocks.append("")
-                extracted_md = "\n".join(cfg_lines + ent_blocks)
+                extracted_md = "\n".join(ent_blocks).strip()
 
                 accuracy_md = _format_long_form_facts_and_rules(evaluated)
                 novel_md = _format_long_form_novel_content(evaluated)
@@ -1110,6 +1348,10 @@ def process_memoir_stream(
                 )
                 compliance_md = _format_long_form_compliance_note()
                 gate_md = _format_quality_gate_markdown(evaluated)
+                if gate_retry_round > 0:
+                    gate_md += (
+                        f"\n\n---\n_经过 **{gate_retry_round}** 轮定向章节重试。_\n"
+                    )
 
             except Exception as e:
                 accuracy_md = f"_长文评估失败_: {e}\n"
@@ -1137,7 +1379,21 @@ def process_memoir_stream(
             )
             return
 
-        yield ("⏳ 正在检索相关历史背景，请稍候…", "", "", "", "", "", "", "", "", "")
+        yield (
+            _loading_html(
+                "正在检索相关历史背景…",
+                "请稍候，检索完成后将开始生成。",
+            ),
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        )
 
         # ── 1. 检索 ──
         retrieval_result = loop.run_until_complete(asyncio.wait_for(
@@ -1417,7 +1673,8 @@ def batch_benchmark_stream(
     provider: str,
     model: Optional[str],
     style: str,
-    length_bucket: str,
+    total_gen_min_chars: int,
+    total_gen_max_chars: int,
     temperature: float,
     enable_fact_check: bool,
     retrieval_mode: str,
@@ -1468,7 +1725,8 @@ def batch_benchmark_stream(
         yield ("⚠️ 测试集为空。", [], None, None, None)
         return
 
-    single_cfg = single_segment_generation_config(length_bucket)
+    bg_lo, bg_hi = _clamp_generation_char_bounds(total_gen_min_chars, total_gen_max_chars)
+    single_cfg = single_segment_generation_config_from_range(bg_lo, bg_hi)
 
     rows: List[List[str]] = []
     detail_records: List[dict] = []
@@ -1476,7 +1734,7 @@ def batch_benchmark_stream(
 
     yield (
         f"⏳ 共 {total} 条段落待处理。当前配置：{provider}{f'/{model}' if model else ''} · "
-        f"风格 `{style}` · 字数 `{length_bucket}` · 温度 `{temperature}` · 检索 `{retrieval_mode}`",
+        f"整篇目标生成 `{bg_lo}`–`{bg_hi}` 字 · 温度 `{temperature}` · 检索 `{retrieval_mode}`",
         rows,
         None,
         None,
@@ -1660,7 +1918,8 @@ def batch_benchmark_stream(
             "provider": provider,
             "model": model,
             "style": style,
-            "length_bucket": length_bucket,
+            "total_gen_min_chars": bg_lo,
+            "total_gen_max_chars": bg_hi,
             "temperature": temperature,
             "retrieval_mode": retrieval_mode,
             "evals": {
@@ -1706,7 +1965,7 @@ def batch_benchmark_stream(
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(f"# 批量测试结果 ({ts})\n\n")
             f.write(f"- LLM: `{provider}`{f' / `{model}`' if model else ''}\n")
-            f.write(f"- 风格: `{style}` | 字数: `{length_bucket}` | 温度: `{temperature}` | 检索: `{retrieval_mode}`\n")
+            f.write(f"- 风格: `{style}` | 目标生成字数: `{bg_lo}`–`{bg_hi}` | 温度: `{temperature}` | 检索: `{retrieval_mode}`\n")
             f.write(
                 f"- 评估: 检索质量={enable_retrieval_quality}, "
                 f"FActScore={enable_fact_check}, SAFE={enable_safe_check}, LLM-Judge={enable_llm_judge}\n"
@@ -1803,9 +2062,13 @@ def create_ui():
     available = get_available_providers()
     available_providers = [k for k, v in available.items() if v]
     if not available_providers:
-        available_providers = ["deepseek"]  # 默认
+        available_providers = ["deepseek"]  # 无可配密钥时的占位
 
-    _default_provider = available_providers[0] if available_providers else None
+    _default_provider = (
+        "openai"
+        if "openai" in available_providers
+        else (available_providers[0] if available_providers else None)
+    )
     _initial_model_choices = get_provider_models(_default_provider) if _default_provider else []
     _initial_model_value = _initial_model_choices[0] if _initial_model_choices else None
 
@@ -1876,16 +2139,23 @@ def create_ui():
                                 label="写作风格",
                             )
 
-                        length_bucket_select = gr.Radio(
-                            choices=[
-                                ("200-400字", "200-400"),
-                                ("400-800字", "400-800"),
-                                ("800-1200字", "800-1200"),
-                                ("1200字以上", "1200+"),
-                            ],
-                            value="400-800",
-                            label="生成字数",
-                        )
+                        with gr.Row(visible=True) as total_gen_row:
+                            total_gen_min_slider = gr.Slider(
+                                minimum=200,
+                                maximum=6000,
+                                value=400,
+                                step=50,
+                                label="整篇 · 目标生成字数下限",
+                                info="仅**单段模式**（未勾选分章）：与上限一起写入模型长度提示。",
+                            )
+                            total_gen_max_slider = gr.Slider(
+                                minimum=300,
+                                maximum=8000,
+                                value=800,
+                                step=50,
+                                label="整篇 · 目标生成字数上限",
+                                info="分章模式下此两项隐藏，请改用下方「每章」区间。",
+                            )
 
                         temperature_slider = gr.Slider(
                             minimum=0.1,
@@ -1901,7 +2171,7 @@ def create_ui():
                                 ("向量检索 (精准)", "vector"),
                                 ("混合检索 (推荐)", "hybrid"),
                             ],
-                            value="keyword",
+                            value="hybrid",
                             label="检索模式",
                             info="选择知识图谱检索策略",
                         )
@@ -1949,27 +2219,36 @@ def create_ui():
                         )
 
                         with gr.Column(visible=False) as chapter_advanced_col:
-                            gr.Markdown("**分章参数**（字数档 `length_bucket` 仍与各章预算相关；以下为分段与检索解析）")
-                            chapter_target_min_slider = gr.Slider(
-                                minimum=100,
-                                maximum=500,
-                                value=300,
-                                step=20,
-                                label="分段目标最少字",
-                                info="传给 segment_memoir / 长文编排的单段下限",
+                            gr.Markdown(
+                                "**分章模式 · 每章长度**：下方区间对**每一章成品**生效（各章共用同一套提示）。"
+                                "回忆录原文如何切段由系统内部固定偏好（约 300–800 字）完成。"
                             )
-                            chapter_target_max_slider = gr.Slider(
+                            chapter_gen_min_slider = gr.Slider(
+                                minimum=200,
+                                maximum=4000,
+                                value=400,
+                                step=50,
+                                label="每章 · 目标生成字数下限",
+                            )
+                            chapter_gen_max_slider = gr.Slider(
                                 minimum=300,
-                                maximum=1500,
+                                maximum=6000,
                                 value=800,
                                 step=50,
-                                label="分段目标最多字",
-                                info="单段回忆录片段长度上限偏好",
+                                label="每章 · 目标生成字数上限",
                             )
                             chapter_llm_parse_checkbox = gr.Checkbox(
                                 value=False,
                                 label="分章检索使用 LLM 解析",
                                 info="对应 run_long_form_generation(use_llm_parsing)",
+                            )
+                            chapter_max_gate_retries_slider = gr.Slider(
+                                minimum=0,
+                                maximum=3,
+                                value=2,
+                                step=1,
+                                label="质量门控未通过时的定向章节重试次数",
+                                info="仅分章模式：失败章节按需重新生成并重评，设为 0 则关闭自动重试。",
                             )
 
                         generate_btn = gr.Button("\U0001f680 生成历史背景", variant="primary")
@@ -1999,12 +2278,12 @@ def create_ui():
                         )
 
                         def _chapter_mode_visibility(on: bool):
-                            return gr.update(visible=on)
+                            return gr.update(visible=on), gr.update(visible=not on)
 
                         chapter_mode_checkbox.change(
                             fn=_chapter_mode_visibility,
                             inputs=[chapter_mode_checkbox],
-                            outputs=[chapter_advanced_col],
+                            outputs=[chapter_advanced_col, total_gen_row],
                         )
 
                     with gr.Column(scale=1):
@@ -2012,6 +2291,7 @@ def create_ui():
                             value="",
                             elem_classes=["output-box"],
                             label="生成的历史背景（Markdown）",
+                            sanitize_html=False,
                         )
 
                         with gr.Accordion("\U0001f4cb 提取与检索信息", open=False):
@@ -2052,7 +2332,8 @@ def create_ui():
                         provider_select,
                         model_select,
                         style_select,
-                        length_bucket_select,
+                        total_gen_min_slider,
+                        total_gen_max_slider,
                         temperature_slider,
                         fact_check_checkbox,
                         retrieval_mode_select,
@@ -2062,9 +2343,10 @@ def create_ui():
                         llm_judge_checkbox,
                         chapter_mode_checkbox,
                         batch_size_slider,
-                        chapter_target_min_slider,
-                        chapter_target_max_slider,
+                        chapter_gen_min_slider,
+                        chapter_gen_max_slider,
                         chapter_llm_parse_checkbox,
+                        chapter_max_gate_retries_slider,
                     ],
                     outputs=[
                         output_text,
@@ -2172,7 +2454,7 @@ def create_ui():
 
                     在固定测试集 `{BENCHMARK_DATASET_PATH.name}` 上系统性地跑扩写生成。
 
-                    - **参数复用**：LLM / 模型 / 风格 / 字数 / 温度 / 检索模式 / 评估开关 / batch_size 等，
+                    - **参数复用**：LLM / 模型 / 风格 / **整篇目标生成字数** / 温度 / 检索模式 / 评估开关 / batch_size 等，
                       全部沿用「\U0001f4dd 生成历史背景」标签页当前的设置。
                     - **扩写文本**：每次都会生成（与评估开关无关）。
                     - **评估模块**：按主标签页当前勾选状态执行；未勾选的不跑。
@@ -2207,7 +2489,8 @@ def create_ui():
                         provider_select,
                         model_select,
                         style_select,
-                        length_bucket_select,
+                        total_gen_min_slider,
+                        total_gen_max_slider,
                         temperature_slider,
                         fact_check_checkbox,
                         retrieval_mode_select,
@@ -2245,11 +2528,11 @@ def create_ui():
                 | 提供商 | 环境变量 | 默认模型 |
                 |-------|----------|---------|
                 | Gemini | `GOOGLE_API_KEY` | gemini-2.5-flash |
-                | DeepSeek | `DEEPSEEK_API_KEY` | deepseek-chat |
+                | DeepSeek | `DEEPSEEK_API_KEY` | deepseek-chat / deepseek-v4-flash / deepseek-v4-pro |
                 | Qwen | `QWEN_API_KEY` | qwen-plus |
                 | 智谱GLM | `GLM_API_KEY` | glm-4.7-flash |
                 | OpenAI | `OPENAI_API_KEY` | gpt-4o / gpt-5（UI 可选） |
-                | 混元 | `HUNYUAN_API_KEY` | hunyuan-lite |
+                | 混元 | `HUNYUAN_API_KEY` | hy3-preview 等（OpenAI 兼容） |
 
                 **注意**：首次构建索引需要几分钟时间，会产生一定的 API 费用。
                 """)
@@ -2341,6 +2624,73 @@ _THEME = gr.themes.Soft(primary_hue="blue", secondary_hue="gray")
 _CSS = """
 .main-title { text-align: center; margin-bottom: 20px; }
 .output-box { min-height: 200px; }
+.output-box .loading-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  padding: 32px 20px 40px;
+  gap: 20px;
+  box-sizing: border-box;
+}
+.output-box .loading-dots {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.output-box .loading-dots span {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--primary-500, #3b82f6);
+  animation: graphragDotPulse 1.4s ease-in-out infinite;
+}
+.output-box .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+.output-box .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes graphragDotPulse {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}
+.output-box .loading-bar {
+  width: 80%;
+  max-width: 320px;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--neutral-200, #e5e7eb);
+}
+.output-box .loading-bar::after {
+  content: '';
+  display: block;
+  width: 38%;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(
+    90deg,
+    var(--primary-400, #60a5fa),
+    var(--primary-600, #2563eb)
+  );
+  animation: graphragBarSlide 1.35s ease-in-out infinite;
+}
+@keyframes graphragBarSlide {
+  0% { transform: translateX(-105%); }
+  100% { transform: translateX(320%); }
+}
+.output-box .loading-text {
+  font-size: 0.95rem;
+  color: var(--body-text-color-subdued, #6b7280);
+  text-align: center;
+  line-height: 1.65;
+  max-width: 36em;
+}
+.output-box .loading-text .loading-sub {
+  display: inline-block;
+  margin-top: 0.35em;
+  font-size: 0.9em;
+  font-weight: 500;
+  color: var(--body-text-color, #374151);
+}
 """
 
 if __name__ == "__main__":

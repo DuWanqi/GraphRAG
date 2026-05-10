@@ -1,5 +1,7 @@
 """
-按 UI length_bucket 将「全书生成目标字数」分配到各分段，并给出 length_hint 与 max_tokens。
+按分段为各章生成 length_hint 与 max_tokens。
+- 默认：`length_bucket` 档位 + 原文字长按比例扩展（脚本/兼容）。
+- 显式区间：`allocate_segment_budgets_uniform` / `chapter_gen_*`（Web/API 与用户目标一致）。
 """
 
 from __future__ import annotations
@@ -31,6 +33,28 @@ def _hint_from_target(low: int, high: int) -> str:
     low = max(50, int(low))
     high = max(low + 1, int(high))
     return f"{low}-{high}字"
+
+
+def segment_budget_from_char_range(gen_min: int, gen_max: int) -> SegmentBudget:
+    """按用户给定的生成字数区间构建单章预算（length_hint + max_tokens）。"""
+    lo = max(50, int(gen_min))
+    hi = max(lo + 1, int(gen_max))
+    hint = _hint_from_target(lo, hi)
+    center = (lo + hi) // 2
+    max_tokens = min(8000, max(256, int(hi * 2.2)))
+    return SegmentBudget(length_hint=hint, max_tokens=max_tokens, target_chars=center)
+
+
+def allocate_segment_budgets_uniform(
+    segments: List[MemoirSegment],
+    gen_min: int,
+    gen_max: int,
+) -> List[SegmentBudget]:
+    """分章模式：每章使用同一套生成目标区间（与用户 UI 一致）。"""
+    if not segments:
+        return []
+    one = segment_budget_from_char_range(gen_min, gen_max)
+    return [one for _ in segments]
 
 
 _BUCKET_EXPANSION: dict[str, float] = {

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from .chapter_budget import legacy_maps_for_single_segment
+from .chapter_budget import legacy_maps_for_single_segment, segment_budget_from_char_range
 
 
 def single_segment_generation_config(length_bucket: str) -> Dict[str, Any]:
@@ -18,6 +18,12 @@ def single_segment_generation_config(length_bucket: str) -> Dict[str, Any]:
         "length_hint": length_hint,
         "max_tokens": max_tokens,
     }
+
+
+def single_segment_generation_config_from_range(gen_min: int, gen_max: int) -> Dict[str, Any]:
+    """单段模式：由「目标生成字数」上下限直接得到 length_hint / max_tokens。"""
+    b = segment_budget_from_char_range(gen_min, gen_max)
+    return {"length_hint": b.length_hint, "max_tokens": b.max_tokens}
 
 
 def estimate_long_form_generation_timeout(chapter_count: int) -> float:

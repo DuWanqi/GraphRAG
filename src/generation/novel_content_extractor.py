@@ -112,6 +112,7 @@ class NovelContentBrief:
         """
         aligned_parts = []
         novel_parts = []
+        entity_names: List[str] = []
 
         # 对齐内容：已在原文中提及的实体
         if self.aligned_entities:
@@ -127,7 +128,6 @@ class NovelContentBrief:
             novel_parts.append("以下是检索到的、原文未提及的实体。你必须使用其中文名称（而非英文原名）融入叙事，不得添加其他实体。\n")
 
             # 先列出实体名称清单（中文化）
-            entity_names = []
             for e in self.novel_entities[:8]:
                 raw_name = e.get("name", e.get("title", ""))
                 raw_desc = e.get("description", "") or ""
@@ -200,13 +200,6 @@ class NovelContentBrief:
 
         aligned_ctx = "\n".join(aligned_parts) if aligned_parts else "（无）"
         novel_ctx = "\n".join(novel_parts) if novel_parts else "（无可用新知识）"
-
-        # #region agent log
-        import json as _json, pathlib as _pathlib, time as _time
-        _lp = _pathlib.Path("debug-5faba8.log")
-        with open(_lp, "a", encoding="utf-8") as _f:
-            _f.write(_json.dumps({"sessionId":"5faba8","location":"novel_content_extractor.py:format_for_prompt","message":"novel_ctx_stats","data":{"novel_ctx_len":len(novel_ctx),"novel_entity_count":len(self.novel_entities),"entity_names_in_prompt":entity_names if self.novel_entities else [],"novel_ctx_first_600":novel_ctx[:600]},"hypothesisId":"localize","timestamp":_time.time()},ensure_ascii=False)+"\n")
-        # #endregion
 
         return {
             "aligned_context": aligned_ctx,

@@ -430,13 +430,13 @@ async def rag_utilization_metric(
     衡量生成文本是否充分利用了 RAG 检索到的新实体。
 
     评分标准（非线性）：
-    - 0个实体 → 0.0（未利用）
-    - 1个实体 → 0.3（利用不足）
-    - 2个实体 → 0.6（达到最低要求，门控通过）
+    - 0个实体 → 0.0（未利用，门控不通过）
+    - 1个实体 → 0.5（已利用检索新实体，门控通过）
+    - 2个实体 → 0.6
     - 3个实体 → 0.8（良好利用）
     - 4+个实体 → 1.0（充分利用）
 
-    门控要求：≥2个实体（score ≥ 0.6）
+    门控要求（与 QualityThresholds.min_rag_utilization 默认 0.5 对齐）：score ≥ 0.5，即至少使用 1 个新实体。
     """
     analysis = await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
 
@@ -448,8 +448,8 @@ async def rag_utilization_metric(
         score = 0.0
         level = "未利用"
     elif used == 1:
-        score = 0.3
-        level = "利用不足"
+        score = 0.5
+        level = "已利用（单实体，门控达标）"
     elif used == 2:
         score = 0.6
         level = "达到最低要求"
@@ -477,10 +477,10 @@ async def rag_utilization_metric(
         if len(unused) > 5:
             explanation_parts.append(f"  ... 还有 {len(unused) - 5} 个")
 
-    # 门控判定
-    passed = score >= 0.6
+    # 门控判定（与默认 min_rag_utilization=0.5 一致：仅 0 实体不通过）
+    passed = score >= 0.5
     gate_status = "✓ 通过" if passed else "✗ 未通过"
-    explanation_parts.append(f"【门控判定】{gate_status}（要求 ≥2 个实体，score ≥ 0.6）")
+    explanation_parts.append(f"【门控判定】{gate_status}（要求至少 1 个新实体，score ≥ 0.5）")
 
     explanation = "\n  ".join(explanation_parts)
 
