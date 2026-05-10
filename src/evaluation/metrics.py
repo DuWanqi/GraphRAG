@@ -312,6 +312,7 @@ def _is_entity_mentioned(entity_name: str, text: str) -> bool:
     - 精确匹配
     - 部分匹配（实体的关键词）
     - 缩写匹配
+    - 中英文地名映射（如 SHENZHEN CITY ↔ 深圳）
     """
     if not entity_name or not text:
         return False
@@ -324,14 +325,34 @@ def _is_entity_mentioned(entity_name: str, text: str) -> bool:
     if entity_normalized in text_normalized:
         return True
 
-    # 2. 反向匹配：文本中的词是否是实体的一部分
+    # 2. 中英文地名映射匹配
+    from .novel_content_metrics import _EN_CN_LOCATION_MAP, _CN_EN_LOCATION_MAP
+    entity_lower = entity_name.lower().strip()
+    if entity_lower in _EN_CN_LOCATION_MAP:
+        cn_name = _EN_CN_LOCATION_MAP[entity_lower]
+        if cn_name in text:
+            return True
+    # 多词英文实体名：逐词查映射表
+    entity_words_en = re.findall(r'[a-zA-Z]+', entity_name.lower())
+    for word in entity_words_en:
+        if word in _EN_CN_LOCATION_MAP:
+            cn_name = _EN_CN_LOCATION_MAP[word]
+            if cn_name in text:
+                return True
+    if entity_name in _CN_EN_LOCATION_MAP:
+        en_variants = _CN_EN_LOCATION_MAP[entity_name]
+        for en in en_variants:
+            if en.upper() in text_normalized:
+                return True
+
+    # 3. 反向匹配：文本中的词是否是实体的一部分
     # 例如：实体="庚申年猴票"，文本包含"猴票" → 匹配
     entity_words = re.findall(r'[一-龥]{2,}', entity_name)
     for word in entity_words:
         if len(word) >= 2 and word in text:
             return True
 
-    # 3. 部分匹配（长实体 ≥4 字符）
+    # 4. 部分匹配（长实体 ≥4 字符）
     if len(entity_normalized) >= 4:
         if entity_normalized[:4] in text_normalized:
             return True

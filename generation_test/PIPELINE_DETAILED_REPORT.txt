@@ -53,56 +53,10 @@ Pipeline 详细测试报告
 【检索内容分类】
   ✓ 对齐实体 (原文已提到): 0 个
   ★ 新增实体 (原文未提到): 10 个
-  → 关系: 10 个
+  → 关系: 8 个
 
 【新增实体】(原文未提到，可用于扩展) - 共 10 个
-  1. 中国 (GEO)
-     The People's Republic of China, commonly known as China, is a vast East Asian nation situated on the western shore of the Pacific Ocean. As of 2019, it was the world's most populous country with approximately 1.4 billion people and ranks as the third or fourth-largest by land area, encompassing 9.6 million square kilometers. China boasts an extensive coastline exceeding 18,000 kilometers, with 4.73 million square kilometers of sea area and over 7,600 islands, including the largest, Taiwan Island. Beijing serves as its capital. The United States recognizes the People's Republic of China government as the sole legal government of China, and India was the first non-socialist country to establish diplomatic relations with the People's Republic of China.
-
-Administratively, China is divided into 23 provinces, 5 autonomous regions (including Inner Mongolia, Xinjiang, and Guangxi Zhuang), 4 municipalities, and 2 special administrative regions (Hong Kong and Macau). It shares borders with 14 countries and maritime borders with 8, with the Yalu River forming part of its border with North Korea. China is zoogeographically diverse, featuring regions like the Southwest, Northeast, North China, Mongolian-Xinjiang, Qinghai-Tibet, Central China, and South China. Notable locations include Sanjiangyuan National Park in the Qinghai-Tibet Plateau, Nianxun Ancient Town, Wuyi Mountain National Park, and the Liangzhu Ancient City ruins, home to China's earliest large-scale water conservancy system. A significant oil field with over 100 million tons of reserves has been discovered in the Bohai Sea.
-
-Led by the Chinese Communist Party (CCP), China has a rich and complex history marked by significant events such as the Liberation War (including the Huaihai Campaign), the "Great Leap Forward," the Cultural Revolution, and the "Boluan Fanzheng" work. Key political developments include the Third Plenary Session of the 11th Central Committee, which initiated reform and opening up. The National People's Congress is China's highest organ of state power, committed to socialist democratic politics, the "rule of law," and "Socialist Democracy" under the concept of "Socialism with Chinese Characteristics." This system involves the CCP leading a multi-party cooperation and political consultation system, where democratic parties participate in national governance. China practices a people's democratic dictatorship under the CCP's leadership, aiming to achieve socialist modernization from its primary stage of socialism.
-
-China possesses a well-developed legal framework, including laws such as the "中华人民共和国立法法," "PRC Resident Identity Card Law," and the "Civil Code." The Anti-Secession Law aims to prevent Taiwan's separation. Social welfare systems, including the housing provident fund, pension insurance, urban medical insurance, and work-related injury insurance, are implemented, alongside an elderly care service system. The country has also implemented an active fiscal policy, including state bond investments, to address economic challenges. China is a key region for the platform economy, where anti-monopoly guidelines and the "14th Five-Year Plan" have been released.
-
-Economically and socially, China has experienced rapid growth, becoming a socialist nation with a public ownership-based national economy. It is the geographic location for the existence and development of state-owned enterprises, and has implemented state-owned enterprise reforms and policies. Key initiatives include the development of Shanghai's Pudong New Area and the establishment of the Hainan Special Economic Zone. China's GDP surpassed 30 trillion yuan in 2008, 40 trillion yuan in 2010, and 50 trillion yuan, becoming the world's second-largest economy. Its foreign exchange reserves ranked first globally in 2011. China formally accessed the international internet on April 20, 1994, and joined the World Trade Organization (WTO) on December 11, 2001, as its 143rd member. The country implemented the "Universal Two-Child Policy" and the "Targeted Poverty Alleviation" strategy, successfully lifting all 832 national-level impoverished counties out of poverty. Major infrastructure projects include the Daqin Railway, Gezhouba Water Conservancy Project, and the South-to-North Water Diversion Project. China boasts the world's longest high-speed rail operating mileage, reaching 9356 kilometers in 2012. The "Belt and Road" initiative was proposed in 2013. China is committed to "高质量发展" (High-Quality Development) and building a socialist modern powerful country. The Yangtze River Delta regional integration development strategy was approved and implemented by the State Council, China's national administrative organ.
-
-In international affairs, China has been an active participant, involved in the Korean War, where its forces, alongside North Korea, repelled those led by Douglas MacArthur, and the Sino-Indian Border Self-Defense Counterattack. It established diplomatic relations with numerous countries, including the United States, Canada, and South Korea. China co-founded the Shanghai Cooperation Organization (SCO). It resumed sovereignty over Hong Kong in 1997 and Macau in 1999. China officially joined the Antarctic Treaty in 1983 and the Asia-Pacific Economic Cooperation (APEC) on November 12, 1991. China was a key facilitator in the resumption of diplomatic relations between Saudi Arabia and Iran, and hosted Mikhail Gorbachev's historical visit, leading to the normalization of Sino-Soviet relations, despite earlier deterioration due to the Soviet withdrawal of experts. China also sent a delegation to the United Nations Conference on the Human Environment.
-
-Militarily, China established the People's Liberation Army Strategic Support Force and developed advanced aircraft like the J-10, J-11B, J-15, and J-20 fighter jets, and the Yun-20 large transport aircraft. It has also developed the Liaoning aircraft carrier, missile nuclear submarines, and possesses secondary nuclear strike capability. The PLA Rocket Force is responsible for China's nuclear capabilities. China successfully launched its first short-range missile, the "Dongfeng-2A," and designed, manufactured, and successfully detonated its first hydrogen bomb. Anti-aircraft guns are also located in China. Qian Sanqiang made significant contributions to China's "two bombs and one satellite" program.
-
-China has made significant scientific and technological advancements. It became the fifth nuclear-armed state, detonating its first atomic bomb. It successfully launched its first sounding rocket and various satellites, including ocean and meteorological satellites, and became the third country in the world to master satellite recovery technology. China successfully launched the Chang'e-1 lunar probe and achieved the first successful lunar soft-landing and surface reconnaissance with the Chang'e-3 mission. China became the third country to independently master crewed spaceflight technology with Shenzhou 5 in 2003 and also independently built the China Space Station. It successfully launched the Shenzhou 6 and Shenzhou 7 manned spacecraft, becoming the third nation to master space extravehicular activity technology with its first spacewalk. China is steadily advancing the Beidou Satellite Navigation System. Following the successful launch of the Micius satellite, China's quantum technology is at the forefront of the world. China has also successfully developed large nuclear power equipment and supercomputers like Dawning 4000A. The "Dongfanghong I" satellite was launched by China, making it the fifth country after the Soviet Union, the United States, France, and Japan to independently develop and launch an artificial earth satellite. The "Spark Program" was also implemented in China.
-
-Culturally and infrastructurally, Chengdu Tianfu International Airport and the World Internet Conference permanent venue are located in China. The Spring Festival, listed as a UNESCO intangible cultural heritage, originated from China. China hosted numerous international events, including the 9th APEC Economic Leaders' Meeting, the 2010 Shanghai World Expo, the 2008 Summer Olympics and 13th Summer Paralympic Games in Beijing, the World Metallurgical Congress, the World Agricultural Congress, the World Mining Congress, the World Energy Congress, the World Environmental Congress, the World Petroleum Congress, the World Wushu Championships, the World Architecture Congress, and the World Summer Special Olympics, demonstrating its commitment to various global initiatives and the promotion of Chinese culture. China's sports delegation first participated in the Winter Olympics on February 13, 1980. Quality education is a discussed topic, and the first confirmed highly pathogenic avian influenza outbreak was reported here. China is also the setting for significant historical events like the "Movement War," including famous battles such as the Four Crossings of the Chishui River, Qinghuabian, and Yangmahe, as well as the three major campaigns of the Chinese Civil War. China is also the location where the initial cases of the Novel Coronavirus Infection (COVID-19) pandemic were recorded. The country is recognized for its long history of martial arts, being the setting for the film "Shaolin Temple," and has been the backdrop for other films such as "My Father and Mother," "Hero," and "Assembly." He Long, a key figure in China's revolutionary struggles, was born in Sangzhi, Hunan, China.
-  2. SHANGHAI (GEO)
-     Shanghai is a prominent city and municipality in China, strategically located within the Changjiang Delta Region. It holds significant historical and contemporary importance across various sectors.
-
-Historically, Shanghai has been a center for political and social events. The "January Storm" took place there, and it was the location where Jiang Qing was arrested and separated from the Communist Party organization. Citizens in Shanghai have also held gatherings and chanted slogans for political change. Several notable figures have strong ties to the city: Chen Yun was born in Qingpu, now part of Shanghai; Deng Hua passed away there on July 3, 1980; Jiang Zemin graduated from a university in Shanghai; Song Shilun died there in 1991, and the Shanghai Campaign took place in the city. Deng Yulin and Song Hegeng resided in Shanghai after their respective retirements. Shen Junru's activities, particularly his role at Shanghai Law School, also took place in the city. The Wen Hui Bao newspaper, where Yao Wenyuan's article was published and where he held various positions, is also located in Shanghai.
-
-Shanghai has also played a crucial role in China's economic and infrastructural development. It was one of the cities Deng Xiaoping visited during his Southern Tour Speeches and South China Inspection Tour from January 18 to February 21, 1992, highlighting its economic significance. The Shanghai Stock Exchange is also located in the city. In February 1991, Shanghai introduced the housing provident fund system, drawing on Singapore's experience. It was also one of the Chinese cities where direct shipping, direct air links, and direct postal services across the Taiwan Strait were launched and celebrated on December 15, 2008. On April 8, 2009, Shanghai was designated as a pilot city for cross-border trade RMB settlement. The city is also a major industrial hub, with the first Volkswagen Santana sedan assembled and rolled off the production line in China.
-
-Shanghai is a major hub for the aerospace industry, serving as a benchmark for Wuhan's future development. The ARJ21 large passenger aircraft was successfully developed in Shanghai, and a Boeing 737 MAX test plane flew around the city. The Fujian Ship completed its maiden sea trials there, and new types of destroyers were developed in Shanghai. The city is one end of the Beijing-Shanghai High-Speed Railway, where the Fuxing EMU debuted and later resumed high-speed operation. The second phase of the Qinghai–Xizang Railway began on June 29, 2001, with Shanghai mentioned as the location of an event related to this project.
-
-Furthermore, Shanghai is a prominent international city, having hosted several significant events. It hosted the APEC meeting in October 2001, the 2010 World Expo, and the Fourth Summit of the Conference on Interaction and Confidence-Building Measures in Asia. Shanghai was also designated as the headquarters for the BRICS New Development Bank. It is the first Chinese city and fifth Asian city to have its own edition of the Michelin Guide, with the 2017 edition officially released there. Sun Yat-sen and members of the National Assembly traveled from Shanghai to Guangzhou, and Cheng Bi Guang led the First Fleet from the city.
-  3. 中央 (ORGANIZATION)
-     The Central (中央), often referring to the central government or central leadership of China, and likely the Central Committee of the Communist Party of China, is the national governing body and highest authority in China, responsible for major policy decisions. It has demonstrated its commitment to economic development and reform by supporting the construction of the Hainan Free Trade Pilot Zone and exploring a free trade port with Chinese characteristics in 2018.
-
-Historically, the Central government has taken significant steps to address economic and social issues. In the mid-to-late 1980s, it recognized and acted upon the growing burden on farmers, leading to the gradual abolition of the agricultural tax. It also explicitly proposed the reform of the rural tax and fee system. During periods of economic instability, the Central government initiated efforts such as the "rice and cotton war" to combat speculation and control commodity prices, particularly in Shanghai, making key decisions for economic stabilization.
-
-Furthermore, the Central government has been instrumental in systemic reforms. The Tax-Sharing Fiscal System Reform redefined its financial powers and responsibilities, establishing a system of tax refunds to local governments. It has also shown a commitment to addressing social concerns, gradually adjusting policies to allow educated youth to return to cities and be assigned jobs in response to the "万名知青返城潮" event. The Central government has also issued instructions for nationwide large-scale rectification and rehabilitation work and demonstrated its determination to fight corruption through investigations like the Xiamen Yuanhua Smuggling Case. Notably, it made the decision for military, armed police, and political and legal organs to cease commercial activities, underscoring its role in comprehensive policy-making.
-  4. BEIJING (GEO)
-     Beijing (also referred to as "首都," meaning "capital," and "北京市") is the capital city of China, a major hub for various significant events, and a prominent center for industry and development. It is located near the Xiong'an New Area and serves as a key terminus for both the Beijing-Shanghai High-Speed Railway, where the Fuxing EMU debuted, and the Jingguang High-speed Railway. Beijing is also the starting point of the Beijing-Kowloon Railway.
-
-Historically, Beijing has been the site of numerous pivotal moments. Millions gathered on "十里长街" (Ten-Mile Long Street) to mourn Zhou Enlai's passing, and it was where the first KFC restaurant in mainland China opened. The Beijing Subway Line 1 officially began operations here. The city hosted the Seventh National People's Congress First Session and later passed the 1982 Constitution during the Fifth National People's Congress. Key political events include Deng Xiaoping's speech at the enlarged meeting of the Central Political Bureau in August 1980, the proposal of the "Four Cardinal Principles," Chen Yun's proposal to "activate the economy" in 1980, and Jiang Zemin's announcement regarding military reduction. The city was also the location of the 13th CPC Central Committee Fourth Plenary Session, the Tenth National People's Congress First Session, and the 10th Central Committee of the Communist Party of China's third plenary session. Beijing was central to the Cultural Revolution, with activities involving rebel leaders at Beijing Normal University and the deployment of the Workers' Mao Zedong Thought Propaganda Team to universities like Tsinghua University in 1968. A political disturbance and "counter-revolutionary riots" occurred in the spring and summer of 1989. The commemorative symposium for Hua Guofeng's 100th birth anniversary was held at the Great Hall of the People.
-
-Beijing is a significant location for international relations, hosting the APEC meetings in 2014 and the 22nd APEC Economic Leaders' Meeting, where Xi Jinping hosted the Dialogue on Strengthening Interconnected Partnerships. It was where the first (August 2003) and fourth (September 2005) rounds of Six-Party Talks on the North Korean Nuclear Issue were held. Bilateral agreements between China and the United States were signed here, as were the Joint Declaration and the Sino-Portuguese Joint Declaration on the Question of Macao in 1987. Beijing also hosted the Forum on China-Africa Cooperation Beijing Summit and was one of the cities where direct shipping, air links, and postal services across the Taiwan Strait were launched in 2008.
-
-In terms of scientific and technological advancements, Beijing is where the "111 Machine" was successfully developed in 1970, where large chemical equipment was successfully developed in 2011, and where the 863 Plan events took place. Tu Youyou began her work on the "523 Mission" in January 1969, and her team successfully extracted high-purity artemisinin here. Chen Jingrun made and published his proof in Beijing. The city is a major hub for the aerospace industry, with information about the COMAC C919 published, the ARJ21-700 aircraft type certificate issuance ceremony held, and its relevance to the Shenzhou XVI mission. The New Technology Industrial Development Experimental Zone and the "专精特新" (specialized and new) special board launched in August 2023 are also in Beijing.
-
-Beijing has hosted major sporting events, including the Asian Games, and was a location for the torch lighting ceremony of the 2010 Guangzhou Asian Games at the Juyongguan Great Wall. It applied for and was announced as the host city for the 2022 Winter Olympics. Zhu Jianhua broke a world record in Beijing. The city experienced severe weather, including continuous heavy rainfall due to Typhoon Dukesuri and major rainstorms and flooding on July 29, 2025, resulting in casualties. It was also affected by the SARS epidemic after its spread from Guangdong.
-
-Other notable facts include the founding of Baidu Company, the establishment of the State Council Information Office, the broadcasting start of CCTV-13, and the inclusion of the housing provident fund system in housing reform plans in 1992. Beijing has also been the setting for various cultural and social events, such as Chinese actress Yao Chen's participation in a UNHCR event on World Refugee Day. Sadly, numerous notable figures passed away in Beijing, including Zhou Enlai, Li Shengjiao, Wang Guozhen, Xiaolin, Hou Baolin, Marshal He Long, Han Xianchu, Liu Juying, Fu Chongbi, Kang Sheng, Jiang Qing, Wan Li, Wang Hongwen, and Xie Fuzhi. Beijing is also the location of Tiananmen Square, where a suicide terrorist attack occurred in 2013, and Beijing Xiaotangshan Hospital.
-  5. 美国 (GEO)
+  1. 美国 (GEO)
      The United States of America (美国), also known as the USA, is a federal constitutional republic located primarily in central North America, with a population of 320 million people. Its main body consists of Washington D.C., 50 states, and overseas territories like Guam. English is its official language. The US is a nation of immigrants, historically established by European colonists, gaining independence through the Revolutionary War. After the two World Wars, the US's national strength greatly increased, making it the world's sole superpower, leading globally in politics, economy, military, culture, innovation, higher education, and scientific research. It is known for its sound legal system, healthy living environment, and top educational resources. Its total area was recorded as 9,372,610 km² between 1989 and 1996, and later revised to 9.63 million km² in 1997, which includes its share of the Great Lakes and coastal waters.
 
 Throughout its history, the United States has been involved in numerous significant events and developments. In terms of space exploration, it is associated with pioneering missions like Apollo 8, 11, 12, 13, and 17, achieving lunar sample return and launching probes such as Pioneer 10, Voyager 1 and 2, and Mars Pathfinder. It also successfully launched the Telstar 1 satellite and is the country of origin for astronauts like John Glenn and Alan Shepard. NASA is based in Florida.
@@ -112,161 +66,151 @@ On the international stage, the US has played a prominent role in global conflic
 In its relations with China, the US has experienced periods of both confrontation and cooperation. It was accused of attempting to create "two Chinas," which the Shelling of Kinmen aimed to counter. However, in 1971, Ping-Pong Diplomacy began to normalize relations, leading to the signing of the Shanghai Communiqué. The US also held 25 rounds of market access negotiations with China, resulting in a landmark agreement in 1999 as part of China's WTO accession, and granted most-favored-nation treatment to China. In 1993, the US unjustly accused the Chinese cargo ship "Yinhe" of carrying chemical weapons. The US signed the August 17th Communiqué with China concerning arms sales to Taiwan and reiterated its commitment to a constructive strategic partnership with China during Bill Clinton's presidency. An official agreement for sending students was signed between China and the US in 1979, and the US was the destination for the first large-scale government-sponsored study abroad program from modern China in 1872.
 
 Domestically, the US has been the site of numerous historical and cultural events. Its presidents have included Richard Nixon, George H.W. Bush, Bill Clinton, George W. Bush, Barack Obama, and Donald Trump. Major political events include the Watergate incident in Washington D.C., the 2000 presidential election controversy in Florida, and the Roe v. Wade decision by the Supreme Court. The US has experienced significant natural disasters like the Mount St. Helens eruption in Washington, the Exxon Valdez oil spill in Alaska, the Gulf of Mexico oil spill, and Hurricane Katrina. Notable social and cultural events include the Watts Riots in Los Angeles, the Kent State University shooting, the Woodstock Music & Art Fair in New York State, the "British Invasion" music craze, the release of "Pong," "Sesame Street," "The Simpsons," "Star Wars" films, "West Side Story," and "Superman." It is also the location where Moore's Law was proposed, Java was officially released, and the Internet was commercialized. The US hosted the 1994 FIFA World Cup in Los Angeles, the 1996 Atlanta Olympics, and the 13th Winter Olympics in Lake Placid in 1980. Significant tragedies include the New York World Trade Center bombings, the Oklahoma City bombing, and the September 11th attacks, which led to the formation of the Department of Homeland Security. The US was also affected by the Northeast Blackout and the Subprime Mortgage Crisis in 2007. The Three Mile Island Nuclear Power Plant is located in the US. The US received giant pandas from the Chinese government, which arrived at the Washington National Zoo. It is the country where the National Institutes of Health (NIH) is located and where the first successful human gene therapy was performed. The Walt Disney World Resort is located in the US, and McDonald's launched the "Happy Meal" globally from there. The US is also where the Prism program was operated, involving former CIA employee Edward Snowden.
-  6. 刘少奇 (PERSON)
-     Liu Shaoqi (November 24, 1898 – November 12, 1969) was a great Marxist, proletarian revolutionary, politician, and theorist, and one of the main leaders of the party and the state. He was a founding father of the People's Republic of China and an important member of the first generation of the Party's central leadership collective with Comrade Mao Zedong at its core. He made outstanding contributions to China's revolution and construction, and was deeply loved by the entire party, army, and people of all ethnic groups.
+  2. DENG XIAOPING (PERSON)
+     Deng Xiaoping (August 22, 1904 – February 19, 1997), born Deng Xiansheng and later Deng Xixian, was a prominent Chinese leader and a founding father of the People's Republic of China, hailing from Guang'an, Sichuan. A great Marxist, proletarian revolutionary, politician, military strategist, and diplomat, he was a long-tested communist fighter and a great internationalist who significantly contributed to world peace and development.
 
-He was a prominent political figure in China and a party and state leader who attended the "Tenth Anniversary Celebration of the Founding of the People's Republic of China." He was elected Vice Chairman of the Central Committee at the Eighth Plenary Session of the Central Committee of the Communist Party of China. Liu Shaoqi was a key leader who was part of the presidium that presided over meetings. He was also elected Chairman of the People's Republic of China during the Second National People's Congress First Session. Liu Shaoqi served as the second President of the People's Republic of China.
+Deng Xiaoping was the core of the Party's second-generation central leadership collective and the chief architect of China's socialist reform and opening up and modernization drive. He pioneered the path of socialism with Chinese characteristics and was the main founder of Deng Xiaoping Theory, which was enshrined in the Party Constitution as a guiding ideology alongside Marxism-Leninism and Mao Zedong Thought. His theories and important talks, compiled in 《邓小平文选》, provided theoretical guidance for reform and opening up, emphasizing the need to liberate thought and seek truth from facts.
 
-Liu Shaoqi was a target of Mao Zedong's "Bombard the Headquarters" poster and was erroneously expelled from the Communist Party during the 12th Plenary Session of its 8th Central Committee. He was the subject of an unjust case, which was rectified on February 23, 1980. He died in Kaifeng, Henan province, on November 12, 1969, as a result of persecution during the Cultural Revolution. Liu Shaoqi's unjust case was officially rehabilitated and his reputation restored by the Fifth Plenary Session of the Eleventh Central Committee of the Communist Party of China.
-  7. 林彪 (PERSON)
-     林彪 (Lin Biao) was a prominent Chinese military officer, politician, and a Marshal of the People's Republic of China (1955), born on December 5, 1907, and dying on September 13, 1971. His original name was Lin Zuoda, with the courtesy name Yangchun and the artistic name Yurong, and he also used aliases such as Yurong, Yurong, Youyong, and Li Jin.
+His early life included work-study programs in Europe before dedicating himself to the revolutionary struggle led by the Communist Party. He held important leadership positions in the Party and the army during the Agrarian Revolution, Anti-Japanese War, and Liberation War, and was a commander, along with Liu Bocheng, of the Liu Deng Army.
 
-Lin Biao joined the Chinese Communist Party in 1925. During the Jinggangshan period, he served as a battalion commander, regimental commander, army commander, and corps commander. During the Second Sino-Japanese War, he was the commander of the 115th Division of the Eighth Route Army. In the Chinese Civil War, he led the Northeast Liberation Army (also known as the Northeast Field Army) as its commander, launching attacks starting September 12, 1948, and commanding major campaigns such as the Liaoshen Campaign and the Pingjin Campaign.
+Deng Xiaoping experienced multiple political comebacks, with his third affirmed on July 16, 1977, when he was restored to key positions within the Chinese Communist Party and the government. With Mao Zedong's support, he began to comprehensively manage the daily work of the CPC Central Committee and the State Council, rectifying chaotic situations. At the Theoretical Work Symposium of the Party, he first proposed the "Four Cardinal Principles."
 
-After the founding of the People's Republic of China, Lin Biao held various high-ranking positions, including Vice Chairman of the National Defense Commission, Minister of National Defense, and Vice Chairman of the Central Military Commission. He was also the recipient of Mao Zedong's "May 7th Directive" and was designated as Mao's successor by the Ninth National Congress of the Chinese Communist Party.
+He delivered a key speech titled "Emancipate the Mind, Seek Truth from Facts, and Unite as One to Look Forward" before the Third Plenary Session of the 11th CPC Central Committee. On August 18, 1980, he proposed reforms to the party and state leadership system, advocating for the abolition of lifelong tenure for cadres.
 
-However, during the "Cultural Revolution," Lin Biao became a central and controversial figure. He was opposed by critics during the "February Adverse Current" and was a prominent target of criticism in the "Criticize Lin Biao, Criticize Confucius" political movement, as evidenced by materials such as "Lin Biao and the Doctrine of Confucius and Mencius." He was accused of forming an anti-Party group, premeditatedly slandering and persecuting Party and state leaders, and attempting to usurp the highest power of the Party and the state.
+Deng Xiaoping's "reform and opening up" policies and "one country, two systems" changed China and influenced the world, earning him "Person of the Year" by Time Magazine in 1978 and 1985. He made a historic visit to the United States on January 28, 1979. He defined "Xiaokang" (Chinese-style modernization) as achieving a relatively lower per capita GNP by the end of the century, aiming for $800 by 1984. He affirmed special economic zone policies during his inspection of Southern Economic Special Zones in 1984 and advocated for housing commercialization in April 1980. On October 1, 1983, he provided the general guideline for China's education reform.
 
-Lin Biao was the father of Lin Liguo and the leader of the Lin Biao Counter-revolutionary Group. He was one of the principal defendants in the trial of the Lin Biao and Jiang Qing Counter-revolutionary Group. He is the central figure in the "September 13th Incident" (九·一三事件). On September 13, 1971, he, along with his parents and son Lin Liguo, attempted to flee China by plane in the early hours of the morning. His plane crashed near Undurkhan, Mongolia, on September 13, 1971, leading to his death. Lin Biao is also a character in the 1980 stage play "九·一三事件".
-  8. CHINA (GEO)
-     China, officially known as the People's Republic of China, is a country in East Asia and the world's most populous nation. It is a significant engine for global economic growth, with its GDP exceeding 18 trillion yuan in 2005 and 20 trillion yuan in 2006, and its foreign exchange reserves reaching over 3.3 trillion US dollars in 2012, ranking first globally. China has a rich history of administration and political divisions, with claims of sovereignty over the Taiwan Strait, and the "New China" was established after 1949.
+In his Southern Tour Speeches from January 18 to February 21, 1992, he put forward assertions like "development is the hard truth" and "market economy does not equal capitalism," accelerating reform and opening up into a new stage. He emphasized that the distinction between capitalism and socialism is not about planning or market.
 
-Economically, China has undergone significant reforms and opening-up, following a 21-year trade embargo by the United States that ended in 1971. It has implemented policies like the housing monetization system within a socialist market economy, and the rural collective economy and urban collective economy are important parts of its socialist public ownership. China implemented an active fiscal policy in 1998 to counter the Asian financial crisis and insufficient domestic demand. It launched a pilot rural tax and fee reform program in 2004 to gradually abolish agricultural taxes and reduce farmers' burdens. The concept of "财政" (finance) is widely discussed, and the country is home to major financial markets like the A-share market, Shanghai, and Shenzhen stock markets, with the "real estate fever" being a notable phenomenon since the 1990s. The "Sanlai Yibu" business model originated here, and private enterprises contribute significantly to its economy.
+On June 9, 1989, he met with martial law troops, discussed the political disturbance, and emphasized the correctness of the basic line and policies. He also met with Mikhail Gorbachev, emphasizing strong leadership, and discussed reform, anti-corruption, and foreign policy with Lee Tsung-dao and Richard Nixon, and agricultural reform with Jiang Zemin. He later resigned as Chairman of the Central Military Commission.
 
-China has made significant advancements in science and technology, exemplified by its space program with missions like Chang'e-1, Chang'e 2, Shenzhou 6, Shenzhou VII, and Shenzhou-15, making it one of the few countries with deep-space exploration capabilities. It has independently developed the J-10 fighter jet, the Fuxing electric multiple unit, new types of destroyers, and the C919 aircraft. The "863 Plan" greatly promoted high-tech development. The Qinshan Nuclear Power Plant, China's first self-designed, built, and operated nuclear power plant, is located here. China is also at the forefront of AI technology with the release of the DeepSeek-R1 model and the China National GeneBank. The country is a nation that promotes the research, development, and application of first-of-its-kind technical equipment through policy. The concept of "energy saving and emission reduction" is also a focus.
+Deng Xiaoping passed away on February 19, 1997, at the age of 93. His ashes were scattered into the South China Sea according to his last wishes. His legacy continues to inspire the Chinese people.
+  3. 中国女排 (ORGANIZATION)
+     The Chinese Women's Volleyball Team (中国女排) is a national volleyball team from China renowned for its exceptional achievements and its embodiment of the "女排精神" (Women's Volleyball Spirit). The team's glorious era began in 1981 when they secured their first world championship. This victory marked the beginning of a historic "five consecutive championships" streak, a feat they completed by winning the World Championship in 1986, making them the first team in world volleyball history to achieve such a milestone.
 
-China is a prominent player in international relations, being a founding member of BRICS and joining APEC in November 1991. It has played a key mediating role in the Six-Party Talks on the North Korean Nuclear Issue and has actively participated in UN peacekeeping operations since 1990. Zhang Gaoli signed the Paris Agreement on behalf of China.
+During this period, the Chinese Women's Volleyball Team also successfully defended the World Cup championship with a perfect record of seven wins, contributing to what was described as "four consecutive championships" in world major competitions. Their dominance extended to the Olympic stage, where they won an Olympic gold medal, achieving a "three-peat" in major competitions by defeating the United States in the Los Angeles Olympics final. These historical achievements in the 1980s are directly associated with the development and embodiment of the "女排精神."
+  4. 经济特区 (ORGANIZATION)
+     "经济特区," or Economic Special Zones, are distinct regions within China that implement a unique set of preferential policies and measures, sharing similarities with Economic and Technological Development Zones. Initially conceived as "Export Special Zones" by Deng Xiaoping in April 1979, the concept was renamed in March 1980 and first implemented in Shenzhen.
 
-Domestically, China has implemented anti-corruption efforts, including the "反腐倡廉" (anti-corruption and clean governance) movement and the "Sweep Away Gang Crime" campaign. It has also undertaken political system reforms in several stages since the 1980s. The country has faced various challenges, including the SARS outbreak in 2002 and the COVID-19 pandemic, which saw a transition to 'Category B Management' in January 2023. China is also the location where the Rural Revitalization Strategy was proposed and is being implemented. The term "政绩" (zhèng jì) is widely used and understood in China, and the concept of "上层建筑" (superstructure) is discussed in its context.
+These zones function as a significant type of world free port area, leveraging various incentives to foster economic and technological advancement within China. Key preferential measures include tariff reductions, the creation of a favorable investment environment, and the active encouragement of foreign investment. The primary objectives are to introduce advanced technology and scientific management practices from abroad, thereby stimulating the host country's economic and technological development.
 
-Culturally and historically, China is the origin of the idiom "拨乱反正" and the management concept "Zhua Da Fang Xiao." It is where the animation series "Hulu Brothers" was broadcast and where the term "paper tiger" gained significant popularity through Chairman Mao Zedong. Historical defensive tactics and structures developed and were implemented from the Xia Dynasty to the Ming Dynasty. The "Spirit of Flood Resistance" emerged from the 1998 flood disaster. The lawyer system is discussed and implemented, with a focus on strengthening the legal profession and rule of law by the Chinese Communist Party and President Xi Jinping. China successfully hosted the 26th Summer Universiade in Shenzhen and the G20 Hangzhou Summit. The Beijing-Kowloon Railway and the Three Gorges Hydropower Complex are significant infrastructure projects. The country also established the Ningxia Hui Autonomous Region and the Xinjiang Uyghur Autonomous Region, implementing ethnic regional autonomy.
-  9. 瑞士 (GEO)
-     Switzerland is a European country renowned for its long-standing policy of permanent neutrality, which it maintained for an extended period before officially joining the United Nations as its 190th member state on September 10, 2002. Despite its European location, Switzerland was accepted as a new member of the Asia-Europe Meeting during its ninth summit in 2012.
+Economic Special Zones operate under special economic policies, flexible economic measures, and unique economic management systems, with an overarching goal of export-oriented economic development. Their emergence in the late 1970s and early 1980s marked a crucial phase in China's reform and opening-up policy, experiencing substantial growth throughout the 1990s.
 
-Switzerland has played a significant role in international affairs and organizations. It was through Switzerland that Japan initially sent its conditional surrender request to the Allies. The country is home to Geneva, a city that has hosted notable events such as the Geneva Conference and a US-Soviet summit. Geneva is also where the World Health Organization made an important announcement. Furthermore, Switzerland is the geographical location where the World Wide Fund for Nature (WWF) was founded.
+There are currently seven Economic Special Zones in mainland China. The first four were established in July 1979 in Shenzhen, Zhuhai, and Shantou (all in Guangdong Province), and Xiamen (Fujian Province), and were officially renamed Economic Special Zones in May 1980. The Hainan Economic Special Zone was subsequently established in April 1988. Following 1992, the model's success led to its expansion to national-level new areas, such as Shanghai Pudong, signifying a new wave of reforms in China.
+  5. 中共中央、国务院 (ORGANIZATION)
+     The Central Committee of the Communist Party of China and the State Council are prominent governing bodies in China, responsible for jointly issuing significant policies and plans across various sectors. Their historical actions include the approval of the trial establishment of Export Special Zones in Shenzhen, Zhuhai, Shantou, and Xiamen in July 1979, which were subsequently renamed Economic Special Zones in May 1980. More recently, "中共中央、国务院" have continued to shape national development through a series of joint pronouncements. These include the "Several Opinions on Deepening Reform and Regulating Development of Preschool Education" issued on November 7, 2018, and the "Outline Development Plan for the Guangdong-Hong Kong-Macao Greater Bay Area" on February 18, 2019. Furthermore, on June 1, 2020, they jointly issued the "Overall Plan for the Construction of Hainan Free Trade Port." Looking ahead, their commitment to rural development is evident in the "Opinions on firmly anchoring agricultural and rural modernization and solidly promoting comprehensive rural revitalization," which was issued on February 3, 2026. This demonstrates their ongoing role in steering China's economic, social, and educational reforms and development.
+  6. SHENZHEN CITY (GEO)
+     Shenzhen City, also known as "Shen" or "Pengcheng," is a prefecture-level city, sub-provincial city, and state-planned city under the jurisdiction of Guangdong Province. It is a megacity and the core city of the Shenzhen metropolitan area, located in the southern part of Guangdong Province, on the eastern bank of the Pearl River Estuary. It borders Dapeng Bay and Daya Bay to the east, the Pearl River Estuary and Lingdingyang to the west, Hong Kong Special Administrative Region to the south, and Dongguan City and Huizhou City to the north. Its total area is 1997.47 square kilometers. As of the end of 2025, it has 9 municipal districts under its jurisdiction. Mandarin is the main language of communication, with Cantonese and English also spoken. As of the end of 2024, its permanent population was 17.9895 million. Shenzhen's terrain is mainly hilly, with a subtropical monsoon climate, long summers, short winters, and abundant rainfall. Shenzhen has a 7,000-year history of human activity and a 1,700-year history of city establishment. Its predecessor was Bao'an County. During the Ming and Qing dynasties, the main part belonged to Xin'an County of Guangzhou Prefecture. Before its establishment as a city, it belonged to Huizhou Prefecture. The name Shenzhen first appeared in historical records in the eighth year of Yongle in the Ming Dynasty (1410). In March 1979, Bao'an County was renamed Shenzhen City, under the dual leadership of Guangdong Province and Huizhou Prefecture, and in November, it was directly under the leadership of Guangdong Province. On August 26, 1980, Shenzhen established the Shenzhen Special Economic Zone. Shenzhen is one of the key hometowns for overseas Chinese in Guangdong Province, one of the important old revolutionary bases, and one of the birthplaces of the Dongjiang Column during the Anti-Japanese War. Shenzhen is an economic special zone approved by the State Council, a national innovative city, a modern marine city, an international comprehensive transportation hub city, a national economic center, a national advanced manufacturing base, a gateway for opening up, an important carrying place for an international science and technology innovation center, and a pilot demonstration zone for socialism with Chinese characteristics. Shenzhen is a window of China's reform and opening up and an emerging immigrant city, creating the world-renowned "Shenzhen speed" and known as "China's Silicon Valley." It is also a national logistics hub and one of China's three major national financial centers. In 2025, Shenzhen's GDP reached 38731.80 billion yuan, a year-on-year increase of 5.5% at constant prices
+  7. 中华人民共和国刑法 (EVENT)
+     The Criminal Law of the People's Republic of China is a law formulated to punish crimes and protect the people, based on the Constitution and China's specific experience and actual situation in combating crimes. It was adopted on July 1, 1979, by the Second Session of the Fifth National People's Congress and came into force on January 1, 1980 (referred to as the "1979 Old Criminal Law," now superseded). It was revised on March 14, 1997, by the Fifth Session of the Eighth National People's Congress; promulgated by Decree No. 83 of the President of the People's Republic of China on March 14, 1997; and came into force on October 1, 1997 (referred to as the "1997 Criminal Law," i.e., the current Criminal Law). It has since undergone twelve amendments, the latest being the "Amendment (XII) to the Criminal Law of the People's Republic of China," adopted on December 29, 2023, by the Seventh Session of the Standing Committee of the Fourteenth National People's Congress, and came into force on March 1, 2024. On December 29, 1998, the Sixth Session of the Standing Committee of the Ninth National People's Congress adopted the "Decision on Punishing Crimes of Fraudulent Purchase of Foreign Exchange, Evasion of Foreign Exchange, and Illegal Trading of Foreign Exchange," which came into force on December 29, 1998, establishing the crime of fraudulent purchase of foreign exchange (referred to as "Single Criminal Law"). The current "1997 Criminal Law" and its twelve amendments, as well as the "Decision on Punishing Crimes of Fraudulent Purchase of Foreign Exchange, Evasion of Foreign Exchange, and Illegal Trading of Foreign Exchange," together stipulate 483 crimes. It prescribes five principal penalties: death penalty, life imprisonment, fixed-term imprisonment, criminal detention, and public surveillance, as well as four supplementary penalties: fines, deprivation of political rights, confiscation of property, and deportation (applicable only to foreign criminals).)<
+  8. 三步走发展战略 (EVENT)
+     The "Three-Step Development Strategy" is China's modernization development strategy, initially proposed by Deng Xiaoping in 1979 and formally deployed by the 13th National Congress of the Communist Party of China in October 1987. It aims to achieve specific economic and living standards goals in three phases: doubling GNP by the late 1980s to solve basic needs, doubling GNP again by the end of the 20th century for a comfortable standard of living, and reaching the level of moderately developed countries by the mid-21st century with affluent living and basic modernization.
+  9. TRIAL OF LIN BIAO AND JIANG QING GROUPS (EVENT)
+     A public trial held by the Supreme People's Court Special Tribunal from November 20, 1980, to January 25, 1981, against 10 principal culprits from the Lin Biao and Jiang Qing counter-revolutionary groups.
+  10. SUPREME PEOPLE'S COURT SPECIAL TRIBUNAL (ORGANIZATION)
+     The judicial body that legally tried 10 principal culprits from the Lin Biao and Jiang Qing counter-revolutionary groups from November 20, 1980, to January 25, 1981.
 
-Beyond its diplomatic significance, Switzerland is also recognized for Davos, a town where the European Management Forum was founded. In terms of technological advancements, Switzerland is noted for its adoption of "Ahead" submunition technology in its twin 35mm anti-aircraft guns after the 1980s. The country also holds cultural significance, being the place where Charlie Chaplin passed away in Vevey.
-  10. 津巴布韦 (GEO)
-     津巴布韦是一个南部非洲国家，其前身为罗得西亚。该国于1980年4月18日正式独立并更名为津巴布韦共和国。
-
-【关系】(共 10 个)
-  1. 恢复高考制度 → 中国
-     The event of restoring the Gaokao system took place in China.
-  2. 发现脉冲星 → 剑桥大学
-     Researchers from Cambridge University were responsible for the discovery of the pulsar.
-  3. 肯特州立大学枪击事件 → 肯特州立大学
-     The Kent State University shooting event took place at Kent State University.
-  4. 肯特州立大学枪击事件 → 美国国民警卫队
-     The U.S. National Guard was involved in the Kent State University shooting by opening fire on students.
-  5. 肯特州立大学枪击事件 → 越战
-     The Kent State University shooting was triggered by student protests against the expansion of the Vietnam War.
-  6. 乔斯林·贝尔 → 剑桥大学
-     Jocelyn Bell was a graduate student at Cambridge University at the time of the discovery.
-  7. 肯特州立大学枪击事件 → 美国
-     The Kent State University shooting occurred in the United States.
-  8. 肯特州立大学枪击事件 → 俄亥俄州
-     The Kent State University shooting occurred in Ohio.
-  9. 肯特州立大学 → 俄亥俄州
-     Kent State University is located in Ohio.
-  10. 安东尼·休伊什 → 剑桥大学
-     Antony Hewish was a supervisor/professor at Cambridge University at the time of the discovery.
+【关系】(共 8 个)
+  1. 新《婚姻法》 → 1980年9月10日
+     The New Marriage Law was promulgated on September 10, 1980.
+  2. RONALD REAGAN → 1980 US PRESIDENTIAL ELECTION
+     Ronald Reagan was the winner of the 1980 US Presidential Election.
+  3. CARTER → 1980 US PRESIDENTIAL ELECTION
+     Carter was a participant and the losing candidate in the 1980 US Presidential Election.
+  4. 1980 US PRESIDENTIAL ELECTION → UNITED STATES
+     The 1980 US Presidential Election took place in the United States.
+  5. 星球大战2：帝国反击战 → 美国
+     《星球大战2：帝国反击战》于1980年5月21日在美国上映。
+  6. 波兰团结工会 → 1980年8月31日
+     波兰团结工会 was established and legalized on August 31, 1980
+  7. 第一代移动通信网 → 1980S
+     The First Generation Mobile Communication Network (1G) began commercialization in the 1980s
+  8. 李雪健 → 九·一三事件
+     Li Xuejian starred in the 1980 stage play titled "九·一三事件".
 ----------------------------------------------------------------------------------------------------
 
 >>> 生成内容:
 ----------------------------------------------------------------------------------------------------
-父亲拿着那张薄薄的录取通知书，像是握住了什么珍贵的宝贝。他的手一直在抖，嘴角紧抿着，却怎么也掩饰不住那一双被眼泪模糊的眼睛。他一遍遍低声念着我的名字和学校的名字，像是在确认这不是一场梦。母亲站在一旁，肩头微微颤动，眼眶红得像刚剥开的石榴籽，但她没有说话，只是用围裙擦了擦眼角。我站在他们中间，心跳快得像要跳出胸膛。
+父亲的脚步声在院子里来回踱着，鞋底摩擦地面的声音透过木窗传进屋内。他一夜未眠，我从微微开启的门缝中看到他手里捏着那张大学录取通知书，指尖略显颤抖，像是在抚摸什么珍宝。母亲坐在灶台边，眼眶红肿，脸上却带着笑，仿佛这份喜讯冲淡了她多年来操劳的疲惫。
 
-那是1980年，恢复高考后的第三年。这个夏天，中国大地上的每一寸空气似乎都弥漫着某种新生的气息。父亲早几年还常提起“文化大革命”时的混乱，他说，那时候读书人没了用处，学校也变得不像学校。我听着这些话，心里总有些沉闷，可现在，这张通知书好像成了一个符号，一个宣告，一个属于我们这个时代的希望。
+那是1980年，中国恢复高考的第三年。街坊邻里听说我考上了大学，纷纷过来恭喜。有人感叹：“这可是祖坟冒青烟了，咱村终于出个大学生！”我站在门口，心里既兴奋又有点局促，低头看着自己洗得发白的布鞋，脚趾头微微蜷着。在那个年代，考上大学不仅是个人的荣耀，更像是整个家庭乃至村庄迈向新生活的一道光。
 
-开学那天，村里的邻居们都跑来看我出发。阿婆塞给我一把煮得喷香的花生，说路上饿了吃，阿叔拍了拍我的肩膀，笑着说：“好好读书，将来别忘了咱们这穷地方。”我背着简单的行李，一步步走出村口，耳边还能听见母亲的叮嘱，混着村里鸡鸣狗吠的声音，像一首离别的歌。
+开学那天，天刚蒙蒙亮，父亲就挑着箩筐送我去车站。箩筐里装着几件简单的衣物和母亲熬了整晚做的腌菜。我背着行李，走上长途车时，父亲的身影显得那么瘦削，像是被晨雾吞没了一半。他没有多说话，只是用力拍了拍我的肩膀。我知道，那是他不善言辞的叮嘱。
 
-到了学校，迎面扑来的，是一种从未体验过的景象。校园里到处是年轻的面孔，拎着行李箱或麻布包裹，步履匆匆却带着笑意。宿舍里，天南海北的乡音此起彼伏。我的室友里，有来自北方的小王，他总是对着窗外感慨“这南方的天真蓝”；还有从遥远的边疆来的小赵，初来乍到时，连普通话都说得磕磕绊绊。我们围坐在宿舍的铁架床上，吃着从家里带来的土特产，聊得热火朝天。
+学校的门口，迎新的横幅在秋风中微微摆动。校园比我想象中更宽阔，树荫浓密，教学楼的墙面有些斑驳，但透着一股庄严。宿舍里，来自天南海北的同学陆续到齐。有人从遥远的东北来，带着浓重的乡音；有人从沿海的深圳而来，语调轻快中透着一种新鲜的自信。他讲起家乡的变化，说那里新设了一个叫“经济特区”的地方，吸引了许多年轻人去创业，连远在县城里的亲戚都开始谈论深圳的“新政策”。我听得一头雾水，但也隐隐觉得，这似乎是未来的某种方向。
 
-“你们知道吗？”小王放下手里的馒头，压低了声音说，“听说深圳现在盖楼快得不得了，五天就能建一层。”他兴奋地比划着，“这叫‘深圳速度’，电视里还专门播了呢！”我们都瞪大了眼睛，想象着那个遥远的经济特区是什么模样。小赵则讲起他家乡边境的故事，说那里能看到朝鲜的山影，冬天的时候，鸭绿江会结冰，透过冰面还能看到鱼游来游去。
+晚上，宿舍里亮着昏黄的灯光，我们围坐在一张拼起来的桌子旁，分享从家乡带来的小吃。一个福建来的同学掏出一包沙茶酱，说是特产，邀请大家蘸着吃。另一位来自北京的同学一边嚼着花生，一边谈起中国女排刚刚在亚洲锦标赛上夺冠的消息。他兴奋地说：“你们知道吗？她们就是咱们国家的骄傲，那股‘女排精神’，太让人热血沸腾了！”我们一边听着，一边喝着从家里带来的散装酒，笑声在夜色中回荡。
 
-夜深了，宿舍楼里的灯光逐渐熄灭，只剩下窗外的月光洒在桌椅上，像一层薄霜。我躺在上铺，听着远处传来的广播声，隐约提到“改革开放”这样的字眼。那时的我并不完全明白这些词语的意义，但心里却觉得，世界正在发生某种巨大的改变，而我，似乎也被卷入了这股浪潮之中。
-
-这一天，我第一次觉得，未来是那么宽广，又那么遥不可及。
+躺在硬邦邦的床板上，我久久不能入睡。窗外传来阵阵蝉鸣，偶尔夹杂着远处的汽车喇叭声。一个念头在脑海中闪过：未来会是什么样子？我闭上眼睛，手指轻触胸口的口袋，那里放着父亲小心翼翼叠好的通知书。它承载着全家的希望，也承载着属于这个时代的某种微妙期待。
 ----------------------------------------------------------------------------------------------------
 
-生成长度: 916 字
+生成长度: 907 字
 
 >>> 评估结果:
 ----------------------------------------------------------------------------------------------------
 
 【新内容使用情况】
   可用新实体: 10 个
-  实际使用: 1 个
-  已使用的新实体: 中国
-  未使用的新实体: 刘少奇, CHINA, 津巴布韦, BEIJING, 林彪
+  实际使用: 3 个
+  已使用的新实体: 中国女排, 经济特区, SHENZHEN CITY
+  未使用的新实体: TRIAL OF LIN BIAO AND JIANG QING GROUPS, 三步走发展战略, 美国, 中共中央、国务院, SUPREME PEOPLE'S COURT SPECIAL TRIBUNAL
 
 【新事实提取与溯源】
   生成文本中的新事实: 8 个
     1. 中国
-    2. 文化大革命
-    3. 深圳
-    4. 深圳速度
-    5. 经济特区
-    6. 朝鲜
-    7. 鸭绿江
-    8. 改革开放
+    2. 深圳
+    3. 经济特区
+    4. 福建
+    5. 北京
+    6. 中国女排
+    7. 亚洲锦标赛
+    8. 女排精神
 
-  ✓ 有 RAG 支撑的新事实: 1 个
+  ✓ 有 RAG 支撑的新事实: 6 个
     1. 中国
+    2. 深圳
+    3. 经济特区
+    4. 福建
+    5. 中国女排
+    6. 女排精神
 
-  ✗ 无 RAG 支撑的新事实 (疑似幻觉): 7 个
-    1. ⚠️  文化大革命
-    2. ⚠️  深圳
-    3. ⚠️  深圳速度
-    4. ⚠️  经济特区
-    5. ⚠️  朝鲜
-    6. ⚠️  鸭绿江
-    7. ⚠️  改革开放
+  ✗ 无 RAG 支撑的新事实 (疑似幻觉): 2 个
+    1. ⚠️  北京
+    2. ⚠️  亚洲锦标赛
 
 【评分】
-  信息增益: 40.0%
+  信息增益: 100.0%
     计算公式: 使用的新实体数 / 可用新实体数
-    计算过程: 1 / 10 = 0.4000
+    计算过程: 3 / 10 = 1.0000
   扩展溯源率: 100.0%
     计算公式: 有RAG支撑的新事实数 / 总新事实数
-    计算过程: 1 / 8 = 1.0000
+    计算过程: 6 / 8 = 1.0000
 
 【其他指标】
-  - entity_coverage: 0.5000
+  - entity_coverage: 1.0000
   - temporal_coherence: 1.0000
   - rag_entity_accuracy: 1.0000
-  - topic_coherence: 0.4667
-  - length_score: 0.9653
+  - topic_coherence: 0.7333
+  - length_score: 0.9674
   - paragraph_structure: 1.0000
   - transition_usage: 0.7000
   - descriptive_richness: 1.0000
-  - information_gain: 0.4000
+  - information_gain: 1.0000
   - expansion_grounding: 1.0000
-  - rag_utilization: 0.3000
-  - hallucination: 0.0588
+  - rag_utilization: 0.8000
+  - hallucination: 0.2500
 ----------------------------------------------------------------------------------------------------
 
 ====================================================================================================
 【整体评估】
 ====================================================================================================
 
-综合分数: 6.22/10
+综合分数: 8.33/10
 
 文档级指标:
   - year_diversity: 1.0000
   - merged_length: 1.0000
 
-质量门控: ✗ 未通过
-
-【章节检查】
-  第1章: ✗ 未通过
-    [error] rag_utilization: RAG 利用率 30.0% 低于阈值 60%
-      建议: 增加 top_k 以获取更多相关实体，或在 prompt 中明确要求使用检索到的背景知识
-
-【修复建议】
-  需重新生成: 第 1 章
-  第1章原因:
-    - RAG 利用率 30.0% 低于阈值 60%
+质量门控: ✓ 通过
 
 ====================================================================================================
 报告结束

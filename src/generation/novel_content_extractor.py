@@ -18,6 +18,56 @@ from typing import Dict, List, Any, Set
 from ..retrieval import RetrievalResult
 
 
+def _localize_entity_name(name: str, description: str) -> str:
+    """
+    若实体名为英文/拼音，尝试从描述中提取对应的中文名称。
+    返回中文名（如找到）或原名。
+    """
+    if not name:
+        return name
+    # 已经是中文名（含至少一个中文字符），直接返回
+    if re.search(r'[\u4e00-\u9fff]', name):
+        return name
+    # 从描述前 300 字符中提取括号内的中文名
+    # 常见模式: "Deng Xiaoping ... (邓小平)" 或 "... also known as 美国 ..."
+    head = description[:300] if description else ""
+    # 模式1: 括号内中文 (中文名) 或 （中文名）
+    m = re.search(r'[（(]([一-龥]{2,10})[）)]', head)
+    if m:
+        return m.group(1)
+    # 模式2: "also known as" / "commonly known as" 后的中文
+    m = re.search(r'(?:also|commonly)\s+known\s+as\s+["\']?([一-龥]{2,10})', head)
+    if m:
+        return m.group(1)
+    # 模式3: 描述开头直接有"中文名 (English)" — 如 "邓小平（Deng Xiaoping）"
+    m = re.search(r'^([一-龥]{2,10})', head)
+    if m:
+        return m.group(1)
+    # 无法提取，返回原名
+    return name
+
+
+def _truncate_for_prompt(text: str, max_chars: int = 200) -> str:
+    """将 RAG 描述截断到可控长度；兼容英文（仅用中文「。」分割会失效）。"""
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    window = text[:max_chars]
+    min_keep = max(24, max_chars // 5)
+    best_end = -1
+    for sep in ("。", "！", "？", ". ", ".\n", "\n\n", "\n"):
+        j = window.rfind(sep)
+        if j >= min_keep:
+            if sep == ". ":
+                best_end = max(best_end, j + 1)
+            else:
+                best_end = max(best_end, j + len(sep))
+    if best_end > 0:
+        return text[:best_end].rstrip()
+    return window.rstrip() + "…"
+
+
 @dataclass
 class NovelContentBrief:
     """
@@ -74,24 +124,25 @@ class NovelContentBrief:
         # 新知识：原文未提及的实体（白名单式格式）
         if self.novel_entities:
             novel_parts.append("【可用的新知识实体白名单】")
-            novel_parts.append("以下是检索到的、原文未提及的实体。你只能使用这些实体，不得添加其他实体。\n")
+            novel_parts.append("以下是检索到的、原文未提及的实体。你必须使用其中文名称（而非英文原名）融入叙事，不得添加其他实体。\n")
 
-            # 先列出实体名称清单
-            entity_names = [e.get("name", e.get("title", "")) for e in self.novel_entities[:8]]
-            novel_parts.append("✓ 允许使用的实体名称：" + "、".join(entity_names))
+            # 先列出实体名称清单（中文化）
+            entity_names = []
+            for e in self.novel_entities[:8]:
+                raw_name = e.get("name", e.get("title", ""))
+                raw_desc = e.get("description", "") or ""
+                entity_names.append(_localize_entity_name(raw_name, raw_desc))
+            novel_parts.append("✓ 允许使用的实体名称（中文）：" + "、".join(entity_names))
             novel_parts.append("")
 
             # 再列出详细描述
             for i, entity in enumerate(self.novel_entities[:8], 1):
-                name = entity.get("name", entity.get("title", ""))
-                desc = entity.get("description", "")
-                # 截取完整句子（最多200字）
-                if len(desc) > 200:
-                    # 尝试在句号处截断
-                    sentences = desc.split("。")
-                    desc = sentences[0] + "。" if sentences else desc[:200]
+                raw_name = entity.get("name", entity.get("title", ""))
+                raw_desc = entity.get("description", "") or ""
+                display_name = _localize_entity_name(raw_name, raw_desc)
+                desc = _truncate_for_prompt(raw_desc, 200)
 
-                novel_parts.append(f"{i}. {name} ({entity.get('type', 'ENTITY')})")
+                novel_parts.append(f"{i}. {display_name} ({entity.get('type', 'ENTITY')})")
                 novel_parts.append(f"   {desc}")
 
         # 新知识：原文未提及的关系/事件
@@ -106,12 +157,13 @@ class NovelContentBrief:
             for i, rel in enumerate(self.novel_relationships[:5], start_idx):
                 source = rel.get("source", "")
                 target = rel.get("target", "")
-                desc = rel.get("description", "")
-                if len(desc) > 200:
-                    sentences = desc.split("。")
-                    desc = sentences[0] + "。" if sentences else desc[:200]
+                rel_desc = rel.get("description", "") or ""
+                desc = _truncate_for_prompt(rel_desc, 200)
+                # 中文化 source/target
+                source_disp = _localize_entity_name(source, rel_desc)
+                target_disp = _localize_entity_name(target, rel_desc)
 
-                novel_parts.append(f"{i}. {source} → {target}")
+                novel_parts.append(f"{i}. {source_disp} → {target_disp}")
                 novel_parts.append(f"   {desc}")
 
         # 新知识：背景片段
@@ -126,7 +178,7 @@ class NovelContentBrief:
             novel_parts.append("【严格使用规则 - 必须遵守】")
             novel_parts.append("="*60)
             novel_parts.append("\n✓ 允许的操作：")
-            novel_parts.append("  • 从上述白名单中选择 1-3 个与叙事最相关的实体或事件")
+            novel_parts.append("  • 从上述白名单中选择 2-4 个与叙事最相关的实体或事件（至少使用 2 个）")
             novel_parts.append("  • 改写上述内容的表述方式，调整语序，使其自然融入叙事")
             novel_parts.append("  • 将这些背景知识作为人物对话、环境描写或叙事者见闻的一部分")
 
@@ -140,10 +192,25 @@ class NovelContentBrief:
             novel_parts.append("  如果你在生成中提到了任何实体（人名、地名、机构、事件），")
             novel_parts.append("  该实体必须出现在上述白名单中，或者出现在原文中。")
             novel_parts.append("  不在白名单中的实体一律不得使用。")
+            novel_parts.append("")
+            novel_parts.append("  【语言要求 - 严格禁止英文】")
+            novel_parts.append("  生成的文本必须是纯中文。所有实体名称必须使用中文表达。")
+            novel_parts.append("  严格禁止在生成文本中出现英文实体名（如 DENG XIAOPING、SHENZHEN CITY 等）。")
+            novel_parts.append("  必须使用对应的中文名称（如 邓小平、深圳 等）。")
+
+        aligned_ctx = "\n".join(aligned_parts) if aligned_parts else "（无）"
+        novel_ctx = "\n".join(novel_parts) if novel_parts else "（无可用新知识）"
+
+        # #region agent log
+        import json as _json, pathlib as _pathlib, time as _time
+        _lp = _pathlib.Path("debug-5faba8.log")
+        with open(_lp, "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps({"sessionId":"5faba8","location":"novel_content_extractor.py:format_for_prompt","message":"novel_ctx_stats","data":{"novel_ctx_len":len(novel_ctx),"novel_entity_count":len(self.novel_entities),"entity_names_in_prompt":entity_names if self.novel_entities else [],"novel_ctx_first_600":novel_ctx[:600]},"hypothesisId":"localize","timestamp":_time.time()},ensure_ascii=False)+"\n")
+        # #endregion
 
         return {
-            "aligned_context": "\n".join(aligned_parts) if aligned_parts else "（无）",
-            "novel_context": "\n".join(novel_parts) if novel_parts else "（无可用新知识）",
+            "aligned_context": aligned_ctx,
+            "novel_context": novel_ctx,
         }
 
 

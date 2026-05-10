@@ -138,19 +138,26 @@ async def analyze_novel_content(
     else:
         new_facts_in_output = _extract_entity_names_only(generated_text, memoir_text)
 
-    # 3. 判断提取的实体是否有 RAG 支撑（使用模糊匹配）
+    # 3. 判断提取的实体是否有 RAG 支撑（实体名匹配 + 实体描述内容匹配）
     grounded_facts = []
     ungrounded_facts = []
 
+    # 构建 RAG 来源全文（包含实体名+描述+关系），用于描述级溯源
+    rag_source_text = _build_rag_source_text(novel_content_brief)
+
     for fact in new_facts_in_output:
-        # 使用模糊匹配查找是否有对应的 RAG 实体
+        # 优先：使用模糊匹配查找是否有对应的 RAG 实体名
         matched_entity = _find_matching_entity(fact, novel_entities_available)
         if matched_entity:
             grounded_facts.append(fact)
-            print(f"[DEBUG] 实体 '{fact}' 匹配到 RAG 实体 '{matched_entity}'")
+            print(f"[DEBUG] 实体 '{fact}' 匹配到 RAG 实体名 '{matched_entity}'")
+        elif _is_grounded_in_rag(fact, rag_source_text, novel_entities_available):
+            # 回退：检查事实是否出现在 RAG 实体描述/关系描述中
+            grounded_facts.append(fact)
+            print(f"[DEBUG] 实体 '{fact}' 在 RAG 实体描述中找到支撑")
         else:
             ungrounded_facts.append(fact)
-            print(f"[DEBUG] 实体 '{fact}' 未找到匹配的 RAG 实体")
+            print(f"[DEBUG] 实体 '{fact}' 未找到匹配的 RAG 实体或描述")
 
     return NovelContentAnalysis(
         novel_entities_used=novel_entities_used,
@@ -515,9 +522,16 @@ async def hallucination_metric(
     # 分类实体
     memoir_entities = [e for e in all_extracted if e in memoir_text]
     rag_entities = analysis.novel_entities_used  # 已经在 RAG 中的
+
+    # 构建 RAG 来源全文用于描述级溯源
+    rag_source_text = _build_rag_source_text(novel_content_brief)
+    novel_entity_names = novel_content_brief.novel_entity_names
+
     unsupported_entities = [
         e for e in all_extracted
-        if e not in memoir_text and e not in analysis.novel_entities_available
+        if e not in memoir_text
+        and not _find_matching_entity(e, novel_entity_names)
+        and not _is_grounded_in_rag(e, rag_source_text, novel_entity_names)
     ]
 
     # 计算幻觉率
@@ -674,12 +688,24 @@ def _fuzzy_entity_match(entity1: str, entity2: str) -> bool:
         cn = _EN_CN_LOCATION_MAP[e1]
         if cn == entity2 or cn in entity2:
             return True
+    # 对多词英文实体名的各单词尝试查找映射
+    for word in re.findall(r'[a-z]+', e1):
+        if word in _EN_CN_LOCATION_MAP:
+            cn = _EN_CN_LOCATION_MAP[word]
+            if cn == entity2 or cn in entity2 or entity2 in cn:
+                return True
 
     # 检查 entity2 是否是英文，entity1 是否是对应的中文
     if e2 in _EN_CN_LOCATION_MAP:
         cn = _EN_CN_LOCATION_MAP[e2]
         if cn == entity1 or cn in entity1:
             return True
+    # 对多词英文实体名的各单词尝试查找映射
+    for word in re.findall(r'[a-z]+', e2):
+        if word in _EN_CN_LOCATION_MAP:
+            cn = _EN_CN_LOCATION_MAP[word]
+            if cn == entity1 or cn in entity1 or entity1 in cn:
+                return True
 
     # 4. 部分匹配（对于较长的实体名）
     if len(e1) >= 4 and len(e2) >= 4:
@@ -722,11 +748,20 @@ def _is_mentioned_in_text(entity_name: str, text: str) -> bool:
 
     # 2. 中英文映射匹配
     # 如果实体是英文地名，检查对应的中文是否在文本中
+    # 支持多词实体名（如 "SHENZHEN CITY" → 先尝试完整匹配，再尝试各单词）
     entity_lower = entity_name.lower().strip()
     if entity_lower in _EN_CN_LOCATION_MAP:
         cn_name = _EN_CN_LOCATION_MAP[entity_lower]
         if cn_name in text:
             return True
+
+    # 对多词英文实体名，尝试每个单词在映射表中查找
+    entity_words_en = re.findall(r'[a-zA-Z]+', entity_name.lower())
+    for word in entity_words_en:
+        if word in _EN_CN_LOCATION_MAP:
+            cn_name = _EN_CN_LOCATION_MAP[word]
+            if cn_name in text:
+                return True
 
     # 如果实体是中文地名，检查对应的英文是否在文本中
     if entity_name in _CN_EN_LOCATION_MAP:
@@ -1035,10 +1070,11 @@ def _is_grounded_in_rag(
     检查事实是否在 RAG 来源中有支撑（支持改写识别）
 
     策略：
-    1. 实体名匹配：检查是否在 novel_entities 中
+    1. 实体名匹配：检查是否在 novel_entities 中（含中英文映射）
     2. 精确子串匹配：检查是否在 RAG 来源文本中
     3. 模糊 n-gram 匹配：支持改写（如"改革开放"vs"改革开放政策"）
     4. 词级匹配：≥50%的词在RAG中出现
+    5. 中英文实体映射：中文事实通过地名映射在英文RAG描述中查找
     """
     if not fact:
         return False
@@ -1047,10 +1083,12 @@ def _is_grounded_in_rag(
     fact_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', fact).upper()
     rag_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', rag_source_text).upper()
 
-    # 1. 实体名匹配
+    # 1. 实体名匹配（含中英文映射）
     for entity in novel_entities:
         entity_normalized = re.sub(r'[^一-龥a-zA-Z0-9]', '', entity).upper()
         if fact_normalized == entity_normalized or fact_normalized in entity_normalized:
+            return True
+        if _fuzzy_entity_match(fact, entity):
             return True
 
     # 2. 精确子串匹配
@@ -1074,5 +1112,12 @@ def _is_grounded_in_rag(
         matches = sum(1 for word in fact_words if word in rag_source_text)
         if matches / len(fact_words) >= 0.5:
             return True
+
+    # 5. 中英文地名映射溯源：如果事实是中文地名，在 RAG 文本中查找对应英文
+    if fact in _CN_EN_LOCATION_MAP:
+        en_variants = _CN_EN_LOCATION_MAP[fact]
+        for en in en_variants:
+            if en.upper() in rag_normalized:
+                return True
 
     return False

@@ -9,7 +9,7 @@ import asyncio
 import time
 import re
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -46,9 +46,10 @@ class RetrievalResult:
 class MemoirRetriever:
     """回忆录检索器"""
     
-    def __init__(self, llm_adapter=None, index_dir: Optional[Path] = None):
+    def __init__(self, llm_adapter=None, index_dir: Optional[Union[str, Path]] = None):
         self.llm_adapter = llm_adapter
-        self.index_dir = index_dir or Path(__file__).parent.parent.parent / "data" / "graphrag_output"
+        default_root = Path(__file__).resolve().parent.parent.parent / "data" / "graphrag_output"
+        self.index_dir = Path(index_dir) if index_dir is not None else default_root
         
         # 缓存数据
         self._entities_df = None
