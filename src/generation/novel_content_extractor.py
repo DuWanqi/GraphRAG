@@ -169,8 +169,8 @@ class NovelContentBrief:
         # 新知识：背景片段
         if self.novel_snippets:
             novel_parts.append("\n补充背景（可选择性引用）：")
-            for snippet in self.novel_snippets[:3]:
-                novel_parts.append(f"- {snippet[:200]}")
+            for snippet in self.novel_snippets[:8]:  # 增加到 8 个片段
+                novel_parts.append(f"- {snippet[:400]}")  # 增加到 400 字符
 
         # 添加使用规则
         if self.novel_entities or self.novel_relationships:
@@ -265,18 +265,18 @@ def extract_novel_content(
     
     # 3. 提取新信息片段（从社区报告和 text_units）
     # 社区报告通常包含更高层次的背景信息
-    for comm in retrieval_result.communities[:3]:
+    for comm in retrieval_result.communities[:5]:  # 增加到 5 个
         summary = comm.get("summary", "")
         if summary and len(summary) > 50:
             # 检查是否包含原文未提及的新信息
             if not _has_significant_overlap(summary, memoir_text_normalized):
-                brief.novel_snippets.append(summary[:300])
+                brief.novel_snippets.append(summary[:400])  # 增加到 400 字
     
-    # text_units 作为补充
-    for text_unit in retrieval_result.text_units[:3]:
+    # text_units 作为补充（增加到 10 个）
+    for text_unit in retrieval_result.text_units[:10]:
         if text_unit and len(text_unit) > 50:
             if not _has_significant_overlap(text_unit, memoir_text_normalized):
-                brief.novel_snippets.append(text_unit[:300])
+                brief.novel_snippets.append(text_unit[:400])  # 增加到 400 字
     
     # 4. 生成摘要
     brief.summary = _generate_summary(brief)
@@ -367,7 +367,8 @@ def _has_significant_overlap(snippet: str, memoir_text_normalized: str) -> bool:
     """
     判断片段是否与原文有显著重叠（用于过滤重复内容）
     
-    策略：提取片段中的关键词，如果超过 50% 出现在原文中，则视为重叠
+    策略：提取片段中的关键词，如果超过 80% 出现在原文中，则视为重叠
+    （降低阈值，允许更多历史背景信息通过）
     """
     snippet_keywords = _extract_keywords(snippet, min_len=3)
     if not snippet_keywords:
@@ -376,7 +377,8 @@ def _has_significant_overlap(snippet: str, memoir_text_normalized: str) -> bool:
     overlap_count = sum(1 for kw in snippet_keywords if _normalize_text(kw) in memoir_text_normalized)
     overlap_ratio = overlap_count / len(snippet_keywords)
     
-    return overlap_ratio > 0.5
+    # 提高阈值到 80%，允许更多历史背景通过
+    return overlap_ratio > 0.8
 
 
 def _generate_summary(brief: NovelContentBrief) -> str:
