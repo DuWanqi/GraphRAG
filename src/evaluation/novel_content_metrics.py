@@ -337,87 +337,6 @@ def _extract_entity_names_only(generated_text: str, memoir_text: str) -> List[st
     return list(dict.fromkeys(entities))[:20]  # Dedupe and limit
 
 
-async def information_gain_metric(
-    memoir_text: str,
-    generated_text: str,
-    novel_content_brief: Any,
-    llm_adapter: Optional[Any] = None,
-) -> MetricResult:
-    """
-    信息增量指标（Information Gain）
-
-    衡量生成文本引入了多少新知识（基于实体使用数量的分段评分）
-    - 0个实体 → 0.0（无新内容）
-    - 1个实体 → 0.4（少量新内容）
-    - 2个实体 → 0.7（适量新内容）
-    - 3+个实体 → 1.0（丰富新内容）
-    """
-    analysis = await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
-
-    ratio = analysis.information_gain
-    used = len(analysis.novel_entities_used)
-    available = len(analysis.novel_entities_available)
-
-    if available == 0:
-        explanation = "RAG 未提供新实体"
-    elif used == 0:
-        explanation = f"未使用新实体（RAG 提供了 {available} 个）"
-    else:
-        explanation = f"使用了 {used} 个新实体"
-        if used > 0:
-            explanation += f"：{', '.join(analysis.novel_entities_used[:3])}"
-        if used < available:
-            explanation += f"（RAG 还提供了 {available - used} 个未使用的实体）"
-
-    return MetricResult(
-        name="information_gain",
-        value=ratio,
-        max_value=1.0,
-        explanation=explanation,
-    )
-
-
-async def expansion_grounding_metric(
-    memoir_text: str,
-    generated_text: str,
-    novel_content_brief: Any,
-    llm_adapter: Optional[Any] = None,
-) -> MetricResult:
-    """
-    扩展溯源率指标（Expansion Grounding）
-
-    For expansion tasks: measures if used entities are from RAG sources.
-    Since we only count entities that ARE in novel_content_brief,
-    grounding rate = 100% by definition.
-
-    This metric now serves as a sanity check rather than a strict filter.
-    """
-    analysis = await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
-
-    used = len(analysis.novel_entities_used)
-    available = len(analysis.novel_entities_available)
-
-    if used == 0:
-        explanation = "未使用任何新实体"
-        grounding = 0.0
-    else:
-        # All used entities are grounded (they came from RAG)
-        grounding = 1.0
-        explanation = f"使用了 {used} 个新实体，均来自 RAG 检索结果"
-
-        # Warn if there are ungrounded facts
-        if analysis.ungrounded_facts:
-            ungrounded_count = len(analysis.ungrounded_facts)
-            explanation += f"；检测到 {ungrounded_count} 个额外事实（未在 RAG 中）"
-
-    return MetricResult(
-        name="expansion_grounding",
-        value=grounding,
-        max_value=1.0,
-        explanation=explanation,
-    )
-
-
 async def rag_utilization_metric(
     memoir_text: str,
     generated_text: str,
@@ -432,11 +351,11 @@ async def rag_utilization_metric(
     评分标准（非线性）：
     - 0个实体 → 0.0（未利用，门控不通过）
     - 1个实体 → 0.5（已利用检索新实体，门控通过）
-    - 2个实体 → 0.6
+    - 2个实体 → 0.7
     - 3个实体 → 0.8（良好利用）
     - 4+个实体 → 1.0（充分利用）
 
-    门控要求（与 QualityThresholds.min_rag_utilization 默认 0.5 对齐）：score ≥ 0.5，即至少使用 1 个新实体。
+    门控要求：score ≥ 0.5，即至少使用 1 个新实体。
     """
     analysis = await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
 
@@ -451,7 +370,7 @@ async def rag_utilization_metric(
         score = 0.5
         level = "已利用（单实体，门控达标）"
     elif used == 2:
-        score = 0.6
+        score = 0.7
         level = "达到最低要求"
     elif used == 3:
         score = 0.8

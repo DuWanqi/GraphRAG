@@ -18,8 +18,8 @@ from .metrics import (
 from .novel_content_metrics import (
     NovelContentAnalysis,
     analyze_novel_content,
-    information_gain_metric,
-    expansion_grounding_metric,
+    rag_utilization_metric,
+    hallucination_metric,
 )
 from .factscore_adapter import (
     FActScoreChecker,
@@ -69,8 +69,8 @@ __all__ = [
     "aggregate_scores",
     "NovelContentAnalysis",
     "analyze_novel_content",
-    "information_gain_metric",
-    "expansion_grounding_metric",
+    "rag_utilization_metric",
+    "hallucination_metric",
     "FActScoreChecker",
     "FactCheckResult",
     "SAFEFactChecker",

@@ -221,7 +221,6 @@ async def _metrics_for_segment(
         literary_length_max=literary_length_max,
         literary_optimal_min=literary_optimal_min,
         literary_optimal_max=literary_optimal_max,
-        literary_paragraph_relaxed=True,
         novel_content_brief=novel_content_brief,
         task_type=task_type,
         min_required_entities=min_required_entities,
