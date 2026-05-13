@@ -31,6 +31,29 @@ except ImportError:
     JIEBA_AVAILABLE = False
 
 
+def _retrieval_result_to_text(retrieval_result: Any) -> str:
+    """将 RetrievalResult 的各字段拼接为纯文本，供事实检查使用。"""
+    parts = []
+    if retrieval_result is None:
+        return ""
+    # text_units: List[str]
+    for tu in (retrieval_result.text_units or [])[:10]:
+        if isinstance(tu, str) and tu.strip():
+            parts.append(tu.strip())
+    # entities: List[Dict]
+    for e in (retrieval_result.entities or [])[:20]:
+        name = e.get("name") or e.get("title") or ""
+        desc = e.get("description") or ""
+        if name:
+            parts.append(f"{name}：{desc}" if desc else name)
+    # communities: List[Dict]
+    for c in (retrieval_result.communities or [])[:5]:
+        summary = c.get("summary") or c.get("full_content") or ""
+        if summary:
+            parts.append(summary[:300])
+    return "\n".join(parts)
+
+
 @dataclass
 class FactCheckResult:
     """事实性检查结果"""
@@ -274,7 +297,7 @@ class FActScoreChecker:
 
         retrieval_context = ""
         if retrieval_result:
-            retrieval_context = retrieval_result.get_context_text()
+            retrieval_context = _retrieval_result_to_text(retrieval_result)
 
         # 合并上下文：原文 + 检索背景。润色改写后的内容大部分来自原文，
         # 原文是最重要的验证依据。
@@ -821,8 +844,8 @@ class FActScoreChecker:
         evidence_words = set()
         
         # 从检索结果中提取文本
-        if retrieval_result.get_context_text():
-            context_text = retrieval_result.get_context_text()
+        context_text = _retrieval_result_to_text(retrieval_result)
+        if context_text:
             evidence_words.update(jieba.lcut(context_text))
         
         if not gen_words:
@@ -837,7 +860,8 @@ class FActScoreChecker:
             return 0.0
         
         # 基于检索结果的完整性计算支持度
-        if retrieval_result.has_results:
+        has_results = bool(retrieval_result.entities or retrieval_result.text_units or retrieval_result.communities)
+        if has_results:
             # 如果有检索结果，给中等以上的支持度
             if retrieval_result.entities and len(retrieval_result.entities) > 3:
                 return 0.8

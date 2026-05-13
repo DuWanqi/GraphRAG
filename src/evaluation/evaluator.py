@@ -306,7 +306,8 @@ class Evaluator:
         """使用LLM进行深度评估"""
         reference_info = ""
         if retrieval_result:
-            reference_info = retrieval_result.get_context_text()
+            from .factscore_adapter import _retrieval_result_to_text
+            reference_info = _retrieval_result_to_text(retrieval_result)
         
         prompt = self.EVALUATION_PROMPT.format(
             memoir_text=memoir_text,
