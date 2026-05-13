@@ -128,31 +128,6 @@ def _extract_entities_info(chapter: Any, record: SegmentEvalRecord) -> Dict[str,
     }
 
 
-def document_year_diversity(merged_text: str) -> MetricResult:
-    """篇级轻量：抽取年份，多年代时略降分。"""
-    years = re.findall(r"(?:19|20)\d{2}", merged_text)
-    if not years:
-        return MetricResult(
-            name="year_diversity",
-            value=0.5,
-            max_value=1.0,
-            explanation="合并文本中未检出四位年份",
-        )
-    uniq = sorted(set(years))
-    if len(uniq) <= 3:
-        return MetricResult(
-            name="year_diversity",
-            value=1.0,
-            max_value=1.0,
-            explanation=f"检出年份种类 {len(uniq)}：{', '.join(uniq[:5])}",
-        )
-    return MetricResult(
-        name="year_diversity",
-        value=0.75,
-        max_value=1.0,
-        explanation=f"多年代穿插 {len(uniq)} 种，属长文常见情况",
-    )
-
 
 @dataclass
 class SegmentEvalRecord:
@@ -221,7 +196,6 @@ async def _metrics_for_segment(
         literary_length_max=literary_length_max,
         literary_optimal_min=literary_optimal_min,
         literary_optimal_max=literary_optimal_max,
-        literary_paragraph_relaxed=True,
         novel_content_brief=novel_content_brief,
         task_type=task_type,
         min_required_entities=min_required_entities,
@@ -308,15 +282,8 @@ async def evaluate_long_form(
                 "new_facts_in_output": analysis.new_facts_in_output,
                 "grounded_facts": analysis.grounded_facts,
                 "ungrounded_facts": analysis.ungrounded_facts,
-                "information_gain": analysis.information_gain,
-                "expansion_grounding": analysis.expansion_grounding,
                 "summary": novel_brief.summary,
             }
-            # 从 metrics 中提取指标值（覆盖上面的计算值，保持一致）
-            if "information_gain" in metrics:
-                novel_content_info["information_gain"] = metrics["information_gain"].value
-            if "expansion_grounding" in metrics:
-                novel_content_info["expansion_grounding"] = metrics["expansion_grounding"].value
 
         # 移除 LLM 整体风格评估，改用 LLM 实体提取
         eval_result: Optional[Any] = None
@@ -368,7 +335,6 @@ async def evaluate_long_form(
     )
 
     weights: List[float] = []
-    seg_scores: List[float] = []
     fact_scores_list: List[Optional[float]] = []
     chapters_content: List[str] = []
     target_chars_list: List[int] = []
@@ -382,18 +348,29 @@ async def evaluate_long_form(
         lo, hi = _parse_length_hint_range(hint)
         target_chars_list.append((lo + hi) // 2)
 
-        seg_agg = aggregate_scores(rec.metrics)
-        seg_scores.append(rec.evaluation.overall_score if rec.evaluation else seg_agg)
         fact_scores_list.append(rec.fact_check.factscore if rec.fact_check else None)
 
     # ---- 段级加权综合分 ----
     wsum = sum(weights) or 1.0
+    # 规则指标聚合分（0-10）及 LLM Judge 分（0-10）
+    # Judge 权重固定为 1.0，规则分权重固定为 9.0，Judge 约占 10%
+    _RULE_WEIGHT = 9.0
+    _JUDGE_WEIGHT = 1.0
+    seg_scores = []
+    for rec in records:
+        rule_score = aggregate_scores(rec.metrics)
+        if rec.evaluation is not None:
+            combined = (
+                rule_score * _RULE_WEIGHT + rec.evaluation.overall_score * _JUDGE_WEIGHT
+            ) / (_RULE_WEIGHT + _JUDGE_WEIGHT)
+        else:
+            combined = rule_score
+        seg_scores.append(combined)
     aggregated = sum(s * (weights[i] / wsum) for i, s in enumerate(seg_scores))
 
     # ---- 篇级指标 ----
     merged = long_form.merged_content
     doc_metrics: Dict[str, MetricResult] = {}
-    doc_metrics["year_diversity"] = document_year_diversity(merged)
     if merged:
         om = max(800, min(len(merged), 12000))
         doc_metrics["merged_length"] = LiteraryMetrics.length_score(

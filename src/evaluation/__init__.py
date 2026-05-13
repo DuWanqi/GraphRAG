@@ -18,8 +18,8 @@ from .metrics import (
 from .novel_content_metrics import (
     NovelContentAnalysis,
     analyze_novel_content,
-    information_gain_metric,
-    expansion_grounding_metric,
+    rag_utilization_metric,
+    hallucination_metric,
 )
 from .factscore_adapter import (
     FActScoreChecker,
@@ -42,7 +42,6 @@ from .long_form_eval import (
     LongFormEvalResult,
     SegmentEvalRecord,
     long_form_eval_to_json,
-    document_year_diversity,
 )
 from .quality_gate import (
     QualityGateResult,
@@ -69,8 +68,8 @@ __all__ = [
     "aggregate_scores",
     "NovelContentAnalysis",
     "analyze_novel_content",
-    "information_gain_metric",
-    "expansion_grounding_metric",
+    "rag_utilization_metric",
+    "hallucination_metric",
     "FActScoreChecker",
     "FactCheckResult",
     "SAFEFactChecker",
@@ -85,7 +84,6 @@ __all__ = [
     "LongFormEvalResult",
     "SegmentEvalRecord",
     "long_form_eval_to_json",
-    "document_year_diversity",
     "QualityGateResult",
     "QualityThresholds",
     "ChapterGateResult",

@@ -165,20 +165,10 @@ def _format_safe_check(safe_result: SAFECheckResult) -> str:
 
 
 METRIC_DEFINITIONS: Dict[str, Dict[str, str]] = {
-    "entity_coverage": {
-        "name": "实体覆盖率",
-        "definition": "扩充文本对 RAG「参考实体」的引用满足程度（扩展任务至少使用指定个数即视为满分）。",
-        "formula": "已使用实体数 / min(要求最少实体数, 可用实体数)，扩展任务中为分段计分，上限 1.0",
-    },
     "temporal_coherence": {
         "name": "时间一致性",
-        "definition": "生成文本中出现的年份是否落在回忆录参考年份±容忍范围内。",
-        "formula": "合理年份个数 / 生成文本中出现的不同四位年份个数",
-    },
-    "rag_entity_accuracy": {
-        "name": "RAG 实体准确性",
-        "definition": "在扩展任务中对「已选用的 RAG 实体」是否与知识库一致的粗粒度检查（启用即视作描述可用）。",
-        "formula": "基于是否使用 RAG 实体及简述一致性（当前实现偏乐观）",
+        "definition": "生成文本中出现的年份必须全部在原文年份白名单内，防止 LLM 捏造年份。",
+        "formula": "合规年份数 / 生成年份总数；无生成年份时得满分",
     },
     "topic_coherence": {
         "name": "主题一致性",
@@ -190,35 +180,20 @@ METRIC_DEFINITIONS: Dict[str, Dict[str, str]] = {
         "definition": "生成长度是否在允许区间及最佳区间附近（随任务与 length_hint 动态校准）。",
         "formula": "区间外惩罚 + 区间内距最优区间距离的分段打分",
     },
-    "paragraph_structure": {
-        "name": "段落结构",
-        "definition": "是否具备合理分段与段落长度分布。",
-        "formula": "基于段落数量、平均长度等的规则评分（长文可 relaxed）",
-    },
     "transition_usage": {
         "name": "衔接词使用",
-        "definition": "过渡语、衔接短语的使用是否合理。",
-        "formula": "命中衔接词模式的密度与多样性规则分",
+        "definition": "叙事过渡自然度：时间过渡、场景切换、叙事连贯性（LLM rubric 评分）。",
+        "formula": "LLM-as-a-judge 单次推理，按 rubric 打分（0.0-1.0）",
     },
     "descriptive_richness": {
         "name": "描写丰富度",
-        "definition": "形容词、场景描写等字面丰富程度。",
-        "formula": "基于描写类词的比例与长度的规则评分",
-    },
-    "information_gain": {
-        "name": "信息增益",
-        "definition": "引入了多少回忆录之外、由 RAG 提供的新实体知识。",
-        "formula": "按使用的新实体个数分段：0→0；1→0.4；2→0.7；3+→1.0",
-    },
-    "expansion_grounding": {
-        "name": "扩展溯源率",
-        "definition": "扩展内容是否可溯源到 RAG（与 hallucination/novel_facts 等指标互补）。",
-        "formula": "当前实现对「所用新实体均来自 RAG」作 sanity check；无新事实时视作 1.0",
+        "definition": "感官描写、情感表达、比喻修辞、细节具体度的综合丰富程度（LLM rubric 评分）。",
+        "formula": "LLM-as-a-judge 单次推理，按 rubric 打分（0.0-1.0）",
     },
     "rag_utilization": {
         "name": "RAG 利用率",
-        "definition": "在可用新实体集合中实际写入正文的比例强度（分段非线性打分）。",
-        "formula": "按使用的新实体个数映射到 0~1（≥2 个通常达门控要求）",
+        "definition": "生成文本实际使用了多少 RAG 检索到的新实体（原文未提及的）。",
+        "formula": "按使用的新实体个数分段：0→0.0；1→0.5；2→0.7；3→0.8；4+→1.0",
     },
     "hallucination": {
         "name": "幻觉风险控制",
@@ -383,10 +358,8 @@ def _format_long_form_facts_and_rules(ev: Any) -> str:
     parts.append("\n\n---\n## \u6BB5\u843D\u7EA7 \u00B7 \u89C4\u5219\u4E0E\u51C6\u786E\u6027\u6307\u6807\n")
 
     ACC_KEYS = (
-        "entity_coverage",
         "temporal_coherence",
-        "rag_entity_accuracy",
-        "expansion_grounding",
+        "rag_utilization",
         "hallucination",
     )
 
@@ -417,8 +390,7 @@ def _format_long_form_facts_and_rules(ev: Any) -> str:
 
         other_keys = sorted(
             set(metrics.keys()) - set(ACC_KEYS)
-            - {"topic_coherence", "length_score", "paragraph_structure", "transition_usage", "descriptive_richness",
-               "information_gain", "rag_utilization"}
+            - {"topic_coherence", "length_score", "transition_usage", "descriptive_richness"}
         )
         if other_keys:
             parts.append("\n<details><summary>\u5176\u5B83\u6BB5\u7EA7\u89C4\u5219\u6307\u6807\uff08\u5C55\u5F00\uff09</summary>\n\n")
@@ -437,7 +409,7 @@ def _format_long_form_facts_and_rules(ev: Any) -> str:
 
 def _format_long_form_novel_content(ev: Any) -> str:
     lines: List[str] = []
-    metric_order = ("information_gain", "rag_utilization", "expansion_grounding")
+    metric_order = ("rag_utilization", "hallucination")
 
     lines.append("## \u65B0\u5185\u5BB9\u7ED3\u6784\u5316\u6307\u6807\n")
     for r in ev.segments:
@@ -464,13 +436,6 @@ def _format_long_form_novel_content(ev: Any) -> str:
         nf = nci.get("new_facts_in_output") or []
         gf = nci.get("grounded_facts") or []
         ug = nci.get("ungrounded_facts") or []
-
-        ig = nci.get("information_gain")
-        eg = nci.get("expansion_grounding")
-        if ig is not None:
-            lines.append(f"\n- **\u4FE1\u606F\u589E\u76CA\uff08\u5206\u6790\u5B57\u6BB5 raw\uff09**: {float(ig):.1%}")
-        if eg is not None:
-            lines.append(f"\n- **\u6269\u5C55\u6EAF\u6EAF\uff08\u5206\u6790\u5B57\u6BB5\uff09**: {float(eg):.1%}")
 
         lines.append("\n\n#### \u65B0\u4E8B\u5B9E / \u6EAF\u6EAF\n")
         lines.append(f"- \u751F\u6210\u4E2D\u51FA\u73B0\u7684\u4E13\u6709\u4FE1\u606F\u6761\u76EE: {len(nf)}\n")
@@ -509,7 +474,6 @@ def _format_long_form_relevance_literary(ev: Any, enable_llm_judge_dim: bool) ->
     REL_KEYS = ("topic_coherence",)
     LIT_KEYS = (
         "length_score",
-        "paragraph_structure",
         "transition_usage",
         "descriptive_richness",
     )
@@ -2322,7 +2286,7 @@ def create_ui():
 
                         with gr.Accordion("\U0001f4dd 新内容评估", open=False):
                             novel_content_output = gr.Markdown(
-                                label="信息增益 · RAG 利用率 · 新事实溯源（分章）",
+                                label="RAG 利用率 · 新实体使用 · 新事实溯源（分章）",
                             )
 
                         with gr.Accordion("\U0001f517 相关性", open=False):

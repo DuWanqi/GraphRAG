@@ -184,22 +184,25 @@ async def _extract_entities_with_llm(
     Returns:
         提取的实体列表
     """
-    prompt = f"""请从以下生成文本中提取所有实体，包括：
-1. 人名（真实人物、历史人物）
-2. 地名（国家、城市、地区、具体地点）
-3. 机构名（组织、公司、学校、政府部门等）
-4. 特殊事件名（具有历史意义的特定事件，如"十一届三中全会"、"改革开放"）
+    prompt = f"""请从以下生成文本中提取**专有名词实体**，仅包括：
+1. 人名（真实人物、历史人物，如"邓小平"、"张三"、"老王"）
+2. 地名（国家、城市、地区、具体地点，如"北京"、"深圳"、"陕北"、"华强北"）
+3. 机构名（组织、公司、学校、政府部门，如"联想"、"北京大学"、"中共中央"）
+4. 特殊历史事件名（具有历史意义的特定事件，如"十一届三中全会"、"恢复高考"）
 
-注意：
-- 只提取专有名词，不要提取普通名词、形容词或抽象概念
-- 不要提取时间词（如"1980年"、"当时"）
-- 不要提取普通物品（如"自行车"、"行李"）
-- 不要提取描述性词语（如"阳光"、"清香"、"梦想"）
-- **重要：区分特殊事件和常用表达**
-  * ✓ 提取：具有历史意义的特定事件（如"改革开放"、"十一届三中全会"、"恢复高考"）
-  * ✗ 不提取：日常活动的常用表达（如"聊天"、"修桥"、"筑路"、"吃饭"、"睡觉"、"学习"、"工作"）
-  * ✗ 不提取：通用动作短语（如"围坐在一起"、"充满憧憬"、"背着行李"）
-- 判断标准：如果这个词可以用来描述任何人的日常活动，就不要提取
+**严格排除以下类型（即使它们出现在文本中）：**
+- 农作物/植物：玉米、高粱、麦子、稻谷、棉花、树、草
+- 自然景物/地貌：田埂、山坡、河边、土屋、窑洞、炕、灶台、田野、黄土
+- 抽象概念/情绪：静默、希望、梦想、命运、岁月、时光、记忆、沉默、思念
+- 动作/状态词：飞远、奔跑、等待、劳作、播种、收获、沉默
+- 声音/感官词：沙沙声、轰鸣声、清香、阳光、月光
+- 普通生活物品：自行车、行李、锄头、扁担、水桶
+
+**判断标准：** 只有在历史书、人名录、地名志、机构名录中会出现的词才是专有名词。
+
+示例：
+✓ 提取：邓小平、深圳、联想、十一届三中全会、改革开放、恢复高考
+✗ 不提取：玉米、田埂、土屋里、沙沙声、静默、飞远、阳光、希望
 
 生成文本：
 {generated_text}
@@ -337,92 +340,12 @@ def _extract_entity_names_only(generated_text: str, memoir_text: str) -> List[st
     return list(dict.fromkeys(entities))[:20]  # Dedupe and limit
 
 
-async def information_gain_metric(
-    memoir_text: str,
-    generated_text: str,
-    novel_content_brief: Any,
-    llm_adapter: Optional[Any] = None,
-) -> MetricResult:
-    """
-    信息增量指标（Information Gain）
-
-    衡量生成文本引入了多少新知识（基于实体使用数量的分段评分）
-    - 0个实体 → 0.0（无新内容）
-    - 1个实体 → 0.4（少量新内容）
-    - 2个实体 → 0.7（适量新内容）
-    - 3+个实体 → 1.0（丰富新内容）
-    """
-    analysis = await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
-
-    ratio = analysis.information_gain
-    used = len(analysis.novel_entities_used)
-    available = len(analysis.novel_entities_available)
-
-    if available == 0:
-        explanation = "RAG 未提供新实体"
-    elif used == 0:
-        explanation = f"未使用新实体（RAG 提供了 {available} 个）"
-    else:
-        explanation = f"使用了 {used} 个新实体"
-        if used > 0:
-            explanation += f"：{', '.join(analysis.novel_entities_used[:3])}"
-        if used < available:
-            explanation += f"（RAG 还提供了 {available - used} 个未使用的实体）"
-
-    return MetricResult(
-        name="information_gain",
-        value=ratio,
-        max_value=1.0,
-        explanation=explanation,
-    )
-
-
-async def expansion_grounding_metric(
-    memoir_text: str,
-    generated_text: str,
-    novel_content_brief: Any,
-    llm_adapter: Optional[Any] = None,
-) -> MetricResult:
-    """
-    扩展溯源率指标（Expansion Grounding）
-
-    For expansion tasks: measures if used entities are from RAG sources.
-    Since we only count entities that ARE in novel_content_brief,
-    grounding rate = 100% by definition.
-
-    This metric now serves as a sanity check rather than a strict filter.
-    """
-    analysis = await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
-
-    used = len(analysis.novel_entities_used)
-    available = len(analysis.novel_entities_available)
-
-    if used == 0:
-        explanation = "未使用任何新实体"
-        grounding = 0.0
-    else:
-        # All used entities are grounded (they came from RAG)
-        grounding = 1.0
-        explanation = f"使用了 {used} 个新实体，均来自 RAG 检索结果"
-
-        # Warn if there are ungrounded facts
-        if analysis.ungrounded_facts:
-            ungrounded_count = len(analysis.ungrounded_facts)
-            explanation += f"；检测到 {ungrounded_count} 个额外事实（未在 RAG 中）"
-
-    return MetricResult(
-        name="expansion_grounding",
-        value=grounding,
-        max_value=1.0,
-        explanation=explanation,
-    )
-
-
 async def rag_utilization_metric(
     memoir_text: str,
     generated_text: str,
     novel_content_brief: Any,
     llm_adapter: Optional[Any] = None,
+    _analysis: Optional["NovelContentAnalysis"] = None,
 ) -> MetricResult:
     """
     RAG 利用率指标（RAG Utilization）
@@ -432,13 +355,13 @@ async def rag_utilization_metric(
     评分标准（非线性）：
     - 0个实体 → 0.0（未利用，门控不通过）
     - 1个实体 → 0.5（已利用检索新实体，门控通过）
-    - 2个实体 → 0.6
+    - 2个实体 → 0.7
     - 3个实体 → 0.8（良好利用）
     - 4+个实体 → 1.0（充分利用）
 
-    门控要求（与 QualityThresholds.min_rag_utilization 默认 0.5 对齐）：score ≥ 0.5，即至少使用 1 个新实体。
+    门控要求：score ≥ 0.5，即至少使用 1 个新实体。
     """
-    analysis = await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
+    analysis = _analysis or await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
 
     used = len(analysis.novel_entities_used)
     available = len(analysis.novel_entities_available)
@@ -451,7 +374,7 @@ async def rag_utilization_metric(
         score = 0.5
         level = "已利用（单实体，门控达标）"
     elif used == 2:
-        score = 0.6
+        score = 0.7
         level = "达到最低要求"
     elif used == 3:
         score = 0.8
@@ -497,6 +420,7 @@ async def hallucination_metric(
     generated_text: str,
     novel_content_brief: Any,
     llm_adapter: Optional[Any] = None,
+    _analysis: Optional["NovelContentAnalysis"] = None,
 ) -> MetricResult:
     """
     幻觉检测指标（Hallucination Detection）
@@ -511,13 +435,10 @@ async def hallucination_metric(
 
     注：暂不设置门控，仅作为评分指标
     """
-    analysis = await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
+    analysis = _analysis or await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
 
-    # 提取生成文本中的所有实体（使用 LLM 或改进的规则提取逻辑）
-    if llm_adapter is not None:
-        all_extracted = await _extract_entities_with_llm(generated_text, memoir_text, llm_adapter)
-    else:
-        all_extracted = _extract_entity_names_only(generated_text, memoir_text)
+    # 复用 analysis 中已提取的实体（new_facts_in_output 即为 LLM/规则提取结果）
+    all_extracted = analysis.new_facts_in_output
 
     # 分类实体
     memoir_entities = [e for e in all_extracted if e in memoir_text]
