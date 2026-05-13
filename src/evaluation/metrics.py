@@ -551,13 +551,20 @@ async def calculate_all_metrics(
         from .novel_content_metrics import (
             rag_utilization_metric,
             hallucination_metric,
+            analyze_novel_content,
         )
 
-        results["rag_utilization"] = await rag_utilization_metric(
+        # 共享一次 analyze_novel_content（内含 LLM 实体提取），避免重复调用
+        shared_analysis = await analyze_novel_content(
             memoir_text, generated_text, novel_content_brief, llm_adapter
         )
+        results["rag_utilization"] = await rag_utilization_metric(
+            memoir_text, generated_text, novel_content_brief, llm_adapter,
+            _analysis=shared_analysis,
+        )
         results["hallucination"] = await hallucination_metric(
-            memoir_text, generated_text, novel_content_brief, llm_adapter
+            memoir_text, generated_text, novel_content_brief, llm_adapter,
+            _analysis=shared_analysis,
         )
 
     return results

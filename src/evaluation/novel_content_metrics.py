@@ -345,6 +345,7 @@ async def rag_utilization_metric(
     generated_text: str,
     novel_content_brief: Any,
     llm_adapter: Optional[Any] = None,
+    _analysis: Optional["NovelContentAnalysis"] = None,
 ) -> MetricResult:
     """
     RAG 利用率指标（RAG Utilization）
@@ -360,7 +361,7 @@ async def rag_utilization_metric(
 
     门控要求：score ≥ 0.5，即至少使用 1 个新实体。
     """
-    analysis = await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
+    analysis = _analysis or await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
 
     used = len(analysis.novel_entities_used)
     available = len(analysis.novel_entities_available)
@@ -419,6 +420,7 @@ async def hallucination_metric(
     generated_text: str,
     novel_content_brief: Any,
     llm_adapter: Optional[Any] = None,
+    _analysis: Optional["NovelContentAnalysis"] = None,
 ) -> MetricResult:
     """
     幻觉检测指标（Hallucination Detection）
@@ -433,13 +435,10 @@ async def hallucination_metric(
 
     注：暂不设置门控，仅作为评分指标
     """
-    analysis = await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
+    analysis = _analysis or await analyze_novel_content(memoir_text, generated_text, novel_content_brief, llm_adapter)
 
-    # 提取生成文本中的所有实体（使用 LLM 或改进的规则提取逻辑）
-    if llm_adapter is not None:
-        all_extracted = await _extract_entities_with_llm(generated_text, memoir_text, llm_adapter)
-    else:
-        all_extracted = _extract_entity_names_only(generated_text, memoir_text)
+    # 复用 analysis 中已提取的实体（new_facts_in_output 即为 LLM/规则提取结果）
+    all_extracted = analysis.new_facts_in_output
 
     # 分类实体
     memoir_entities = [e for e in all_extracted if e in memoir_text]
