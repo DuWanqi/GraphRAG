@@ -307,15 +307,8 @@ async def evaluate_long_form(
                 "new_facts_in_output": analysis.new_facts_in_output,
                 "grounded_facts": analysis.grounded_facts,
                 "ungrounded_facts": analysis.ungrounded_facts,
-                "information_gain": analysis.information_gain,
-                "expansion_grounding": analysis.expansion_grounding,
                 "summary": novel_brief.summary,
             }
-            # 从 metrics 中提取指标值（覆盖上面的计算值，保持一致）
-            if "information_gain" in metrics:
-                novel_content_info["information_gain"] = metrics["information_gain"].value
-            if "expansion_grounding" in metrics:
-                novel_content_info["expansion_grounding"] = metrics["expansion_grounding"].value
 
         # 移除 LLM 整体风格评估，改用 LLM 实体提取
         eval_result: Optional[Any] = None

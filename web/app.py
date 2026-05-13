@@ -437,13 +437,6 @@ def _format_long_form_novel_content(ev: Any) -> str:
         gf = nci.get("grounded_facts") or []
         ug = nci.get("ungrounded_facts") or []
 
-        ig = nci.get("information_gain")
-        eg = nci.get("expansion_grounding")
-        if ig is not None:
-            lines.append(f"\n- **\u4FE1\u606F\u589E\u76CA\uff08\u5206\u6790\u5B57\u6BB5 raw\uff09**: {float(ig):.1%}")
-        if eg is not None:
-            lines.append(f"\n- **\u6269\u5C55\u6EAF\u6EAF\uff08\u5206\u6790\u5B57\u6BB5\uff09**: {float(eg):.1%}")
-
         lines.append("\n\n#### \u65B0\u4E8B\u5B9E / \u6EAF\u6EAF\n")
         lines.append(f"- \u751F\u6210\u4E2D\u51FA\u73B0\u7684\u4E13\u6709\u4FE1\u606F\u6761\u76EE: {len(nf)}\n")
         if nf:
@@ -2284,7 +2277,7 @@ def create_ui():
 
                         with gr.Accordion("\U0001f4dd 新内容评估", open=False):
                             novel_content_output = gr.Markdown(
-                                label="信息增益 · RAG 利用率 · 新事实溯源（分章）",
+                                label="RAG 利用率 · 新实体使用 · 新事实溯源（分章）",
                             )
 
                         with gr.Accordion("\U0001f517 相关性", open=False):
