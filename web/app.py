@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 import gradio as gr
 
 from src.config import get_settings
@@ -725,9 +725,10 @@ def compare_providers(
 # 批量测试 (Benchmark) — 在固定测试集上系统性地跑生成 + 评估
 # ────────────────────────────────────────────────────────────
 
-BENCHMARK_DATASET_PATH = Path(__file__).resolve().parent.parent / "historical_background_segments.json"
+BENCHMARK_DEFAULT_DIR = Path(__file__).resolve().parent.parent / "data" / "memoirs" / "segments"
 
 BENCHMARK_COLUMNS = [
+    "来源文件",
     "ID",
     "章节",
     "历史标签",
@@ -744,6 +745,18 @@ BENCHMARK_COLUMNS = [
     "状态",
 ]
 
+# 用于求平均的数值指标键 → 显示名 / 是否百分比
+BENCHMARK_METRIC_KEYS = [
+    ("ndcg_at_5", "nDCG@5", False),
+    ("mrr", "MRR", False),
+    ("factscore", "FActScore", True),
+    ("safe_score", "SAFE", True),
+    ("relevance", "相关性", False),
+    ("literary", "文学性", False),
+    ("compliance", "合规性", False),
+    ("elapsed_seconds", "平均耗时(s)", False),
+]
+
 
 _benchmark_stop_event = threading.Event()
 
@@ -754,9 +767,69 @@ def request_benchmark_stop() -> str:
     return "🛑 已请求停止：将在当前段落处理完成后中止，并导出已完成部分的结果。"
 
 
-def _load_benchmark_dataset() -> List[dict]:
-    with open(BENCHMARK_DATASET_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+def _load_benchmark_dataset(dataset_dir: str) -> Tuple[List[dict], List[str], List[str]]:
+    """
+    加载文件夹下的所有 *.json 测试集。每条片段附加 `source_file` 字段。
+
+    Returns: (segments, loaded_files, skipped_files)
+    """
+    p = Path(dataset_dir).expanduser()
+    if not p.is_absolute():
+        p = (Path(__file__).resolve().parent.parent / p).resolve()
+    if not p.exists() or not p.is_dir():
+        raise FileNotFoundError(f"目录不存在或不是文件夹: {p}")
+
+    segments: List[dict] = []
+    loaded: List[str] = []
+    skipped: List[str] = []
+    for fp in sorted(p.glob("*.json")):
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, list) or not all(
+                isinstance(x, dict) and "original_text" in x for x in data
+            ):
+                skipped.append(f"{fp.name} (schema 不匹配)")
+                continue
+            for item in data:
+                item = dict(item)
+                item["source_file"] = fp.name
+                segments.append(item)
+            loaded.append(fp.name)
+        except Exception as e:
+            skipped.append(f"{fp.name} ({type(e).__name__}: {e})")
+    return segments, loaded, skipped
+
+
+def _compute_averages(detail_records: List[dict]) -> Dict[str, Optional[float]]:
+    """对所有数值评估指标 + elapsed_seconds 求平均（忽略 None）。"""
+    out: Dict[str, Optional[float]] = {}
+    for key, _, _ in BENCHMARK_METRIC_KEYS:
+        if key == "elapsed_seconds":
+            vals = [r.get("elapsed_seconds") for r in detail_records if r.get("elapsed_seconds") is not None]
+        else:
+            vals = [r["scores"].get(key) for r in detail_records if r["scores"].get(key) is not None]
+        out[key] = (sum(vals) / len(vals)) if vals else None
+    return out
+
+
+def _format_averages_md(averages: Dict[str, Optional[float]], n: int) -> str:
+    """渲染平均值为 Markdown 表（用于 UI 与导出）。"""
+    if n == 0:
+        return "_暂无数据_"
+    lines = ["| 指标 | 平均值 | 有效样本 |", "| --- | --- | --- |"]
+    for key, label, pct in BENCHMARK_METRIC_KEYS:
+        v = averages.get(key)
+        if v is None:
+            cell = "—"
+        elif pct:
+            cell = f"{v:.1%}"
+        elif key == "elapsed_seconds":
+            cell = f"{v:.2f}s"
+        else:
+            cell = f"{v:.3f}"
+        lines.append(f"| {label} | {cell} | {n} |")
+    return "\n".join(lines)
 
 
 def _truncate(text: Optional[str], n: int = 100) -> str:
@@ -772,6 +845,7 @@ def _fmt_score(v, pct: bool = False) -> str:
 
 
 def batch_benchmark_stream(
+    dataset_dir: str,
     provider: str,
     model: Optional[str],
     style: str,
@@ -786,21 +860,23 @@ def batch_benchmark_stream(
     batch_size: int,
 ):
     """
-    在 historical_background_segments.json 上系统性地跑扩写 + 评估。
+    在指定文件夹下的所有 *.json 测试集上系统性地跑扩写 + 评估。
 
     - 扩写文本始终生成（无视 UI 评估开关）
     - 评估模块按 UI 当前勾选状态执行
     - 所有参数沿用主标签页 UI 设置
+    - 跑完后对所有数值指标求平均，回写到 UI / JSON / Markdown / CSV
 
-    yields: (status_md, dataframe_rows, json_file, md_file, csv_file)
+    yields: (status_md, dataframe_rows, averages_md, json_file, md_file, csv_file)
     """
     global retriever, generator, current_provider, current_model
 
     # 重置停止标志，避免上次残留
     _benchmark_stop_event.clear()
+    empty_avg = "_尚未开始_"
 
     if not provider:
-        yield ("⚠️ 请先在「生成历史背景」标签页选择 LLM 模型（供应商）。", [], None, None, None)
+        yield ("⚠️ 请先在「生成历史背景」标签页选择 LLM 模型（供应商）。", [], empty_avg, None, None, None)
         return
 
     # 复用 / 必要时初始化检索器与生成器
@@ -812,18 +888,21 @@ def batch_benchmark_stream(
     ):
         init_msg = init_components(provider, model=model)
         if "失败" in init_msg:
-            yield (init_msg, [], None, None, None)
+            yield (init_msg, [], empty_avg, None, None, None)
             return
 
     try:
-        dataset = _load_benchmark_dataset()
+        dataset, loaded_files, skipped_files = _load_benchmark_dataset(
+            dataset_dir or str(BENCHMARK_DEFAULT_DIR)
+        )
     except Exception as e:
-        yield (f"❌ 读取测试集失败 ({BENCHMARK_DATASET_PATH.name}): {e}", [], None, None, None)
+        yield (f"❌ 读取测试集目录失败: {e}", [], empty_avg, None, None, None)
         return
 
     total = len(dataset)
     if total == 0:
-        yield ("⚠️ 测试集为空。", [], None, None, None)
+        skip_note = f"\n跳过的文件: {', '.join(skipped_files)}" if skipped_files else ""
+        yield (f"⚠️ 目录下未找到有效测试集 *.json。{skip_note}", [], empty_avg, None, None, None)
         return
 
     single_cfg = single_segment_generation_config(length_bucket)
@@ -832,10 +911,15 @@ def batch_benchmark_stream(
     detail_records: List[dict] = []
     bench_start = time.monotonic()
 
+    files_note = f" 来源: {len(loaded_files)} 个文件 ({', '.join(loaded_files)})"
+    if skipped_files:
+        files_note += f" · 跳过: {', '.join(skipped_files)}"
     yield (
-        f"⏳ 共 {total} 条段落待处理。当前配置：{provider}{f'/{model}' if model else ''} · "
+        f"⏳ 共 {total} 条段落待处理。{files_note}\n\n"
+        f"当前配置：{provider}{f'/{model}' if model else ''} · "
         f"风格 `{style}` · 字数 `{length_bucket}` · 温度 `{temperature}` · 检索 `{retrieval_mode}`",
         rows,
+        empty_avg,
         None,
         None,
         None,
@@ -850,10 +934,11 @@ def batch_benchmark_stream(
                 stopped_early = True
                 yield (
                     f"🛑 已停止：在第 {idx} / {total} 条段落开始前中止。已完成 {len(rows)} 条，正在导出…",
-                    rows, None, None, None,
+                    rows, empty_avg, None, None, None,
                 )
                 break
 
+            source_file = item.get("source_file", "")
             seg_id = item.get("id", f"#{idx}")
             chapter = item.get("chapter", "")
             tags = item.get("historical_tag", []) or []
@@ -863,14 +948,15 @@ def batch_benchmark_stream(
             seg_start = time.monotonic()
             base_status = (
                 f"### 进度: {idx} / {total}\n\n"
+                f"- 来源: `{source_file}`\n"
                 f"- 当前: **{seg_id}** — {chapter}\n"
                 f"- 历史标签: {tags_str}\n"
                 f"- 已耗时: {time.monotonic() - bench_start:.1f}s\n"
             )
-            yield (base_status + "\n_正在检索…_", rows, None, None, None)
+            yield (base_status + "\n_正在检索…_", rows, empty_avg, None, None, None)
 
             row = [
-                seg_id, chapter, tags_str,
+                source_file, seg_id, chapter, tags_str,
                 _truncate(original_text, 120), "",
                 "—", "—", "—", "—", "—", "—", "—",
                 "—", "进行中",
@@ -891,7 +977,7 @@ def batch_benchmark_stream(
                 ))
 
                 # ── 2. 扩写（必跑） ──
-                yield (base_status + "\n_正在生成扩写…_", rows, None, None, None)
+                yield (base_status + "\n_正在生成扩写…_", rows, empty_avg, None, None, None)
                 gen_result = loop.run_until_complete(asyncio.wait_for(
                     generator.generate(
                         memoir_text=original_text,
@@ -904,8 +990,8 @@ def batch_benchmark_stream(
                     timeout=120.0,
                 ))
                 generated_text = gen_result.content or ""
-                row[4] = _truncate(generated_text, 120)
-                yield (base_status + "\n_扩写完成，进入评估…_", rows, None, None, None)
+                row[5] = _truncate(generated_text, 120)
+                yield (base_status + "\n_扩写完成，进入评估…_", rows, empty_avg, None, None, None)
 
                 # ── 3. 检索质量（按需） ──
                 if enable_retrieval_quality:
@@ -920,11 +1006,11 @@ def batch_benchmark_stream(
                         ))
                         ndcg5 = eval_result.get("ndcg_at_5")
                         mrr = eval_result.get("mrr")
-                        row[5] = _fmt_score(ndcg5)
-                        row[6] = _fmt_score(mrr)
+                        row[6] = _fmt_score(ndcg5)
+                        row[7] = _fmt_score(mrr)
                     except Exception as e:
-                        row[5] = "失败"
                         row[6] = "失败"
+                        row[7] = "失败"
                         error_msg = (error_msg + " | " if error_msg else "") + f"检索评估: {e}"
 
                 # ── 4. 准确性 + LLM-as-Judge（按需） ──
@@ -952,34 +1038,35 @@ def batch_benchmark_stream(
 
                         if eval_res.fact_check:
                             factscore = eval_res.fact_check.factscore
-                            row[7] = _fmt_score(factscore, pct=True)
+                            row[8] = _fmt_score(factscore, pct=True)
                         if eval_res.safe_check:
                             safe_score = eval_res.safe_check.safe_score
-                            row[8] = _fmt_score(safe_score, pct=True)
+                            row[9] = _fmt_score(safe_score, pct=True)
                         if "relevance" in eval_res.scores:
                             relevance = eval_res.scores["relevance"].score
-                            row[9] = f"{relevance:.1f}"
+                            row[10] = f"{relevance:.1f}"
                         if "literary" in eval_res.scores:
                             literary = eval_res.scores["literary"].score
-                            row[10] = f"{literary:.1f}"
+                            row[11] = f"{literary:.1f}"
                         if "compliance" in eval_res.scores:
                             compliance = eval_res.scores["compliance"].score
-                            row[11] = f"{compliance:.1f}"
+                            row[12] = f"{compliance:.1f}"
                     except Exception as e:
                         error_msg = (error_msg + " | " if error_msg else "") + f"评估: {e}"
 
                 seg_elapsed = time.monotonic() - seg_start
-                row[12] = f"{seg_elapsed:.1f}"
-                row[13] = "✅ 完成" if not error_msg else f"⚠️ {_truncate(error_msg, 30)}"
+                row[13] = f"{seg_elapsed:.1f}"
+                row[14] = "✅ 完成" if not error_msg else f"⚠️ {_truncate(error_msg, 30)}"
 
             except Exception as e:
                 seg_elapsed = time.monotonic() - seg_start
-                row[12] = f"{seg_elapsed:.1f}"
-                row[13] = f"❌ {_truncate(str(e), 30)}"
+                row[13] = f"{seg_elapsed:.1f}"
+                row[14] = f"❌ {_truncate(str(e), 30)}"
                 error_msg = (error_msg + " | " if error_msg else "") + str(e)
 
             rows.append(row)
             detail_records.append({
+                "source_file": source_file,
                 "id": seg_id,
                 "chapter": chapter,
                 "historical_tag": tags,
@@ -997,7 +1084,7 @@ def batch_benchmark_stream(
                 "elapsed_seconds": round(seg_elapsed, 2),
                 "error": error_msg or None,
             })
-            yield (base_status, rows, None, None, None)
+            yield (base_status, rows, empty_avg, None, None, None)
 
         # ── 处理结束（正常完成或中途停止）：导出 JSON / Markdown / CSV ──
         done_count = len(rows)
@@ -1005,7 +1092,7 @@ def batch_benchmark_stream(
             f"💾 已处理 {done_count} / {total} 条段落"
             f"{'（已停止）' if stopped_early else ''}，"
             f"共耗时 {time.monotonic() - bench_start:.1f}s，正在导出…",
-            rows, None, None, None,
+            rows, empty_avg, None, None, None,
         )
 
         out_dir = Path(tempfile.mkdtemp(prefix="benchmark_"))
@@ -1013,6 +1100,10 @@ def batch_benchmark_stream(
         json_path = out_dir / f"benchmark_{ts}.json"
         md_path = out_dir / f"benchmark_{ts}.md"
         csv_path = out_dir / f"benchmark_{ts}.csv"
+
+        # ── 计算平均值（用于 UI / JSON / Markdown / CSV）──
+        averages = _compute_averages(detail_records)
+        averages_md = _format_averages_md(averages, len(detail_records))
 
         run_settings = {
             "provider": provider,
@@ -1029,6 +1120,9 @@ def batch_benchmark_stream(
             },
             "batch_size": int(batch_size),
             "use_rule_decompose": use_rule_decompose,
+            "dataset_dir": dataset_dir,
+            "loaded_files": loaded_files,
+            "skipped_files": skipped_files,
             "timestamp": ts,
             "total_segments": total,
             "completed_segments": len(detail_records),
@@ -1038,13 +1132,20 @@ def batch_benchmark_stream(
 
         # JSON
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump({"settings": run_settings, "results": detail_records}, f, ensure_ascii=False, indent=2)
+            json.dump(
+                {
+                    "settings": run_settings,
+                    "summary": {"averages": averages, "n": len(detail_records)},
+                    "results": detail_records,
+                },
+                f, ensure_ascii=False, indent=2,
+            )
 
         # CSV
         with open(csv_path, "w", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
             w.writerow([
-                "id", "chapter", "historical_tag",
+                "source_file", "id", "chapter", "historical_tag",
                 "original_text", "generated_text",
                 "ndcg_at_5", "mrr", "factscore", "safe_score",
                 "relevance", "literary", "compliance",
@@ -1053,12 +1154,22 @@ def batch_benchmark_stream(
             for r in detail_records:
                 s = r["scores"]
                 w.writerow([
-                    r["id"], r["chapter"], "|".join(r["historical_tag"]),
+                    r.get("source_file", ""), r["id"], r["chapter"], "|".join(r["historical_tag"]),
                     r["original_text"], r["generated_text"],
                     s["ndcg_at_5"], s["mrr"], s["factscore"], s["safe_score"],
                     s["relevance"], s["literary"], s["compliance"],
                     r["elapsed_seconds"], r["error"] or "",
                 ])
+            # 平均值行
+            w.writerow([])
+            w.writerow([
+                "AVERAGE", f"n={len(detail_records)}", "", "", "", "",
+                averages.get("ndcg_at_5"), averages.get("mrr"),
+                averages.get("factscore"), averages.get("safe_score"),
+                averages.get("relevance"), averages.get("literary"),
+                averages.get("compliance"),
+                averages.get("elapsed_seconds"), "",
+            ])
 
         # Markdown
         with open(md_path, "w", encoding="utf-8") as f:
@@ -1069,10 +1180,16 @@ def batch_benchmark_stream(
                 f"- 评估: 检索质量={enable_retrieval_quality}, "
                 f"FActScore={enable_fact_check}, SAFE={enable_safe_check}, LLM-Judge={enable_llm_judge}\n"
             )
-            f.write(f"- 段落数: {total} | 总耗时: {run_settings['total_elapsed_seconds']}s\n\n---\n\n")
+            f.write(f"- 数据来源: `{dataset_dir}`（{len(loaded_files)} 个文件: {', '.join(loaded_files)}）\n")
+            if skipped_files:
+                f.write(f"- 跳过: {', '.join(skipped_files)}\n")
+            f.write(f"- 段落数: {total} | 总耗时: {run_settings['total_elapsed_seconds']}s\n\n")
+            f.write("## 📊 指标平均\n\n")
+            f.write(averages_md + "\n\n---\n\n")
             for r in detail_records:
                 s = r["scores"]
                 f.write(f"## {r['id']} — {r['chapter']}\n\n")
+                f.write(f"**来源**: `{r.get('source_file', '')}`  |  ")
                 f.write(f"**历史标签**: {'、'.join(r['historical_tag'])}\n\n")
                 f.write(f"### 原文\n\n{r['original_text']}\n\n")
                 f.write(f"### 扩写\n\n{r['generated_text'] or '_未生成_'}\n\n")
@@ -1095,6 +1212,7 @@ def batch_benchmark_stream(
             f"{final_icon} {final_label}！已处理 {len(detail_records)} / {total} 条段落，"
             f"导出完毕（总耗时 {run_settings['total_elapsed_seconds']}s）。",
             rows,
+            averages_md,
             str(json_path),
             str(md_path),
             str(csv_path),
@@ -1334,22 +1452,22 @@ def create_ui():
                         with gr.Accordion("\U0001f4cb 提取与检索信息", open=False):
                             extracted_info = gr.Markdown(label="提取的信息")
 
-                        with gr.Accordion("\U0001f3af 检索质量", open=False):
+                        with gr.Accordion("\U0001f3af 评估：检索质量", open=False):
                             retrieval_quality_output = gr.Markdown(label="检索质量")
 
-                        with gr.Accordion("\u2705 事实准确性", open=True):
+                        with gr.Accordion("\u2705 评估：事实准确性", open=True):
                             gr.Markdown("#### \U0001f4da 基于知识库 (FActScore)")
                             accuracy_output = gr.Markdown(label="事实准确性 (KB)")
                             gr.Markdown("---\n#### \U0001f310 独立知识验证 (SAFE)")
                             safe_check_output = gr.Markdown(label="独立知识验证")
 
-                        with gr.Accordion("\U0001f517 相关性", open=False):
+                        with gr.Accordion("\U0001f517 评估：相关性", open=False):
                             relevance_output = gr.Markdown(label="相关性")
 
-                        with gr.Accordion("\u270d\ufe0f 文学性", open=False):
+                        with gr.Accordion("\u270d\ufe0f 评估：文学性", open=False):
                             literary_output = gr.Markdown(label="文学性")
 
-                        with gr.Accordion("\U0001f6e1\ufe0f 合规性", open=False):
+                        with gr.Accordion("\U0001f6e1\ufe0f 评估：合规性", open=False):
                             compliance_output = gr.Markdown(label="合规性")
 
                 generate_btn.click(
@@ -1457,14 +1575,24 @@ def create_ui():
                     f"""
                     ## 批量测试 (Benchmark)
 
-                    在固定测试集 `{BENCHMARK_DATASET_PATH.name}` 上系统性地跑扩写生成。
+                    在指定文件夹下的所有 `*.json` 测试集上系统性地跑扩写生成。
 
+                    - **数据来源**：默认 `{BENCHMARK_DEFAULT_DIR.relative_to(Path(__file__).resolve().parent.parent)}`，
+                      可在下方输入框修改；所有 schema 合法的 `*.json` 会被合并成一份测试集。
                     - **参数复用**：LLM / 模型 / 风格 / 字数 / 温度 / 检索模式 / 评估开关 / batch_size 等，
                       全部沿用「\U0001f4dd 生成历史背景」标签页当前的设置。
                     - **扩写文本**：每次都会生成（与评估开关无关）。
                     - **评估模块**：按主标签页当前勾选状态执行；未勾选的不跑。
-                    - **进度**：逐条流式更新，结束后导出 JSON / Markdown / CSV 三种格式供下载。
+                    - **进度**：逐条流式更新；跑完后**对所有数值指标求平均**并展示在 UI，同时导出
+                      JSON / Markdown / CSV 三种格式供下载（导出文件均含平均值汇总）。
                     """
+                )
+
+                bench_dataset_dir = gr.Textbox(
+                    label="测试集目录",
+                    value=str(BENCHMARK_DEFAULT_DIR),
+                    placeholder="data/memoirs/segments/",
+                    info="可填绝对路径或相对项目根目录的相对路径；目录下所有 *.json 会被合并使用。",
                 )
 
                 with gr.Row():
@@ -1473,6 +1601,11 @@ def create_ui():
 
                 bench_status = gr.Markdown(
                     value="点击「开始批量测试」启动；运行中可点「停止」让任务在当前段落跑完后中止。",
+                )
+
+                bench_averages = gr.Markdown(
+                    value="_尚未开始_",
+                    label="📊 指标平均值",
                 )
 
                 bench_table = gr.Dataframe(
@@ -1491,6 +1624,7 @@ def create_ui():
                 bench_btn.click(
                     fn=batch_benchmark_stream,
                     inputs=[
+                        bench_dataset_dir,
                         provider_select,
                         ollama_model_select,
                         style_select,
@@ -1507,6 +1641,7 @@ def create_ui():
                     outputs=[
                         bench_status,
                         bench_table,
+                        bench_averages,
                         bench_json_file,
                         bench_md_file,
                         bench_csv_file,

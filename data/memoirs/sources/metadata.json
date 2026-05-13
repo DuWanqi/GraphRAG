@@ -1,0 +1,100 @@
+{
+  "schema_version": "1.0",
+  "description": "Chinese memoir corpus for historical-background extraction. Restricted to memoirs whose narrative substantively covers the post-1949 PRC era (pre-1949-only memoirs were excluded).",
+  "memoirs": [
+    {
+      "id": "M00",
+      "filename": "回忆录参考成文_capstone.pdf",
+      "title": "回忆录参考成文（capstone 项目原始参考）",
+      "author": "未署名（基层退休干部口述）",
+      "source_url": null,
+      "source_site": "本地（项目原始资料）",
+      "era_coverage": "1940s–2010s",
+      "historical_periods": ["土地改革", "抗美援朝", "三年困难时期", "文化大革命", "对越自卫反击战", "改革开放", "新世纪"],
+      "category": "基层干部 / 退休老兵 / 普通人生命叙事",
+      "match_tier": "reference",
+      "notes": "项目原始参考样本，已抽取 19 段（见 segments/historical_background_segments.json）"
+    },
+    {
+      "id": "M01",
+      "filename": "01_wusheng_qunluo.pdf",
+      "title": "无声的群落：老知青回忆录·续编（上卷）",
+      "author": "多人合集（老知青）",
+      "source_url": "https://ia601208.us.archive.org/16/items/themicrostudios_gmail_2007/%E6%97%A0%E5%A3%B0%E7%9A%84%E7%BE%A4%E8%90%BD%EF%BC%9A%E8%80%81%E7%9F%A5%E9%9D%92%E5%9B%9E%E5%BF%86%E5%BD%95%C2%B7%E7%BB%AD%E7%BC%96%EF%BC%88%E4%B8%8A%E5%8D%B7%EF%BC%89.pdf",
+      "source_site": "archive.org",
+      "era_coverage": "1950s–1980s",
+      "historical_periods": ["上山下乡", "文化大革命", "知青返城", "改革开放初期"],
+      "category": "知青集体回忆 / 普通人视角",
+      "match_tier": "A",
+      "extraction_status": "skipped",
+      "skip_reason": "扫描版 PDF，PyMuPDF 抽不出文本，需 OCR；用户选择跳过"
+    },
+    {
+      "id": "M02",
+      "filename": "02_hongweibing_xiaobao.pdf",
+      "title": "红卫兵小报和我（重庆文革纪实）",
+      "author": "周孜仁",
+      "source_url": "https://archive.org/download/themicrostudios_gmail_2007/%E7%BA%A2%E5%8D%AB%E5%85%B5%E5%B0%8F%E6%8A%A5%E5%92%8C%E6%88%91.pdf",
+      "source_site": "archive.org",
+      "era_coverage": "1960s",
+      "historical_periods": ["文化大革命", "红卫兵运动", "重庆武斗"],
+      "category": "个人文革亲历",
+      "match_tier": "A"
+    },
+    {
+      "id": "M03",
+      "filename": "03_heiwulei_yijiu.pdf",
+      "title": "黑五类忆旧",
+      "author": "焦国标 主编（多人合集）",
+      "source_url": "https://archive.org/download/themicrostudios_gmail_2007/%E9%BB%91%E4%BA%94%E7%B1%BB%E5%BF%86%E6%97%A7.pdf",
+      "source_site": "archive.org",
+      "era_coverage": "1949–1980s",
+      "historical_periods": ["土地改革", "反右", "文化大革命", "黑五类家庭"],
+      "category": "黑五类家庭口述合集",
+      "match_tier": "A"
+    },
+    {
+      "id": "M04",
+      "filename": "04_gaige_licheng.pdf",
+      "title": "改革历程",
+      "author": "赵紫阳",
+      "source_url": "https://archive.org/download/themicrostudios_gmail_2007/%E8%B5%B5%E7%B4%AB%E9%98%B3-%E6%94%B9%E9%9D%A9%E5%8E%86%E7%A8%8B.pdf",
+      "source_site": "archive.org",
+      "era_coverage": "1980s–2000s",
+      "historical_periods": ["改革开放", "价格闯关", "1989 政治风波", "软禁岁月"],
+      "category": "高层政治回忆",
+      "match_tier": "B"
+    },
+    {
+      "id": "M05",
+      "filename": "05_cangsang_suiyue.pdf",
+      "title": "沧桑岁月",
+      "author": "陈文立",
+      "source_url": "https://laogairesearch.org/wp-content/uploads/2023/06/chenwenli(update).pdf",
+      "source_site": "laogairesearch.org",
+      "era_coverage": "1950s–改革开放后",
+      "historical_periods": ["反右", "劳改", "文化大革命", "改革开放", "晚年生活"],
+      "category": "劳改幸存者人生回忆",
+      "match_tier": "D"
+    },
+    {
+      "id": "M06",
+      "filename": "06_songrenqiong.pdf",
+      "title": "宋任穷回忆录",
+      "author": "宋任穷",
+      "source_url": "https://www.marxists.org/chinese/pdf/biography/ccp/3a.pdf",
+      "source_site": "marxists.org",
+      "era_coverage": "1920s–1990s",
+      "historical_periods": ["红军", "抗战", "解放战争", "建国初期", "文化大革命", "改革开放"],
+      "category": "高级干部自传",
+      "match_tier": "D",
+      "extraction_status": "skipped",
+      "skip_reason": "扫描版 PDF，PyMuPDF 抽不出文本，需 OCR；用户选择跳过"
+    }
+  ],
+  "removed": [
+    {"original_id": "M04", "title": "红色带刀侍卫——张国焘卫队长自述", "reason": "内容主体为 1920s–1949 之前红军经历，post-1949 覆盖不足"},
+    {"original_id": "M05", "title": "龚楚将军回忆录", "reason": "内容主体为 1900s–1949（龚楚 1949 后已脱党赴港），post-1949 覆盖不足"},
+    {"original_id": "M06", "title": "1949 年中国知识分子的私人记录", "reason": "时间窗仅 1948–1950，不覆盖 PRC 后续历史"}
+  ]
+}
