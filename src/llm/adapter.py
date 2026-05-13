@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, List, Dict, Any, AsyncIterator, Union
 import asyncio
+import json
 
 import litellm
 from litellm import acompletion, completion, aembedding, embedding
@@ -278,6 +279,7 @@ class LLMAdapter(ABC):
             extra_params["base_url"] = self.api_base
 
         kwargs.setdefault("num_retries", 2)
+
         stream = await acompletion(
             model=litellm_model,
             messages=messages,
@@ -442,12 +444,12 @@ class LLMAdapter(ABC):
 
 
 class DeepseekAdapter(LLMAdapter):
-    """Deepseek适配器"""
-    
+    """DeepSeek 适配器（官网 OpenAI 兼容 `/v1`，LiteLLM 使用 `deepseek/<model>`）"""
+
     @property
     def provider(self) -> LLMProvider:
         return LLMProvider.DEEPSEEK
-    
+
     @property
     def default_model(self) -> str:
         return "deepseek-chat"
@@ -475,28 +477,15 @@ class QwenAdapter(LLMAdapter):
 
 
 class HunyuanAdapter(LLMAdapter):
-    """腾讯混元适配器"""
-    
-    def __init__(
-        self,
-        api_key: str,
-        secret_id: Optional[str] = None,
-        secret_key: Optional[str] = None,
-        api_base: Optional[str] = None,
-        model: Optional[str] = None,
-        **kwargs
-    ):
-        super().__init__(api_key, api_base, model, **kwargs)
-        self.secret_id = secret_id
-        self.secret_key = secret_key
-    
+    """腾讯混元适配器（OpenAI 兼容接口，仅需 API Key）"""
+
     @property
     def provider(self) -> LLMProvider:
         return LLMProvider.HUNYUAN
     
     @property
     def default_model(self) -> str:
-        return "hunyuan-lite"
+        return "hy3-preview"
     
     @property
     def default_api_base(self) -> str:

@@ -7,7 +7,22 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.generation.memoir_segmenter import MemoirSegment, SegmentMeta
-from src.generation.chapter_budget import allocate_segment_budgets, legacy_maps_for_single_segment
+from src.generation.chapter_budget import (
+    allocate_segment_budgets,
+    allocate_segment_budgets_uniform,
+    legacy_maps_for_single_segment,
+)
+
+
+def test_allocate_uniform_per_chapter():
+    segs = [
+        MemoirSegment(0, "a" * 400),
+        MemoirSegment(1, "b" * 600),
+    ]
+    budgets = allocate_segment_budgets_uniform(segs, 500, 900)
+    assert len(budgets) == 2
+    assert budgets[0].length_hint == budgets[1].length_hint
+    assert budgets[0].target_chars == budgets[1].target_chars
 
 
 def test_allocate_proportional():

@@ -36,10 +36,12 @@ class Settings(BaseSettings):
         alias="QWEN_API_BASE"
     )
     
-    # 腾讯混元配置
+    # 腾讯混元配置（OpenAI 兼容：https://api.hunyuan.cloud.tencent.com/v1 ，仅需控制台 API Key）
     hunyuan_api_key: Optional[str] = Field(default=None, alias="HUNYUAN_API_KEY")
-    hunyuan_secret_id: Optional[str] = Field(default=None, alias="HUNYUAN_SECRET_ID")
-    hunyuan_secret_key: Optional[str] = Field(default=None, alias="HUNYUAN_SECRET_KEY")
+    hunyuan_api_base: Optional[str] = Field(
+        default=None,
+        alias="HUNYUAN_API_BASE",
+    )
     
     # Google Gemini配置
     google_api_key: Optional[str] = Field(default=None, alias="GOOGLE_API_KEY")

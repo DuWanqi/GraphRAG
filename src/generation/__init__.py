@@ -13,11 +13,18 @@ from .memoir_segmenter import (
     validate_segmentation,
     extract_years,
 )
-from .chapter_budget import SegmentBudget, allocate_segment_budgets, legacy_maps_for_single_segment
+from .chapter_budget import (
+    SegmentBudget,
+    allocate_segment_budgets,
+    allocate_segment_budgets_uniform,
+    legacy_maps_for_single_segment,
+    segment_budget_from_char_range,
+)
 from .chapter_context import ChapterContext, ChapterPosition, ChapterRecord
 from .prompts import PromptTemplates, get_system_prompt
 from .runtime_options import (
     single_segment_generation_config,
+    single_segment_generation_config_from_range,
     estimate_long_form_generation_timeout,
     estimate_long_form_evaluation_timeout,
     build_long_form_eval_options,
@@ -37,6 +44,8 @@ __all__ = [
     "extract_years",
     "SegmentBudget",
     "allocate_segment_budgets",
+    "allocate_segment_budgets_uniform",
+    "segment_budget_from_char_range",
     "legacy_maps_for_single_segment",
     "ChapterContext",
     "ChapterPosition",
@@ -50,6 +59,7 @@ __all__ = [
     "SYSTEM_PROMPTS",
     "get_system_prompt",
     "single_segment_generation_config",
+    "single_segment_generation_config_from_range",
     "estimate_long_form_generation_timeout",
     "estimate_long_form_evaluation_timeout",
     "build_long_form_eval_options",

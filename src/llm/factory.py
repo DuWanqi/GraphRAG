@@ -3,7 +3,7 @@ LLM适配器工厂
 提供统一的适配器创建和管理接口
 """
 
-from typing import Optional, Dict, Type
+from typing import Optional, Dict, Type, List
 from .adapter import (
     LLMAdapter,
     LLMProvider,
@@ -14,6 +14,7 @@ from .adapter import (
     GLMAdapter,
     OpenAIAdapter,
     OllamaAdapter,
+    list_ollama_models_sync,
 )
 from ..config import get_settings
 
@@ -33,12 +34,50 @@ ADAPTER_REGISTRY: Dict[LLMProvider, Type[LLMAdapter]] = {
 DEFAULT_MODELS: Dict[LLMProvider, str] = {
     LLMProvider.DEEPSEEK: "deepseek-chat",
     LLMProvider.QWEN: "qwen-plus",
-    LLMProvider.HUNYUAN: "hunyuan-lite",
+    LLMProvider.HUNYUAN: "hy3-preview",
     LLMProvider.GEMINI: "gemini-2.5-flash",
     LLMProvider.GLM: "glm-4.7-flash",
     LLMProvider.OPENAI: "gpt-4o-mini",
     LLMProvider.OLLAMA: "qwen3:32b",
 }
+
+# Web UI 与各路由可选模型（Ollama 由 /api/tags 动态填充，见 get_provider_models）
+PROVIDER_MODELS: Dict[LLMProvider, List[str]] = {
+    LLMProvider.DEEPSEEK: ["deepseek-chat", "deepseek-v4-flash", "deepseek-v4-pro"],
+    LLMProvider.QWEN: ["qwen-plus"],
+    LLMProvider.HUNYUAN: ["hy3-preview", "hunyuan-lite"],
+    LLMProvider.GEMINI: ["gemini-2.5-flash"],
+    LLMProvider.GLM: ["glm-4.7-flash"],
+    LLMProvider.OPENAI: ["gpt-4o", "gpt-5"],
+}
+
+
+def get_provider_models(provider: str) -> List[str]:
+    """
+    返回某供应商在 UI 中可选的模型 id 列表。
+    Ollama：从本地服务拉取；失败或未启动时回退到 DEFAULT_MODELS[ollama]。
+    """
+    if not (provider or "").strip():
+        return []
+    try:
+        provider_enum = LLMProvider(provider.lower())
+    except ValueError:
+        return []
+
+    if provider_enum == LLMProvider.OLLAMA:
+        settings = get_settings()
+        try:
+            names = list_ollama_models_sync(settings.ollama_api_base)
+        except Exception:
+            names = []
+        if names:
+            return names
+        return [DEFAULT_MODELS[LLMProvider.OLLAMA]]
+
+    models = PROVIDER_MODELS.get(provider_enum)
+    if models:
+        return list(models)
+    return [DEFAULT_MODELS[provider_enum]]
 
 
 def create_llm_adapter(
@@ -95,18 +134,7 @@ def create_llm_adapter(
             f"缺少 {provider} 的API密钥。"
             f"请在 .env 文件中设置对应的 API_KEY 环境变量。"
         )
-    
-    # 特殊处理混元适配器
-    if provider_enum == LLMProvider.HUNYUAN:
-        return adapter_class(
-            api_key=api_key,
-            secret_id=settings.hunyuan_secret_id,
-            secret_key=settings.hunyuan_secret_key,
-            api_base=api_base,
-            model=model,
-            **kwargs
-        )
-    
+
     return adapter_class(
         api_key=api_key,
         api_base=api_base,
@@ -134,7 +162,7 @@ def _get_api_base_from_settings(provider: LLMProvider, settings) -> Optional[str
     base_mapping = {
         LLMProvider.DEEPSEEK: settings.deepseek_api_base,
         LLMProvider.QWEN: settings.qwen_api_base,
-        LLMProvider.HUNYUAN: None,  # 混元使用默认
+        LLMProvider.HUNYUAN: settings.hunyuan_api_base,
         LLMProvider.GEMINI: None,   # Gemini使用默认
         LLMProvider.GLM: "https://open.bigmodel.cn/api/paas/v4",  # 智谱API地址
         LLMProvider.OPENAI: settings.openai_api_base,

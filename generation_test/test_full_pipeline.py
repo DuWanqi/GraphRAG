@@ -32,22 +32,39 @@ async def test_full_pipeline():
     
     # 2. 初始化组件
     print("\n[2/6] 初始化组件...")
-    
+
+    # Pipeline 配置
+    pipeline_config = {
+        "llm_provider": "openai",
+        "llm_model": "gpt-4o",
+        "index_dir": "data/graphrag_output",
+        "retrieval_mode": "keyword",
+        "style": "standard",
+        "temperature": 0.7,
+        "target_min_chars": 100,
+        "target_max_chars": 200,
+        "use_llm_parsing": True,
+    }
+
+    print("\n  Pipeline 配置:")
+    for key, value in pipeline_config.items():
+        print(f"    - {key}: {value}")
+
     # 创建 LLM 适配器
     llm_adapter = create_llm_adapter(
-        provider="openai",
-        model="gpt-4o",
+        provider=pipeline_config["llm_provider"],
+        model=pipeline_config["llm_model"],
         api_key=os.getenv("OPENAI_API_KEY"),
     )
-    print(f"  ✓ LLM 适配器: OpenAI gpt-4o")
-    
+    print(f"\n  ✓ LLM 适配器: {pipeline_config['llm_provider']} {pipeline_config['llm_model']}")
+
     # 创建检索器
     retriever = MemoirRetriever(
-        index_dir="data/graphrag_output",
+        index_dir=pipeline_config["index_dir"],
         llm_adapter=llm_adapter,
     )
-    print(f"  ✓ 检索器: GraphRAG")
-    
+    print(f"  ✓ 检索器: GraphRAG (索引目录: {pipeline_config['index_dir']})")
+
     # 创建生成器
     generator = LiteraryGenerator(llm_adapter=llm_adapter)
     print(f"  ✓ 生成器: LiteraryGenerator")
@@ -75,12 +92,12 @@ async def test_full_pipeline():
         result = await generator.generate_long_form(
             memoir_text=memoir_text,
             retriever=retriever,
-            target_min_chars=100,  # 每章最少 100 字
-            target_max_chars=200,  # 每章最多 200 字
-            use_llm_parsing=True,
-            retrieval_mode="keyword",  # 使用关键词检索（快速）
-            style="standard",
-            temperature=0.7,
+            target_min_chars=pipeline_config["target_min_chars"],
+            target_max_chars=pipeline_config["target_max_chars"],
+            use_llm_parsing=pipeline_config["use_llm_parsing"],
+            retrieval_mode=pipeline_config["retrieval_mode"],
+            style=pipeline_config["style"],
+            temperature=pipeline_config["temperature"],
         )
         
         print(f"\n  ✓ 生成完成")
@@ -108,15 +125,21 @@ async def test_full_pipeline():
         print(f"\n检索信息:")
         print(f"  - 实体数: {len(chapter.retrieval_result.entities)}")
         print(f"  - 关系数: {len(chapter.retrieval_result.relationships)}")
-        
+
+        # 显示所有实体名称
+        if chapter.retrieval_result.entities:
+            entity_names = [e.get('name', e.get('title', '')) for e in chapter.retrieval_result.entities]
+            print(f"  - 实体列表: {', '.join(entity_names)}")
+
         # 显示新内容信息
         if hasattr(chapter.retrieval_result, '_novel_content_brief'):
             brief = chapter.retrieval_result._novel_content_brief
             print(f"\n新内容信息:")
+            print(f"  - 对齐实体: {len(brief.aligned_entities)}")
             print(f"  - 可用新实体: {len(brief.novel_entities)}")
             if brief.novel_entities:
-                names = [e.get('name', e.get('title', '')) for e in brief.novel_entities[:3]]
-                print(f"  - 新实体示例: {', '.join(names)}")
+                names = [e.get('name', e.get('title', '')) for e in brief.novel_entities]
+                print(f"  - 新实体列表: {', '.join(names)}")
         
         print("\n" + "-" * 80)
     
@@ -145,13 +168,35 @@ async def test_full_pipeline():
             score = aggregate_scores(seg.metrics)
             print(f"  - 第 {seg.segment_index + 1} 章: {score:.2f}/10")
 
+            # 显示详细的metric计算过程
+            print(f"    指标详情:")
+            for metric_name, metric_value in seg.metrics.items():
+                if hasattr(metric_value, 'value'):
+                    print(f"      · {metric_name}: {metric_value.value:.3f}")
+                    # 如果有计算细节，显示出来
+                    if hasattr(metric_value, 'details') and metric_value.details:
+                        for detail_key, detail_val in metric_value.details.items():
+                            print(f"        - {detail_key}: {detail_val}")
+
             # 显示新内容指标
             if seg.novel_content_info:
                 nci = seg.novel_content_info
+                print(f"    新内容指标:")
                 if 'information_gain' in nci:
-                    print(f"    · 信息增益: {nci['information_gain']:.0%}")
+                    print(f"      · 信息增益: {nci['information_gain']:.0%}")
+                    # 显示计算细节
+                    if 'novel_entities_used' in nci and 'novel_entities_available' in nci:
+                        used_count = len(nci['novel_entities_used'])
+                        available_count = len(nci['novel_entities_available'])
+                        print(f"        计算: {used_count} / {available_count} = {nci['information_gain']:.3f}")
                 if 'expansion_grounding' in nci:
-                    print(f"    · 扩展溯源率: {nci['expansion_grounding']:.0%}")
+                    print(f"      · 扩展溯源率: {nci['expansion_grounding']:.0%}")
+                    # 显示计算细节
+                    if 'grounded_facts' in nci and 'new_facts_in_output' in nci:
+                        grounded_count = len(nci['grounded_facts'])
+                        total_new_facts = len(nci['new_facts_in_output'])
+                        if total_new_facts > 0:
+                            print(f"        计算: {grounded_count} / {total_new_facts} = {nci['expansion_grounding']:.3f}")
 
         # 显示质量门控
         if eval_result.quality_gate:
@@ -190,6 +235,14 @@ async def test_full_pipeline():
     report_lines.append("=" * 100)
     report_lines.append("Pipeline 详细测试报告")
     report_lines.append("=" * 100)
+
+    # Pipeline 配置
+    report_lines.append("\n" + "=" * 100)
+    report_lines.append("【Pipeline 配置】")
+    report_lines.append("=" * 100)
+    report_lines.append("\n配置参数:")
+    for key, value in pipeline_config.items():
+        report_lines.append(f"  - {key}: {value}")
 
     # 输入部分
     report_lines.append("\n" + "=" * 100)
@@ -235,49 +288,49 @@ async def test_full_pipeline():
             report_lines.append(f"  ★ 新增实体 (原文未提到): {len(brief.novel_entities)} 个")
             report_lines.append(f"  → 关系: {len(rr.relationships)} 个")
 
-        # 对齐实体（原文已提到的）
+        # 对齐实体（原文已提到的）- 显示全部
         if hasattr(rr, '_novel_content_brief') and rr._novel_content_brief:
             brief = rr._novel_content_brief
             if brief.aligned_entities:
-                report_lines.append(f"\n【对齐实体】(原文已提到，用于增强叙事氛围)")
-                for j, ent in enumerate(brief.aligned_entities[:5], 1):
+                report_lines.append(f"\n【对齐实体】(原文已提到，用于增强叙事氛围) - 共 {len(brief.aligned_entities)} 个")
+                for j, ent in enumerate(brief.aligned_entities, 1):
                     name = ent.get('name', ent.get('title', ''))
                     ent_type = ent.get('type', '')
-                    desc = ent.get('description', '')[:100]
+                    desc = ent.get('description', '')
                     report_lines.append(f"  {j}. {name} ({ent_type})")
                     if desc:
-                        report_lines.append(f"     {desc}...")
+                        # 显示完整描述
+                        report_lines.append(f"     {desc}")
 
-        # 新增实体（原文未提到的，重点关注）
+        # 新增实体（原文未提到的，重点关注）- 显示全部
         if hasattr(rr, '_novel_content_brief') and rr._novel_content_brief:
             brief = rr._novel_content_brief
             if brief.novel_entities:
-                report_lines.append(f"\n【新增实体】(原文未提到，可用于扩展)")
-                for j, ent in enumerate(brief.novel_entities[:10], 1):
+                report_lines.append(f"\n【新增实体】(原文未提到，可用于扩展) - 共 {len(brief.novel_entities)} 个")
+                for j, ent in enumerate(brief.novel_entities, 1):
                     name = ent.get('name', ent.get('title', ''))
                     ent_type = ent.get('type', '')
-                    desc = ent.get('description', '')[:150]
+                    desc = ent.get('description', '')
 
                     # 标注是否被使用
                     used_marker = " ✓ 已用于生成" if name in novel_entities_used else ""
 
                     report_lines.append(f"  {j}. {name} ({ent_type}){used_marker}")
                     if desc:
-                        desc = desc + "..." if len(ent.get('description', '')) > 150 else desc
+                        # 显示完整描述
                         report_lines.append(f"     {desc}")
 
-        # 关系
+        # 关系 - 显示全部
         if rr.relationships:
             report_lines.append(f"\n【关系】(共 {len(rr.relationships)} 个)")
-            for j, rel in enumerate(rr.relationships[:5], 1):
+            for j, rel in enumerate(rr.relationships, 1):
                 source = rel.get('source', '')
                 target = rel.get('target', '')
-                desc = rel.get('description', '')[:100]
+                desc = rel.get('description', '')
                 report_lines.append(f"  {j}. {source} → {target}")
                 if desc:
-                    report_lines.append(f"     {desc}...")
-            if len(rr.relationships) > 5:
-                report_lines.append(f"  ... 还有 {len(rr.relationships) - 5} 个关系")
+                    # 显示完整描述
+                    report_lines.append(f"     {desc}")
 
         report_lines.append("-" * 100)
 
@@ -317,30 +370,59 @@ async def test_full_pipeline():
                 if 'new_facts_in_output' in nci:
                     report_lines.append(f"  生成文本中的新事实: {len(nci['new_facts_in_output'])} 个")
                     if nci['new_facts_in_output']:
-                        report_lines.append(f"    → {', '.join(nci['new_facts_in_output'][:10])}")
+                        # 显示所有新事实
+                        for idx, fact in enumerate(nci['new_facts_in_output'], 1):
+                            report_lines.append(f"    {idx}. {fact}")
 
                 if 'grounded_facts' in nci:
                     report_lines.append(f"\n  ✓ 有 RAG 支撑的新事实: {len(nci['grounded_facts'])} 个")
                     if nci['grounded_facts']:
-                        report_lines.append(f"    → {', '.join(nci['grounded_facts'][:10])}")
+                        # 显示所有有支撑的新事实
+                        for idx, fact in enumerate(nci['grounded_facts'], 1):
+                            report_lines.append(f"    {idx}. {fact}")
 
                 if 'ungrounded_facts' in nci:
                     report_lines.append(f"\n  ✗ 无 RAG 支撑的新事实 (疑似幻觉): {len(nci['ungrounded_facts'])} 个")
                     if nci['ungrounded_facts']:
-                        report_lines.append(f"    ⚠️  {', '.join(nci['ungrounded_facts'][:10])}")
+                        # 显示所有无支撑的新事实
+                        for idx, fact in enumerate(nci['ungrounded_facts'], 1):
+                            report_lines.append(f"    {idx}. ⚠️  {fact}")
 
                 # 3. 评分
                 report_lines.append(f"\n【评分】")
                 if 'information_gain' in nci:
                     report_lines.append(f"  信息增益: {nci['information_gain']:.1%}")
+                    # 显示计算过程
+                    if 'novel_entities_used' in nci and 'novel_entities_available' in nci:
+                        used_count = len(nci['novel_entities_used'])
+                        available_count = len(nci['novel_entities_available'])
+                        report_lines.append(f"    计算公式: 使用的新实体数 / 可用新实体数")
+                        report_lines.append(f"    计算过程: {used_count} / {available_count} = {nci['information_gain']:.4f}")
                 if 'expansion_grounding' in nci:
                     report_lines.append(f"  扩展溯源率: {nci['expansion_grounding']:.1%}")
+                    # 显示计算过程
+                    if 'grounded_facts' in nci and 'new_facts_in_output' in nci:
+                        grounded_count = len(nci['grounded_facts'])
+                        total_new_facts = len(nci['new_facts_in_output'])
+                        report_lines.append(f"    计算公式: 有RAG支撑的新事实数 / 总新事实数")
+                        if total_new_facts > 0:
+                            report_lines.append(f"    计算过程: {grounded_count} / {total_new_facts} = {nci['expansion_grounding']:.4f}")
+                        else:
+                            report_lines.append(f"    计算过程: {grounded_count} / {total_new_facts} = N/A (无新事实)")
 
             # 其他指标
             report_lines.append(f"\n【其他指标】")
             for metric_name, metric_value in seg_eval.metrics.items():
                 if hasattr(metric_value, 'value'):
-                    report_lines.append(f"  - {metric_name}: {metric_value.value:.2f}")
+                    report_lines.append(f"  - {metric_name}: {metric_value.value:.4f}")
+                    # 如果有计算细节，显示出来
+                    if hasattr(metric_value, 'details') and metric_value.details:
+                        report_lines.append(f"    计算细节:")
+                        for detail_key, detail_val in metric_value.details.items():
+                            if isinstance(detail_val, float):
+                                report_lines.append(f"      · {detail_key}: {detail_val:.4f}")
+                            else:
+                                report_lines.append(f"      · {detail_key}: {detail_val}")
                 else:
                     report_lines.append(f"  - {metric_name}: {metric_value}")
 
@@ -358,7 +440,15 @@ async def test_full_pipeline():
             report_lines.append(f"\n文档级指标:")
             for metric_name, metric_value in eval_result.document_metrics.items():
                 if hasattr(metric_value, 'value'):
-                    report_lines.append(f"  - {metric_name}: {metric_value.value:.2f}")
+                    report_lines.append(f"  - {metric_name}: {metric_value.value:.4f}")
+                    # 如果有计算细节，显示出来
+                    if hasattr(metric_value, 'details') and metric_value.details:
+                        report_lines.append(f"    计算细节:")
+                        for detail_key, detail_val in metric_value.details.items():
+                            if isinstance(detail_val, float):
+                                report_lines.append(f"      · {detail_key}: {detail_val:.4f}")
+                            else:
+                                report_lines.append(f"      · {detail_key}: {detail_val}")
                 else:
                     report_lines.append(f"  - {metric_name}: {metric_value}")
 

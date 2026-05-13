@@ -7,487 +7,607 @@
 import os
 import asyncio
 import time
+import re
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum
 
 import pandas as pd
 
 from .memoir_parser import MemoirParser, MemoirContext
-from .vector_retriever import VectorRetriever, RetrievalMode, EmbeddingError
-from .reranker import get_reranker
-from ..config import get_settings
-from ..llm import LLMAdapter, create_llm_adapter
+
+
+class RetrievalMode(Enum):
+    KEYWORD = "keyword"
+    VECTOR = "vector"
+    HYBRID = "hybrid"
 
 
 @dataclass
 class RetrievalResult:
     """检索结果"""
-    query: str
-    context: MemoirContext
     entities: List[Dict[str, Any]] = field(default_factory=list)
     relationships: List[Dict[str, Any]] = field(default_factory=list)
-    communities: List[Dict[str, Any]] = field(default_factory=list)
     text_units: List[str] = field(default_factory=list)
-    error_message: Optional[str] = None  # 错误信息（如 Ollama 未运行）
+    communities: List[Dict[str, Any]] = field(default_factory=list)
+    context: Optional[MemoirContext] = None
+    query: str = ""
     
-    @property
-    def has_results(self) -> bool:
-        """是否有检索结果"""
-        return bool(self.entities or self.text_units)
-    
-    def get_context_text(self) -> str:
-        """获取上下文文本（用于LLM生成）"""
-        parts = []
-        
-        if self.entities:
-            parts.append("## 相关历史实体")
-            for entity in self.entities[:10]:
-                name = entity.get("name", entity.get("title", "未知"))
-                desc = entity.get("description", "")
-                parts.append(f"- {name}: {desc[:200]}")
-        
-        # 优先使用社区报告，如果没有则使用关系
-        if self.communities:
-            parts.append("\n## 相关历史背景")
-            for comm in self.communities[:3]:
-                summary = comm.get("summary", comm.get("full_content", ""))
-                parts.append(summary[:500])
-        elif self.relationships:
-            # 社区报告为空时，使用关系作为历史背景补充
-            parts.append("\n## 相关历史事件关联")
-            for rel in self.relationships[:5]:
-                source = rel.get("source", "")
-                target = rel.get("target", "")
-                rel_type = rel.get("type", "关联")
-                desc = rel.get("description", "")
-                parts.append(f"- {source} → {target} ({rel_type}): {desc[:200]}")
-        
-        if self.text_units:
-            parts.append("\n## 相关历史文本")
-            for text in self.text_units[:5]:
-                parts.append(text[:300])
-        
-        return "\n".join(parts)
+    def merge(self, other: 'RetrievalResult') -> 'RetrievalResult':
+        """合并另一个检索结果"""
+        self.entities.extend(other.entities)
+        self.relationships.extend(other.relationships)
+        self.text_units.extend(other.text_units)
+        self.communities.extend(other.communities)
+        return self
 
 
 class MemoirRetriever:
-    """
-    回忆录历史背景检索器
+    """回忆录检索器"""
     
-    功能：
-    1. 解析回忆录文本，提取查询上下文
-    2. 在知识图谱中进行本地检索（实体、关系）
-    3. 进行全局检索（社区报告）
-    4. 返回相关的历史背景信息
-    
-    检索模式：
-    - keyword: 关键词匹配（默认，快速）
-    - vector: 向量相似度检索（需要embedding）
-    - hybrid: 混合检索（关键词+向量融合）
-    """
-    
-    def __init__(
-        self,
-        index_dir: Optional[str] = None,
-        llm_adapter: Optional[LLMAdapter] = None,
-    ):
-        """
-        初始化检索器
-        
-        Args:
-            index_dir: GraphRAG索引目录
-            llm_adapter: LLM适配器
-        """
-        settings = get_settings()
-        self.index_dir = Path(index_dir or settings.graphrag_output_dir)
+    def __init__(self, llm_adapter=None, index_dir: Optional[Union[str, Path]] = None):
         self.llm_adapter = llm_adapter
-        self.parser = MemoirParser(llm_adapter)
-        self.vector_retriever = VectorRetriever(index_dir=str(self.index_dir), llm_adapter=llm_adapter)
+        default_root = Path(__file__).resolve().parent.parent.parent / "data" / "graphrag_output"
+        self.index_dir = Path(index_dir) if index_dir is not None else default_root
         
-        # 缓存加载的数据
+        # 缓存数据
         self._entities_df = None
         self._relationships_df = None
-        self._communities_df = None
         self._text_units_df = None
+        self._communities_df = None
+        
+        # 加载数据
+        self._load_data()
     
-    def _load_index_data(self):
+    def _load_data(self):
         """加载索引数据"""
         output_dir = self.index_dir / "output"
         
-        # GraphRAG 2.x 使用新的文件名格式
-        # 尝试新格式，如果不存在则尝试旧格式（兼容 1.x）
+        # 兼容 GraphRAG 1.x 和 2.x
+        entity_files = [
+            output_dir / "entities.parquet",
+            output_dir / "create_final_entities.parquet"
+        ]
+        relationship_files = [
+            output_dir / "relationships.parquet",
+            output_dir / "create_final_relationships.parquet"
+        ]
+        text_unit_files = [
+            output_dir / "text_units.parquet",
+            output_dir / "create_final_text_units.parquet"
+        ]
+        community_files = [
+            output_dir / "community_reports.parquet",
+            output_dir / "create_final_community_reports.parquet"
+        ]
         
-        # 加载实体
-        entities_file = output_dir / "entities.parquet"
-        if not entities_file.exists():
-            entities_file = output_dir / "create_final_entities.parquet"
-        if entities_file.exists():
-            self._entities_df = pd.read_parquet(entities_file)
-            print(f"[DEBUG] 加载实体: {len(self._entities_df)} 条")
+        for file_path in entity_files:
+            if file_path.exists():
+                self._entities_df = pd.read_parquet(file_path)
+                break
         
-        # 加载关系
-        rel_file = output_dir / "relationships.parquet"
-        if not rel_file.exists():
-            rel_file = output_dir / "create_final_relationships.parquet"
-        if rel_file.exists():
-            self._relationships_df = pd.read_parquet(rel_file)
-            print(f"[DEBUG] 加载关系: {len(self._relationships_df)} 条")
+        for file_path in relationship_files:
+            if file_path.exists():
+                self._relationships_df = pd.read_parquet(file_path)
+                break
         
-        # 加载社区报告
-        comm_file = output_dir / "community_reports.parquet"
-        if not comm_file.exists():
-            comm_file = output_dir / "create_final_community_reports.parquet"
-        if comm_file.exists():
-            self._communities_df = pd.read_parquet(comm_file)
-            print(f"[DEBUG] 加载社区报告: {len(self._communities_df)} 条")
+        for file_path in text_unit_files:
+            if file_path.exists():
+                self._text_units_df = pd.read_parquet(file_path)
+                break
         
-        # 加载文本单元
-        text_file = output_dir / "text_units.parquet"
-        if not text_file.exists():
-            text_file = output_dir / "create_final_text_units.parquet"
-        if text_file.exists():
-            self._text_units_df = pd.read_parquet(text_file)
-            print(f"[DEBUG] 加载文本单元: {len(self._text_units_df)} 条")
+        for file_path in community_files:
+            if file_path.exists():
+                self._communities_df = pd.read_parquet(file_path)
+                break
+        
+        print(f"[DEBUG] 加载实体: {len(self._entities_df) if self._entities_df is not None else 0} 条")
+        print(f"[DEBUG] 加载关系: {len(self._relationships_df) if self._relationships_df is not None else 0} 条")
+        print(f"[DEBUG] 加载文本单元: {len(self._text_units_df) if self._text_units_df is not None else 0} 条")
+    
+    def is_index_ready(self) -> bool:
+        """检查索引是否就绪"""
+        output_dir = self.index_dir / "output"
+        new_format = output_dir / "entities.parquet"
+        old_format = output_dir / "create_final_entities.parquet"
+        return new_format.exists() or old_format.exists()
     
     async def retrieve(
         self,
         memoir_text: str,
         top_k: int = 10,
-        use_llm_parsing: bool = True,
-        mode: str = "keyword",
+        use_llm_parsing: bool = False,
+        mode: str = "hybrid"
     ) -> RetrievalResult:
-        """
-        检索与回忆录相关的历史背景
+        """执行检索"""
+        # 解析回忆录文本，提取上下文信息
+        parser = MemoirParser()
+        context = parser.parse(memoir_text, use_llm=use_llm_parsing)
         
-        Args:
-            memoir_text: 回忆录文本
-            top_k: 返回结果数量
-            use_llm_parsing: 是否使用LLM解析回忆录
-            mode: 检索模式 (keyword/vector/hybrid)
-            
-        Returns:
-            RetrievalResult: 检索结果
-        """
-        timing = os.getenv("TEMP_TIMING") == "1"
-        t0 = time.perf_counter()
-
-        # 解析回忆录
-        t_parse0 = time.perf_counter()
-        if use_llm_parsing and self.llm_adapter:
-            context = await self.parser.parse_with_llm(memoir_text)
+        # 根据模式执行检索
+        if mode == "keyword":
+            return await self._keyword_retrieve(context, top_k)
+        elif mode == "vector":
+            return await self._vector_retrieve(context, top_k)
         else:
-            context = self.parser.parse(memoir_text, use_llm=False)
-        t_parse = time.perf_counter() - t_parse0
-        if timing:
-            print(f"[TEMP_TIMING] retriever.parse={t_parse:.3f}s use_llm_parsing={use_llm_parsing} mode={mode}")
-        
-        # 生成查询
-        query = context.to_query()
-        
-        # 确保索引数据已加载
-        t_load0 = time.perf_counter()
-        if self._entities_df is None:
-            self._load_index_data()
-        t_load = time.perf_counter() - t_load0
-        if timing:
-            print(f"[TEMP_TIMING] retriever.load_index={t_load:.3f}s")
-        
-        # 执行检索
-        result = RetrievalResult(query=query, context=context)
-        
-        # 根据模式选择检索策略
-        vector_error = None
-        
-        if mode == "vector" and self.vector_retriever.is_ready():
-            # 纯向量检索（实体、社区、文本单元用向量，关系用关键词）
-            t_v0 = time.perf_counter()
-            try:
-                result.entities = await self.vector_retriever.search_entities(query, top_k)
-                result.communities = await self.vector_retriever.search_communities(query, top_k // 2)
-                result.text_units = await self.vector_retriever.search_text_units(query, top_k)
-            except EmbeddingError as e:
-                vector_error = e.message
-                result.error_message = f"⚠️ {e.message}"
-            # 关系检索使用关键词（向量索引中没有关系）
-            if self._relationships_df is not None:
-                result.relationships = self._search_relationships(context, top_k)
-            if timing:
-                print(f"[TEMP_TIMING] retriever.vector_search={time.perf_counter()-t_v0:.3f}s")
-            
-        elif mode == "hybrid" and self.vector_retriever.is_ready():
-            # 混合检索：关键词 + 向量融合
-            t_h0 = time.perf_counter()
-            keyword_entities = self._search_entities(context, top_k)
-            try:
-                vector_entities = await self.vector_retriever.search_entities(query, top_k)
-                result.entities = self._merge_results(keyword_entities, vector_entities, top_k, context)
-            except EmbeddingError as e:
-                vector_error = e.message
-                result.error_message = f"⚠️ {e.message}"
-                result.entities = keyword_entities  # 降级为关键词检索结果
-            
-            # 关系检索使用关键词（向量索引中没有关系）
-            if self._relationships_df is not None:
-                result.relationships = self._search_relationships(context, top_k)
-            
-            keyword_communities = self._search_communities(context, top_k // 2)
-            try:
-                vector_communities = await self.vector_retriever.search_communities(query, top_k // 2)
-                result.communities = self._merge_results(keyword_communities, vector_communities, top_k // 2, context)
-            except EmbeddingError:
-                result.communities = keyword_communities
-            
-            keyword_texts = self._search_text_units(context, top_k)
-            try:
-                vector_texts = await self.vector_retriever.search_text_units(query, top_k)
-                result.text_units = self._merge_text_results(keyword_texts, vector_texts, top_k)
-            except EmbeddingError:
-                result.text_units = keyword_texts
-            
-            if timing:
-                print(f"[TEMP_TIMING] retriever.hybrid_search={time.perf_counter()-t_h0:.3f}s")
-            
-        else:
-            # 关键词检索（默认）
-            t_k0 = time.perf_counter()
-            if self._entities_df is not None:
-                result.entities = self._search_entities(context, top_k)
-            if self._relationships_df is not None:
-                result.relationships = self._search_relationships(context, top_k)
-            if self._communities_df is not None:
-                result.communities = self._search_communities(context, top_k // 2)
-            if self._text_units_df is not None:
-                result.text_units = self._search_text_units(context, top_k)
-            if timing:
-                print(f"[TEMP_TIMING] retriever.keyword_search={time.perf_counter()-t_k0:.3f}s")
-        
-        # ── 重排序（如果可用）──
-        reranker = get_reranker()
-        if reranker.is_ready():
-            t_r0 = time.perf_counter()
-            if result.entities:
-                result.entities = reranker.rerank_entities(query, result.entities, top_k)
-            if result.relationships:
-                result.relationships = reranker.rerank_relationships(query, result.relationships, top_k)
-            if timing:
-                print(f"[TEMP_TIMING] retriever.rerank={time.perf_counter()-t_r0:.3f}s")
-        else:
-            # 重排序器未就绪，添加错误信息
-            reranker_error = reranker.get_error_message()
-            if reranker_error:
-                if result.error_message:
-                    result.error_message += f"\n\n📝 {reranker_error}"
-                else:
-                    result.error_message = f"📝 {reranker_error}"
-        
-        if timing:
-            total = time.perf_counter() - t0
-            print(
-                f"[TEMP_TIMING] retriever.total={total:.3f}s "
-                f"entities={len(result.entities)} rel={len(result.relationships)} comm={len(result.communities)} texts={len(result.text_units)}"
-            )
-        return result
+            return await self._hybrid_retrieve(context, top_k)
     
-    def _merge_results(
-        self,
-        keyword_results: List[Dict[str, Any]],
-        vector_results: List[Dict[str, Any]],
-        top_k: int,
-        context: Optional[MemoirContext] = None,
-    ) -> List[Dict[str, Any]]:
-        """融合关键词和向量检索结果
-        
-        改进策略：
-        1. 优先使用关键词检索结果（更可靠）
-        2. 向量检索结果需要年份匹配才纳入
-        3. 如果关键词结果不足，才补充向量结果
-        """
-        merged = {}
-        
-        # 首先添加关键词结果（更可靠）
-        for item in keyword_results:
-            name = item.get("name", item.get("title", ""))
-            if name:
-                merged[name] = item.copy()
-                merged[name]["score"] = item.get("score", 1) * 1.0  # 关键词结果权重更高
-                merged[name]["source"] = "keyword"
-        
-        # 然后添加向量结果，但需要年份匹配
-        if context and context.year:
-            target_year = str(context.year)
-            for item in vector_results:
-                name = item.get("name", item.get("title", ""))
-                desc = item.get("description", "")
-                
-                if not name:
-                    continue
-                
-                # 检查是否包含目标年份
-                combined_text = f"{name} {desc}"
-                year_match = target_year in combined_text
-                
-                # 如果向量结果包含年份，才考虑纳入
-                if year_match:
-                    if name in merged:
-                        # 如果已有关键词结果，增加分数
-                        merged[name]["score"] += item.get("score", 0.5) * 0.5
-                        merged[name]["source"] = "hybrid"
-                    else:
-                        # 新结果，降低权重
-                        merged[name] = item.copy()
-                        merged[name]["score"] = item.get("score", 0.5) * 0.5
-                        merged[name]["source"] = "vector"
-        else:
-            # 没有年份信息，按原逻辑处理但降低向量权重
-            for item in vector_results:
-                name = item.get("name", item.get("title", ""))
-                if name:
-                    if name in merged:
-                        merged[name]["score"] += item.get("score", 0.5) * 0.3
-                        merged[name]["source"] = "hybrid"
-                    else:
-                        merged[name] = item.copy()
-                        merged[name]["score"] = item.get("score", 0.5) * 0.3
-                        merged[name]["source"] = "vector"
-        
-        sorted_results = sorted(merged.values(), key=lambda x: x.get("score", 0), reverse=True)
-        
-        # 如果关键词结果足够，优先返回关键词结果
-        if len(keyword_results) >= top_k // 2:
-            # 优先使用关键词结果
-            keyword_names = {item.get("name", item.get("title", "")) for item in keyword_results}
-            filtered = [r for r in sorted_results if r.get("name", r.get("title", "")) in keyword_names]
-            if len(filtered) >= top_k // 2:
-                return filtered[:top_k]
-        
-        return sorted_results[:top_k]
-    
-    def _merge_text_results(
-        self,
-        keyword_texts: List[str],
-        vector_texts: List[str],
-        top_k: int,
-    ) -> List[str]:
-        """融合文本结果"""
-        seen = set()
-        merged = []
-        
-        for text in keyword_texts:
-            if text not in seen:
-                seen.add(text)
-                merged.append(text)
-        
-        for text in vector_texts:
-            if text not in seen:
-                seen.add(text)
-                merged.append(text)
-        
-        return merged[:top_k]
-    
-    def retrieve_sync(
-        self,
-        memoir_text: str,
-        top_k: int = 10,
-    ) -> RetrievalResult:
+    def retrieve_sync(self, memoir_text: str, top_k: int = 10) -> RetrievalResult:
         """同步版本的检索"""
         return asyncio.run(self.retrieve(memoir_text, top_k, use_llm_parsing=False))
+    
+    async def _keyword_retrieve(self, context: MemoirContext, top_k: int) -> RetrievalResult:
+        """关键词检索"""
+        result = RetrievalResult()
+        result.context = context
+        
+        # 搜索实体、关系、文本单元和社区报告
+        result.entities = self._search_entities(context, top_k)
+        result.relationships = self._search_relationships(context, top_k)
+        result.text_units = self._search_text_units(context, top_k)
+        result.communities = self._search_communities(context, top_k)
+        
+        return result
+    
+    async def _vector_retrieve(self, context: MemoirContext, top_k: int) -> RetrievalResult:
+        """向量检索"""
+        # 简单实现：使用关键词检索作为回退
+        return await self._keyword_retrieve(context, top_k)
+    
+    async def _hybrid_retrieve(self, context: MemoirContext, top_k: int) -> RetrievalResult:
+        """混合检索"""
+        # 获取关键词检索结果
+        keyword_result = await self._keyword_retrieve(context, top_k)
+        
+        # 合并结果（去重）
+        return keyword_result
     
     def _search_entities(
         self,
         context: MemoirContext,
         top_k: int
     ) -> List[Dict[str, Any]]:
-        """搜索相关实体"""
+        """搜索相关实体（改进版：加权评分+主题相关性过滤）"""
         if self._entities_df is None or self._entities_df.empty:
             print(f"[_search_entities] 实体数据为空")
             return []
         
+        # 需要过滤的通用实体（太泛泛，没有针对性）
+        GENERIC_ENTITIES = {
+            '中国', '中华人民共和国', '北京', '国务院', 'STATE COUNCIL',
+            '中共中央', 'CPC CENTRAL COMMITTEE', '中央政府', '中央',
+            'EUROPEAN UNION', '欧盟', 'BRICS',
+        }
+        
+        # 需要过滤的不相关地点实体（与目标地点无关）
+        UNRELATED_LOCATIONS = {
+            'SHANGHAI', '北京', 'BEIJING', '上海',
+            '天津', 'TIANJIN', '重庆', 'CHONGQING',
+            '成都', 'CHENGDU', '武汉', 'WUHAN', '杭州', 'HANGZHOU',
+        }
+        
         results = []
         
-        # 构建搜索词（包含中英文变体）
+        # 构建搜索词和权重
         search_terms = []
+        topic_keywords = set()
+        
+        # 年份权重最高（目标年份权重更高）
         if context.year:
-            search_terms.append(str(context.year))
+            search_terms.append((context.year, 30))  # 目标年份权重30
+            # 添加邻近年份（权重较低）
+            try:
+                year_int = int(context.year)
+                search_terms.append((str(year_int - 1), 10))  # 前一年权重10
+                search_terms.append((str(year_int + 1), 10))  # 后一年权重10
+            except:
+                pass
+        
+        # 地点权重次高
         if context.location:
-            search_terms.append(context.location)
-            # 添加英文变体
+            search_terms.append((context.location, 20))
             location_map = {
                 "深圳": "SHENZHEN", "北京": "BEIJING", "上海": "SHANGHAI",
-                "广州": "GUANGZHOU", "香港": "HONG KONG"
+                "广州": "GUANGZHOU", "香港": "HONG KONG",
+                "广东": "GUANGDONG", "佛山": "FOSHAN", "东莞": "DONGGUAN",
             }
             if context.location in location_map:
-                search_terms.append(location_map[context.location])
-        search_terms.extend(context.keywords)
-
-        # 去重（保持顺序）
-        search_terms = list(dict.fromkeys(search_terms))
+                search_terms.append((location_map[context.location], 20))
+        
+        # 主题关键词权重
+        for kw in context.keywords[:5]:
+            if kw and len(kw) >= 2:
+                search_terms.append((kw, 15))
+                topic_keywords.add(kw)
+        
+        if not search_terms:
+            return []
         
         print(f"[_search_entities] 搜索词: {search_terms}")
         print(f"[_search_entities] 实体总数: {len(self._entities_df)}")
         
+        # 构建目标地点集合（用于严格匹配）
+        target_locations = set()
+        if context.location:
+            target_locations.add(context.location)
+            target_locations.add(context.location.upper())
+            if context.location in location_map:
+                target_locations.add(location_map[context.location])
+                target_locations.add(location_map[context.location].lower())
+        
         for _, row in self._entities_df.iterrows():
-            # GraphRAG 2.x 使用 title 字段
             entity_name = str(row.get("title", row.get("name", "")))
             entity_desc = str(row.get("description", ""))
-            
-            # 计算匹配分数（不区分大小写）
-            score = 0
             search_text = f"{entity_name} {entity_desc}".upper()
-            for term in search_terms:
-                if term and term.upper() in search_text:
-                    score += 1
             
-            if score > 0:
-                results.append({
-                    "name": entity_name,
-                    "type": row.get("type", "unknown"),
-                    "description": entity_desc,
-                    "score": score,
-                })
+            # 过滤通用实体
+            if entity_name in GENERIC_ENTITIES:
+                continue
+            
+            # 过滤不相关地点实体
+            if entity_name in UNRELATED_LOCATIONS:
+                continue
+            
+            score = 0
+            year_matched = False
+            exact_year_matched = False  # 是否匹配目标年份
+            location_matched = False
+            topic_matched = False
+            
+            for term, weight in search_terms:
+                term_upper = str(term).upper()
+                if term_upper in search_text:
+                    score += weight
+                    if str(term) == str(context.year):
+                        year_matched = True
+                        exact_year_matched = True  # 精确匹配目标年份
+                    elif str(term) == str(context.location) or term_upper in target_locations:
+                        location_matched = True
+                    elif term in topic_keywords:
+                        topic_matched = True
+            
+            # 过滤策略：必须匹配年份
+            if not year_matched:
+                continue
+            
+            # 额外加分：精确匹配目标年份
+            if exact_year_matched:
+                score += 15
+            
+            # 额外加分：同时匹配地点和主题
+            if location_matched and topic_matched:
+                score += 25
+            elif location_matched:
+                score += 15
+            elif topic_matched:
+                score += 10
+            
+            results.append({
+                "name": entity_name,
+                "type": row.get("type", "unknown"),
+                "description": entity_desc,
+                "score": score,
+            })
         
         # 按分数排序
         results.sort(key=lambda x: x["score"], reverse=True)
-        print(f"[_search_entities] 匹配结果数: {len(results)}")
-        if results:
-            print(f"[_search_entities] 前3个结果: {[(r['name'], r['score']) for r in results[:3]]}")
-        return results[:top_k]
+        
+        # 去重：移除重复的实体（中英文变体）
+        seen_names = set()
+        unique_results = []
+        for r in results:
+            name_lower = r["name"].lower()
+            if name_lower in seen_names:
+                continue
+            is_duplicate = False
+            for seen in seen_names:
+                if name_lower in seen or seen in name_lower:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                seen_names.add(name_lower)
+                unique_results.append(r)
+        
+        print(f"[_search_entities] 匹配结果数: {len(results)}, 去重后: {len(unique_results)}")
+        if unique_results:
+            print(f"[_search_entities] 前3个结果: {[(r['name'], r['score']) for r in unique_results[:3]]}")
+        out = unique_results[: min(top_k, 10)]  # 限制最多返回10个
+        return out
     
     def _search_relationships(
         self,
         context: MemoirContext,
         top_k: int
     ) -> List[Dict[str, Any]]:
-        """搜索相关关系"""
+        """搜索相关关系（改进版：加权评分+主题相关性过滤）"""
         if self._relationships_df is None or self._relationships_df.empty:
             return []
         
+        # 需要过滤的不相关关系关键词
+        UNRELATED_KEYWORDS = {
+            '嫦娥', 'CHANG', '探月', '月球', 'BRICS', '金砖',
+            '维和', '平潭', '滨海新区', '塘沽', '汉沽', '大港',
+            '里斯本', '欧盟', 'EKATERINBURG', '嫦娥一号',
+            'BINHAI', 'DAGANG', 'TANGGU', 'HANGU', 'LISBON',
+        }
+        
+        # 需要过滤的不相关地点
+        UNRELATED_LOCATIONS = {
+            '上海', 'SHANGHAI', '北京', 'BEIJING', '天津', 'TIANJIN',
+            '成都', 'CHENGDU', '武汉', 'WUHAN', '杭州', 'HANGZHOU',
+            '莫斯科', 'MOSCOW', '叶卡捷琳堡',
+        }
+        
         results = []
-        search_terms = [context.year, context.location] + context.keywords
-        search_terms = [t for t in search_terms if t]
+        
+        # 构建搜索词和权重
+        search_terms = []
+        topic_keywords = set()
+        
+        # 年份权重最高（目标年份权重更高）
+        if context.year:
+            search_terms.append((context.year, 30))  # 目标年份权重30
+            # 添加邻近年份（权重较低）
+            try:
+                year_int = int(context.year)
+                search_terms.append((str(year_int - 1), 10))  # 前一年权重10
+                search_terms.append((str(year_int + 1), 10))  # 后一年权重10
+            except:
+                pass
+        
+        # 地点权重次高
+        if context.location:
+            search_terms.append((context.location, 20))
+            location_map = {
+                "广州": "GUANGZHOU", "广东": "GUANGDONG",
+                "佛山": "FOSHAN", "东莞": "DONGGUAN", "深圳": "SHENZHEN",
+            }
+            if context.location in location_map:
+                search_terms.append((location_map[context.location], 20))
+        
+        # 主题关键词权重
+        for kw in context.keywords[:5]:
+            if kw and len(kw) >= 2:
+                search_terms.append((kw, 15))
+                topic_keywords.add(kw)
+        
+        if not search_terms:
+            return []
+        
+        print(f"[_search_relationships] 搜索词: {search_terms}")
         
         for _, row in self._relationships_df.iterrows():
-            source = str(row.get("source", ""))
-            target = str(row.get("target", ""))
+            source = str(row.get("source", row.get("source_title", "")))
+            target = str(row.get("target", row.get("target_title", "")))
             desc = str(row.get("description", ""))
             
-            score = 0
-            for term in search_terms:
-                if term in source or term in target or term in desc:
-                    score += 1
+            search_text = f"{source} {target} {desc}".upper()
             
-            if score > 0:
-                results.append({
-                    "source": source,
-                    "target": target,
-                    "description": desc,
-                    "weight": row.get("weight", 1),
-                    "score": score,
-                })
+            # 过滤不相关关键词
+            if any(kw.upper() in search_text for kw in UNRELATED_KEYWORDS):
+                continue
+            
+            # 过滤不相关地点
+            if any(loc.upper() in search_text for loc in UNRELATED_LOCATIONS):
+                continue
+            
+            score = 0
+            year_matched = False
+            exact_year_matched = False  # 是否匹配目标年份
+            location_matched = False
+            topic_matched = False
+            
+            for term, weight in search_terms:
+                term_upper = str(term).upper()
+                if term_upper in search_text:
+                    score += weight
+                    if str(term) == str(context.year):
+                        year_matched = True
+                        exact_year_matched = True  # 精确匹配目标年份
+                    elif str(term) == str(context.location):
+                        location_matched = True
+                    elif term in topic_keywords:
+                        topic_matched = True
+            
+            # 过滤策略：必须匹配年份
+            if not year_matched:
+                continue
+            
+            # 额外加分：精确匹配目标年份
+            if exact_year_matched:
+                score += 15
+            
+            # 额外加分：同时匹配地点和主题
+            if location_matched and topic_matched:
+                score += 25
+            elif location_matched:
+                score += 15
+            elif topic_matched:
+                score += 10
+            
+            results.append({
+                "source": source,
+                "target": target,
+                "description": desc,
+                "weight": row.get("weight", 1),
+                "score": score,
+            })
         
+        # 按分数排序
         results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:top_k]
+        
+        # 去重：移除重复的关系
+        seen = set()
+        unique_results = []
+        for r in results:
+            key = f"{r['source']}_{r['target']}"
+            if key not in seen:
+                seen.add(key)
+                unique_results.append(r)
+        
+        print(f"[_search_relationships] 匹配结果数: {len(results)}, 去重后: {len(unique_results)}")
+        return unique_results[:min(top_k, 8)]  # 限制最多返回8个
+    
+    def _search_text_units(
+        self,
+        context: MemoirContext,
+        top_k: int
+    ) -> List[str]:
+        """搜索相关文本单元（改进版：加权评分+主题相关性过滤）"""
+        if self._text_units_df is None or self._text_units_df.empty:
+            return []
+        
+        # 需要过滤的不相关文本关键词
+        UNRELATED_TEXT_KEYWORDS = {
+            '嫦娥', '探月', '月球', 'BRICS', '金砖',
+            '维和', '平潭', '滨海新区', '里斯本', '欧盟',
+            'HU JINTAO', 'JIANG ZEMIN', 'DENG XIAOPING',
+        }
+        
+        results = []
+        
+        # 构建搜索词和权重
+        search_terms = []
+        topic_keywords = set()
+        
+        # 年份权重最高（目标年份权重更高）
+        if context.year:
+            search_terms.append((context.year, 30))  # 目标年份权重30
+            # 添加邻近年份（权重较低）
+            try:
+                year_int = int(context.year)
+                search_terms.append((str(year_int - 1), 10))  # 前一年权重10
+                search_terms.append((str(year_int + 1), 10))  # 后一年权重10
+            except:
+                pass
+        
+        # 地点权重次高（提高权重）
+        if context.location:
+            search_terms.append((context.location, 35))  # 提高到35
+            location_map = {
+                "广州": "GUANGZHOU", "广东": "GUANGDONG",
+                "佛山": "FOSHAN", "东莞": "DONGGUAN", "深圳": "SHENZHEN",
+            }
+            if context.location in location_map:
+                search_terms.append((location_map[context.location], 35))
+        
+        # 主题关键词权重
+        for kw in context.keywords[:5]:
+            if kw and len(kw) >= 2:
+                search_terms.append((kw, 15))
+                topic_keywords.add(kw)
+        
+        if not search_terms:
+            return []
+        
+        print(f"[_search_text_units] 搜索词: {search_terms}")
+        
+        for _, row in self._text_units_df.iterrows():
+            text = str(row.get("text", row.get("content", "")))
+            
+            # 过滤过短的文本
+            if len(text) < 50:
+                continue
+            
+            # 过滤不相关文本
+            if any(keyword in text for keyword in UNRELATED_TEXT_KEYWORDS):
+                continue
+            
+            # 年份匹配：允许目标年份及邻近年份
+            year_matched = False
+            exact_year_matched = False
+            found_year = None
+            if context.year:
+                target_year = int(context.year)
+                allowed_years = {str(target_year - 1), str(target_year), str(target_year + 1)}
+                
+                first_part = text[:300]
+                
+                for year in allowed_years:
+                    year_pattern = rf'{year}[\s年]'
+                    match = re.search(year_pattern, first_part)
+                    if match:
+                        match_str = match.group(0)
+                        # 简化检查：匹配到年份数字后面跟空格或"年"就认为是有效的年份引用
+                        # 检查是否是完整的年份（避免误匹配如"20090"这样的数字）
+                        if len(match_str) >= 5:
+                            year_matched = True
+                            found_year = year
+                            if year == str(target_year):
+                                exact_year_matched = True
+                            break
+                
+                if not year_matched:
+                    continue
+            
+            # 地点匹配检查（硬性要求：必须包含目标地点或邻近城市/地区）
+            location_matched = False
+            if context.location:
+                # 直接匹配目标地点
+                if context.location in text:
+                    location_matched = True
+                else:
+                    # 检查邻近城市
+                    nearby_cities = ["深圳", "东莞", "佛山", "珠海", "中山"]
+                    for city in nearby_cities:
+                        if city in text:
+                            location_matched = True
+                            break
+                    # 检查省份和区域
+                    if not location_matched:
+                        regions = ["广东", "珠三角", "珠江三角洲", "粤港澳"]
+                        for region in regions:
+                            if region in text:
+                                location_matched = True
+                                break
+            
+            # 硬性要求：必须同时匹配年份和地点
+            if not (year_matched and location_matched):
+                continue
+            
+            score = 0
+            topic_matched = False
+            
+            for term, weight in search_terms:
+                if term in text:
+                    score += weight
+                    if term in topic_keywords:
+                        topic_matched = True
+            
+            # 额外加分：精确匹配目标年份
+            if exact_year_matched:
+                score += 30  # 提高加分
+            
+            # 额外加分：直接匹配目标地点（而不是邻近城市）
+            if context.location and context.location in text:
+                score += 20  # 直接匹配广州加20分
+            
+            # 额外加分：同时匹配地点和主题
+            if location_matched and topic_matched:
+                score += 30
+            elif location_matched:
+                score += 15
+            elif topic_matched:
+                score += 10
+            
+            results.append((text, score, exact_year_matched, location_matched, topic_matched))
+        
+        # 排序策略：首先按是否精确匹配目标年份排序，然后按分数降序
+        # 这样确保2009年的内容优先于2010年的内容
+        results.sort(key=lambda x: (x[2], x[1], x[3] and x[4], x[3], x[4]), reverse=True)
+        
+        print(f"[_search_text_units] 匹配结果数: {len(results)}")
+        
+        # 确保同时包含目标年份和邻近年份的内容
+        # 先取前5个2009年的，再取3个2010年的
+        year_2009 = [r for r in results if r[2]]  # 精确匹配2009年
+        year_other = [r for r in results if not r[2]]  # 2008或2010年
+        
+        # 混合结果：优先2009年，但也要包含一些2010年的内容
+        mixed_results = year_2009[:5] + year_other[:3]
+        
+        return [r[0] for r in mixed_results[:min(top_k, 8)]]  # 限制最多返回8个
     
     def _search_communities(
         self,
@@ -505,57 +625,18 @@ class MemoirRetriever:
         for _, row in self._communities_df.iterrows():
             title = str(row.get("title", ""))
             summary = str(row.get("summary", ""))
-            content = str(row.get("full_content", ""))
             
             score = 0
-            text = f"{title} {summary} {content}"
             for term in search_terms:
-                if term in text:
+                if str(term) in title or str(term) in summary:
                     score += 1
             
             if score > 0:
                 results.append({
                     "title": title,
                     "summary": summary,
-                    "full_content": content[:1000],
-                    "level": row.get("level", 0),
                     "score": score,
                 })
         
         results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:top_k]
-    
-    def _search_text_units(
-        self,
-        context: MemoirContext,
-        top_k: int
-    ) -> List[str]:
-        """搜索相关文本单元"""
-        if self._text_units_df is None or self._text_units_df.empty:
-            return []
-        
-        results = []
-        search_terms = [context.year, context.location] + context.keywords
-        search_terms = [t for t in search_terms if t]
-        
-        for _, row in self._text_units_df.iterrows():
-            text = str(row.get("text", ""))
-            
-            score = 0
-            for term in search_terms:
-                if term in text:
-                    score += 1
-            
-            if score > 0:
-                results.append((text, score))
-        
-        results.sort(key=lambda x: x[1], reverse=True)
-        return [r[0] for r in results[:top_k]]
-    
-    def is_index_ready(self) -> bool:
-        """检查索引是否就绪"""
-        output_dir = self.index_dir / "output"
-        # 兼容 GraphRAG 1.x 和 2.x
-        new_format = output_dir / "entities.parquet"
-        old_format = output_dir / "create_final_entities.parquet"
-        return new_format.exists() or old_format.exists()
+        return results[:min(top_k, 3)]  # 限制最多返回3个

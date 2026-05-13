@@ -29,8 +29,9 @@ class QualityThresholds:
     max_length_ratio: float = 2.5         # 实际字数 / 目标字数 上限
     max_summary_sentence_ratio: float = 0.30  # 总结性语句占比上限
     min_semantic_similarity: Optional[float] = None  # 语义相似度下限（可选）
-    min_expansion_grounding: float = 0.40  # 扩展内容溯源率下限
-    min_entity_coverage: float = 0.80     # 实体覆盖率下限
+    min_rag_utilization: float = 0.5      # RAG 利用率下限（至少 1 个新实体）
+    min_hallucination_score: float = 0.4  # 幻觉检测分下限（1 - 幻觉率 ≥ 0.4）
+    min_temporal_coherence: float = 1.0   # 时间一致性下限（生成年份必须全部在原文年份白名单内）
 
     @classmethod
     def for_expansion_task(cls) -> "QualityThresholds":
@@ -39,12 +40,13 @@ class QualityThresholds:
             min_segment_score=5.0,
             max_cross_repetition=0.20,
             min_fact_score=0.60,
-            min_semantic_similarity=0.15,  # 扩展任务语义相似度要求较低
-            min_expansion_grounding=0.40,  # 更现实的溯源率要求
-            min_entity_coverage=0.80,  # 基于新的指标定义
+            min_semantic_similarity=0.15,
             min_length_ratio=0.40,
             max_length_ratio=2.5,
             max_summary_sentence_ratio=0.30,
+            min_rag_utilization=0.5,
+            min_hallucination_score=0.4,
+            min_temporal_coherence=1.0,
         )
 
 
@@ -215,6 +217,7 @@ def check_quality_gate(
     segment_scores: Optional[List[float]] = None,
     fact_scores: Optional[List[Optional[float]]] = None,
     target_chars_per_chapter: Optional[List[int]] = None,
+    segment_metrics: Optional[List[Dict[str, Any]]] = None,
     thresholds: Optional[QualityThresholds] = None,
 ) -> QualityGateResult:
     """
@@ -225,6 +228,7 @@ def check_quality_gate(
         segment_scores: 每章的评估综合分 (0-10)，可选
         fact_scores: 每章的 FActScore (0-1)，可选
         target_chars_per_chapter: 每章目标字数，可选
+        segment_metrics: 每章的详细指标字典，可选
         thresholds: 阈值配置
     """
     th = thresholds or QualityThresholds()
@@ -275,7 +279,46 @@ def check_quality_gate(
                     "检索到的背景信息不足或 LLM 产生了幻觉，建议增加 top_k 或切换检索模式",
                 ))
 
-        # 1d) 总结性语句检查
+        # 1d) RAG 利用率检查
+        if segment_metrics and idx < len(segment_metrics):
+            metrics = segment_metrics[idx]
+            if "rag_utilization" in metrics:
+                rag_util = metrics["rag_utilization"]
+                if hasattr(rag_util, "value"):
+                    rag_util_value = rag_util.value
+                else:
+                    rag_util_value = rag_util
+
+                if rag_util_value < th.min_rag_utilization:
+                    issues.append(ChapterIssue(
+                        "rag_utilization", "error",
+                        f"RAG 利用率 {rag_util_value:.1%} 低于阈值 {th.min_rag_utilization:.0%}",
+                        "增加 top_k 以获取更多相关实体，或在 prompt 中明确要求使用检索到的背景知识",
+                    ))
+
+            # 1e) 幻觉检测门控
+            if "hallucination" in metrics:
+                hall = metrics["hallucination"]
+                hall_value = hall.value if hasattr(hall, "value") else hall
+                if hall_value < th.min_hallucination_score:
+                    issues.append(ChapterIssue(
+                        "hallucination", "error",
+                        f"幻觉检测分 {hall_value:.1%} 低于阈值 {th.min_hallucination_score:.0%}（无支撑实体过多）",
+                        "检查生成文本中是否引入了 RAG 白名单外的实体，增加 top_k 或收紧 prompt 中的实体限制",
+                    ))
+
+            # 1f) 时间一致性门控
+            if "temporal_coherence" in metrics:
+                tc = metrics["temporal_coherence"]
+                tc_value = tc.value if hasattr(tc, "value") else tc
+                if tc_value < th.min_temporal_coherence:
+                    issues.append(ChapterIssue(
+                        "temporal_coherence", "error",
+                        f"生成文本包含原文中不存在的年份（时间一致性 {tc_value:.1%}）",
+                        "检查生成文本中的年份是否均来自原文，避免 LLM 捏造年份",
+                    ))
+
+        # 1f) 总结性语句检查
         summary_ratio = _detect_summary_sentences(content)
         if summary_ratio > th.max_summary_sentence_ratio:
             issues.append(ChapterIssue(
@@ -284,7 +327,7 @@ def check_quality_gate(
                 "在 prompt 中明确要求「不要总结，只做叙事性描写」",
             ))
 
-        # 1e) 套话检查
+        # 1g) 套话检查
         boilerplate = _detect_boilerplate(content)
         if len(boilerplate) >= 2:
             issues.append(ChapterIssue(
@@ -293,7 +336,7 @@ def check_quality_gate(
                 "在 prompt 中要求「避免使用空泛的过渡语」",
             ))
 
-        # 1f) 非末章软性感悟结尾检查
+        # 1h) 非末章软性感悟结尾检查
         is_last_chapter = (idx == n - 1)
         if not is_last_chapter:
             epilogue_hit = _detect_epilogue(content)

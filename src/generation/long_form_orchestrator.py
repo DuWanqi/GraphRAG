@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from ..retrieval import MemoirRetriever, RetrievalResult
-from .chapter_budget import SegmentBudget, allocate_segment_budgets
+from .chapter_budget import SegmentBudget, allocate_segment_budgets, allocate_segment_budgets_uniform
 from .chapter_context import ChapterContext
 from .literary_generator import LiteraryGenerator, GenerationResult
 from .memoir_segmenter import (
@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 
 def _extract_entity_names(rr: RetrievalResult, limit: int = 10) -> List[str]:
     """从检索结果中提取实体名称（避免重复代码）"""
-    return [e.get("name", "") for e in (rr.entities or [])[:limit] if e.get("name")]
+    names = [e.get("name", "") for e in (rr.entities or [])[:limit] if e.get("name")]
+    return names
 
 
 @dataclass
@@ -70,6 +71,8 @@ async def run_long_form_generation(
     target_max_chars: int = 800,
     enable_cross_chapter_context: bool = True,
     max_retry_chapters: int = 0,
+    chapter_gen_min_chars: Optional[int] = None,
+    chapter_gen_max_chars: Optional[int] = None,
 ) -> LongFormGenerationResult:
     """
     分段检索与生成，各章仅携带本段回忆录正文 + 跨章上下文。
@@ -93,7 +96,16 @@ async def run_long_form_generation(
     if seg_report.issues:
         logger.info("[Orchestrator] 分段校验: %s", seg_report.to_text())
 
-    budgets: List[SegmentBudget] = allocate_segment_budgets(segments, length_bucket)
+    if (
+        chapter_gen_min_chars is not None
+        and chapter_gen_max_chars is not None
+    ):
+        cg_lo = max(50, int(chapter_gen_min_chars))
+        cg_hi = max(cg_lo + 1, int(chapter_gen_max_chars))
+        budgets = allocate_segment_budgets_uniform(segments, cg_lo, cg_hi)
+    else:
+        budgets = allocate_segment_budgets(segments, length_bucket)
+
     chapter_ctx = ChapterContext(total_chapters=len(segments)) if enable_cross_chapter_context else None
 
     import asyncio
@@ -177,6 +189,7 @@ async def run_long_form_generation(
         parts.append(gr.content.strip())
 
     merged = chapter_separator.join(p for p in parts if p)
+
     return LongFormGenerationResult(
         chapters=chapters,
         merged_content=merged,
