@@ -131,6 +131,41 @@ class TestConfig:
         assert settings.graphrag_input_dir is not None
 
 
+class TestRetrievalResult:
+    def test_context_text_and_has_results(self):
+        from src.retrieval.memoir_retriever import RetrievalResult
+
+        result = RetrievalResult(
+            text_units=["1998 Shenzhen context"],
+            entities=[{"name": "Shenzhen", "description": "Special economic zone"}],
+            relationships=[
+                {
+                    "source": "Huaqiangbei",
+                    "target": "Electronics market",
+                    "description": "related background",
+                }
+            ],
+            communities=[{"title": "Reform era", "summary": "regional context"}],
+        )
+
+        context = result.get_context_text()
+
+        assert result.has_results is True
+        assert "1998 Shenzhen context" in context
+        assert "Shenzhen" in context
+        assert "Huaqiangbei" in context
+
+
+class TestRetrievalMetrics:
+    def test_ndcg_uses_absolute_ideal_ranking(self):
+        from src.evaluation.retrieval_benchmark import RetrievalBenchmark
+
+        score = RetrievalBenchmark._ndcg([2.0, 0.0, 0.0], k=3, n_relevant=3)
+
+        assert 0.0 < score < 1.0
+        assert round(score, 4) == 0.3129
+
+
 class TestLLMAdapter:
     """LLM适配器测试"""
     

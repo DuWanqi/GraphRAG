@@ -97,6 +97,9 @@ def _format_retrieval_quality(eval_result):
     md += f"**nDCG@5**: {eval_result['ndcg_at_5']:.4f}  "
     md += f"**nDCG@10**: {eval_result['ndcg_at_10']:.4f}\n\n"
     md += f"**MRR**: {eval_result['mrr']:.4f}\n"
+    if eval_result.get("relevance_vector"):
+        vector = ", ".join(f"{v:.0f}" for v in eval_result["relevance_vector"])
+        md += f"\n**LLM相关性向量**: [{vector}]（0-3；MRR按首个 >=2 的文档计算）\n"
     if eval_result["per_doc_scores"]:
         md += "\n| # | 文档摘要 | 相关性 | 理由 |\n|---|----------|--------|------|\n"
         for item in eval_result["per_doc_scores"][:10]:
@@ -2159,13 +2162,19 @@ def create_ui():
     if not available_providers:
         available_providers = ["deepseek"]  # 无可配密钥时的占位
 
+    configured_provider = (settings.default_llm_provider or "").strip().lower()
     _default_provider = (
-        "openai"
-        if "openai" in available_providers
+        configured_provider
+        if configured_provider in available_providers
         else (available_providers[0] if available_providers else None)
     )
     _initial_model_choices = get_provider_models(_default_provider) if _default_provider else []
-    _initial_model_value = _initial_model_choices[0] if _initial_model_choices else None
+    configured_model = (settings.default_llm_model or "").strip()
+    _initial_model_value = (
+        configured_model
+        if configured_model in _initial_model_choices
+        else (_initial_model_choices[0] if _initial_model_choices else None)
+    )
 
     with gr.Blocks(
         title="记忆图谱 - 历史背景注入系统",
@@ -2465,7 +2474,13 @@ def create_ui():
                             gr.update(visible=False),
                         )
                     models = get_provider_models(provider)
-                    value = models[0] if models else None
+                    configured_model = (settings.default_llm_model or "").strip()
+                    configured_provider = (settings.default_llm_provider or "").strip().lower()
+                    value = (
+                        configured_model
+                        if provider == configured_provider and configured_model in models
+                        else (models[0] if models else None)
+                    )
                     show_ollama_refresh = provider == "ollama"
                     return (
                         gr.update(choices=models, value=value, visible=True),

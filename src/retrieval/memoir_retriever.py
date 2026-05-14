@@ -33,6 +33,50 @@ class RetrievalResult:
     communities: List[Dict[str, Any]] = field(default_factory=list)
     context: Optional[MemoirContext] = None
     query: str = ""
+
+    @property
+    def has_results(self) -> bool:
+        """Return whether any retrieval channel produced evidence."""
+        return bool(self.entities or self.relationships or self.text_units or self.communities)
+
+    def get_context_text(self, max_chars: int = 8000) -> str:
+        """Build compact evidence text used by evaluators and fact checkers."""
+        parts: List[str] = []
+
+        if self.text_units:
+            parts.append("【相关文本】")
+            for i, text in enumerate(self.text_units[:8], 1):
+                cleaned = str(text).strip()
+                if cleaned:
+                    parts.append(f"{i}. {cleaned}")
+
+        if self.entities:
+            parts.append("【相关实体】")
+            for i, entity in enumerate(self.entities[:10], 1):
+                name = str(entity.get("name", "")).strip()
+                desc = str(entity.get("description", "")).strip()
+                if name or desc:
+                    parts.append(f"{i}. {name}: {desc}".strip())
+
+        if self.relationships:
+            parts.append("【相关关系】")
+            for i, rel in enumerate(self.relationships[:8], 1):
+                source = str(rel.get("source", "")).strip()
+                target = str(rel.get("target", "")).strip()
+                desc = str(rel.get("description", "")).strip()
+                label = " -> ".join(x for x in [source, target] if x)
+                parts.append(f"{i}. {label}: {desc}".strip())
+
+        if self.communities:
+            parts.append("【社区摘要】")
+            for i, community in enumerate(self.communities[:3], 1):
+                title = str(community.get("title", "")).strip()
+                summary = str(community.get("summary", "")).strip()
+                if title or summary:
+                    parts.append(f"{i}. {title}: {summary}".strip())
+
+        context = "\n".join(parts)
+        return context[:max_chars]
     
     def merge(self, other: 'RetrievalResult') -> 'RetrievalResult':
         """合并另一个检索结果"""

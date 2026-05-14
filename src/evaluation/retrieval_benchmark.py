@@ -475,11 +475,10 @@ class RetrievalBenchmark:
         dcg = sum(
             rel / math.log2(i + 2) for i, rel in enumerate(rel_k)
         )
-        # ideal: sort all relevances descending, take top-k
-        ideal_rels = sorted(relevances, reverse=True)[:k]
-        if not ideal_rels and n_relevant > 0:
-            ideal_rels = [3.0] * min(k, n_relevant)
-        elif not ideal_rels:
+        # Ideal ranking is the best possible top-k list, not the current
+        # returned list sorted by its own scores. LLM relevance is graded 0..3.
+        ideal_rels = [3.0] * min(k, max(0, n_relevant))
+        if not ideal_rels:
             return 0.0
         idcg = sum(
             rel / math.log2(i + 2) for i, rel in enumerate(ideal_rels)
@@ -1110,6 +1109,7 @@ async def evaluate_retrieval_quality(
         "ndcg_at_5": ndcg_scores[5],
         "ndcg_at_10": ndcg_scores[10],
         "mrr": mrr,
+        "relevance_vector": rel_vector,
         "per_doc_scores": per_doc_scores,
     }
 
