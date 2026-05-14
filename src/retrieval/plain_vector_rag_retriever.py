@@ -163,17 +163,38 @@ class PlainVectorRAGRetriever:
         result._plain_rag_meta = self._meta(top_scores=top_scores)  # type: ignore[attr-defined]
         return result
 
-    async def _ensure_index(self) -> None:
+    async def build_index(self, force: bool = False) -> Dict[str, Any]:
+        """Build or load the plain vector RAG cache and return index stats."""
+        if force:
+            self._clear_cache_files()
+            self._index_ready = False
+            self._chunks = []
+            self._embeddings = None
+
+        cache_hit = await self._ensure_index()
+        shape = list(self._embeddings.shape) if self._embeddings is not None else [0, 0]
+        return {
+            "input_dir": str(self.input_dir),
+            "cache_dir": str(self.cache_dir),
+            "embedding_backend": self.embedding_backend,
+            "embedding_model": self.embedding_model,
+            "chunk_count": len(self._chunks),
+            "embedding_shape": shape,
+            "cache_hit": bool(cache_hit),
+            "cache_files": self._cache_file_status(),
+        }
+
+    async def _ensure_index(self) -> bool:
         if self._index_ready:
-            return
+            return True
 
         async with self._build_lock:
             if self._index_ready:
-                return
+                return True
             manifest = self._build_manifest()
             if self._load_cache(manifest):
                 self._index_ready = True
-                return
+                return True
 
             chunks = self._load_chunks()
             embeddings = await self._embed_chunks(chunks)
@@ -181,6 +202,7 @@ class PlainVectorRAGRetriever:
             self._embeddings = embeddings
             self._save_cache(manifest)
             self._index_ready = True
+            return False
 
     def _build_manifest(self) -> Dict[str, Any]:
         files = []
@@ -251,6 +273,29 @@ class PlainVectorRAGRetriever:
             np.save(self.cache_dir / "embeddings.npy", embeddings.astype(np.float32, copy=False))
         except Exception as exc:
             logger.warning("[PlainVectorRAG] cache save failed: %s", exc)
+
+    def _cache_paths(self) -> Dict[str, Path]:
+        return {
+            "manifest": self.cache_dir / "manifest.json",
+            "chunks": self.cache_dir / "chunks.jsonl",
+            "embeddings": self.cache_dir / "embeddings.npy",
+        }
+
+    def _cache_file_status(self) -> Dict[str, Dict[str, Any]]:
+        out = {}
+        for name, path in self._cache_paths().items():
+            exists = path.exists()
+            out[name] = {
+                "path": str(path),
+                "exists": exists,
+                "size": path.stat().st_size if exists else 0,
+            }
+        return out
+
+    def _clear_cache_files(self) -> None:
+        for path in self._cache_paths().values():
+            if path.exists():
+                path.unlink()
 
     def _load_chunks(self) -> List[PlainRAGChunk]:
         if not self.input_dir.exists():
@@ -477,6 +522,20 @@ class PlainVectorRAGRetriever:
             from ..llm.local_embedding import LocalEmbedding
 
             self.embedding_client = LocalEmbedding()
+        elif self.embedding_backend in {"hunyuan", "tencent", "tencent-hunyuan"}:
+            from ..llm.hunyuan_embedding import HunyuanEmbedding, HunyuanEmbeddingConfig
+
+            settings = get_settings()
+            self.embedding_client = HunyuanEmbedding(
+                HunyuanEmbeddingConfig(
+                    api_key=getattr(settings, "hunyuan_api_key", None),
+                    base_url=(
+                        getattr(settings, "hunyuan_api_base", None)
+                        or "https://api.hunyuan.cloud.tencent.com/v1"
+                    ),
+                    model=self.embedding_model or "hunyuan-embedding",
+                )
+            )
         else:
             raise RuntimeError(
                 f"Unsupported plain RAG embedding backend: {self.embedding_backend}"
@@ -508,6 +567,12 @@ class PlainVectorRAGRetriever:
                 "普通向量 RAG 本地 embedding 加载/调用失败，"
                 "请确认已安装 sentence-transformers 且模型缓存可用。"
                 f"原始错误: {raw}"
+            )
+        if self.embedding_backend in {"hunyuan", "tencent", "tencent-hunyuan"}:
+            return PlainVectorRAGEmbeddingError(
+                "普通向量 RAG 调用腾讯混元 embedding API 失败，"
+                "请确认已配置 `HUNYUAN_API_KEY`，且 `PLAIN_RAG_EMBEDDING_MODEL` "
+                f"为可用模型（当前 `{self.embedding_model}`）。原始错误: {raw}"
             )
         return PlainVectorRAGEmbeddingError(
             f"普通向量 RAG embedding 失败 ({self.embedding_backend}): {raw}"

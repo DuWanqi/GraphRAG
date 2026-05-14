@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import src.retrieval.plain_vector_rag_retriever as plain_rag_module
 from src.retrieval import (
     PLAIN_VECTOR_RAG_MODE,
     PlainVectorRAGEmbeddingError,
@@ -133,6 +134,40 @@ def test_plain_vector_rag_cache_hit_skips_chunk_embedding(tmp_path):
     assert second_embedding.single_calls == 1
 
 
+def test_plain_vector_rag_build_index_reports_cache_hit_and_force(tmp_path):
+    input_dir = tmp_path / "input"
+    cache_dir = tmp_path / "cache"
+    input_dir.mkdir()
+    (input_dir / "history.txt").write_text(
+        "深圳蛇口在改革开放初期承担了重要试验任务，工业区建设推动了制度创新。",
+        encoding="utf-8",
+    )
+
+    first_embedding = FakeEmbedding()
+    first = _make_retriever(input_dir, cache_dir, first_embedding)
+    first_stats = _run(first.build_index())
+
+    assert first_stats["cache_hit"] is False
+    assert first_stats["chunk_count"] > 0
+    assert first_stats["embedding_shape"][0] == first_stats["chunk_count"]
+    assert first_stats["cache_files"]["manifest"]["exists"] is True
+    assert first_embedding.batch_calls > 0
+
+    second_embedding = FakeEmbedding()
+    second = _make_retriever(input_dir, cache_dir, second_embedding)
+    second_stats = _run(second.build_index())
+
+    assert second_stats["cache_hit"] is True
+    assert second_embedding.batch_calls == 0
+
+    forced_embedding = FakeEmbedding()
+    forced = _make_retriever(input_dir, cache_dir, forced_embedding)
+    forced_stats = _run(forced.build_index(force=True))
+
+    assert forced_stats["cache_hit"] is False
+    assert forced_embedding.batch_calls > 0
+
+
 def test_plain_vector_rag_rebuilds_when_input_changes(tmp_path):
     input_dir = tmp_path / "input"
     cache_dir = tmp_path / "cache"
@@ -179,3 +214,28 @@ def test_plain_vector_rag_reports_ollama_connection_help(tmp_path):
     message = str(exc_info.value)
     assert "ollama serve" in message
     assert "ollama pull nomic-embed-text" in message
+
+
+def test_plain_vector_rag_can_create_hunyuan_embedding_client(tmp_path, monkeypatch):
+    class StubSettings:
+        plain_rag_input_dir = str(tmp_path / "input")
+        plain_rag_cache_dir = str(tmp_path / "cache")
+        plain_rag_embedding_backend = "hunyuan"
+        plain_rag_embedding_model = "hunyuan-embedding"
+        ollama_api_base = "http://localhost:11434"
+        hunyuan_api_key = "test-key"
+        hunyuan_api_base = None
+
+    monkeypatch.setattr(plain_rag_module, "get_settings", lambda: StubSettings())
+    retriever = PlainVectorRAGRetriever(
+        input_dir=tmp_path / "input",
+        cache_dir=tmp_path / "cache",
+        embedding_backend="hunyuan",
+        embedding_model="hunyuan-embedding",
+    )
+
+    client = retriever._get_embedding_client()
+
+    assert client.config.api_key == "test-key"
+    assert client.config.model == "hunyuan-embedding"
+    assert client.config.base_url == "https://api.hunyuan.cloud.tencent.com/v1"
