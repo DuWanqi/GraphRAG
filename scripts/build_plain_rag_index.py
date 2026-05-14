@@ -35,6 +35,41 @@ def _print_cache_files(cache_files: dict) -> None:
         print(f"  {name}: {status}, {info.get('size', 0)} bytes, {info.get('path')}")
 
 
+def _format_seconds(value: object) -> str:
+    if value is None:
+        return "未知"
+    seconds = max(0.0, float(value))
+    return f"{seconds:.1f}s"
+
+
+def _print_progress(event: dict) -> None:
+    event_name = event.get("event")
+    if event_name == "cache_loaded":
+        print(f"命中已有 cache，已加载 {event.get('chunk_count', 0)} chunks", flush=True)
+    elif event_name == "chunks_loaded":
+        print(
+            "已加载文件数 / chunk 数: "
+            f"{event.get('input_file_count', 0)} / {event.get('chunk_count', 0)}",
+            flush=True,
+        )
+    elif event_name == "embedding_batch":
+        print(
+            "Embedding batch "
+            f"{event.get('batch_index', 0)}/{event.get('batch_count', 0)}，"
+            f"已完成 {event.get('completed_chunks', 0)}/{event.get('total_chunks', 0)} chunks",
+            flush=True,
+        )
+        print(
+            "  当前 batch 耗时: "
+            f"{_format_seconds(event.get('batch_elapsed'))}，"
+            f"累计耗时: {_format_seconds(event.get('elapsed'))}，"
+            f"预计剩余时间: {_format_seconds(event.get('eta'))}",
+            flush=True,
+        )
+    elif event_name == "cache_saved":
+        print("cache 写入完成", flush=True)
+
+
 async def _run(args: argparse.Namespace) -> int:
     settings = get_settings()
     retriever = PlainVectorRAGRetriever(
@@ -54,7 +89,10 @@ async def _run(args: argparse.Namespace) -> int:
     print(f"Force rebuild: {args.force}")
 
     started = time.monotonic()
-    stats = await retriever.build_index(force=args.force)
+    stats = await retriever.build_index(
+        force=args.force,
+        progress_callback=_print_progress,
+    )
     elapsed = time.monotonic() - started
 
     print("\n[OK] 普通向量 RAG 索引/cache 就绪")

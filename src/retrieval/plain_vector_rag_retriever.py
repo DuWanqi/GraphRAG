@@ -12,9 +12,10 @@ import inspect
 import json
 import logging
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -39,6 +40,7 @@ _JSON_TEXT_FIELDS = (
     "source",
     "url",
 )
+ProgressCallback = Callable[[Dict[str, Any]], None]
 
 
 class PlainVectorRAGEmbeddingError(RuntimeError):
@@ -163,7 +165,11 @@ class PlainVectorRAGRetriever:
         result._plain_rag_meta = self._meta(top_scores=top_scores)  # type: ignore[attr-defined]
         return result
 
-    async def build_index(self, force: bool = False) -> Dict[str, Any]:
+    async def build_index(
+        self,
+        force: bool = False,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> Dict[str, Any]:
         """Build or load the plain vector RAG cache and return index stats."""
         if force:
             self._clear_cache_files()
@@ -171,7 +177,7 @@ class PlainVectorRAGRetriever:
             self._chunks = []
             self._embeddings = None
 
-        cache_hit = await self._ensure_index()
+        cache_hit = await self._ensure_index(progress_callback=progress_callback)
         shape = list(self._embeddings.shape) if self._embeddings is not None else [0, 0]
         return {
             "input_dir": str(self.input_dir),
@@ -184,7 +190,10 @@ class PlainVectorRAGRetriever:
             "cache_files": self._cache_file_status(),
         }
 
-    async def _ensure_index(self) -> bool:
+    async def _ensure_index(
+        self,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> bool:
         if self._index_ready:
             return True
 
@@ -194,13 +203,38 @@ class PlainVectorRAGRetriever:
             manifest = self._build_manifest()
             if self._load_cache(manifest):
                 self._index_ready = True
+                self._emit_progress(
+                    progress_callback,
+                    {
+                        "event": "cache_loaded",
+                        "chunk_count": len(self._chunks),
+                    },
+                )
                 return True
 
             chunks = self._load_chunks()
-            embeddings = await self._embed_chunks(chunks)
+            self._emit_progress(
+                progress_callback,
+                {
+                    "event": "chunks_loaded",
+                    "input_file_count": len(manifest.get("files") or []),
+                    "chunk_count": len(chunks),
+                },
+            )
+            embeddings = await self._embed_chunks(
+                chunks,
+                progress_callback=progress_callback,
+            )
             self._chunks = chunks
             self._embeddings = embeddings
             self._save_cache(manifest)
+            self._emit_progress(
+                progress_callback,
+                {
+                    "event": "cache_saved",
+                    "cache_files": self._cache_file_status(),
+                },
+            )
             self._index_ready = True
             return False
 
@@ -458,19 +492,58 @@ class PlainVectorRAGRetriever:
             start += step
         return chunks
 
-    async def _embed_chunks(self, chunks: Sequence[PlainRAGChunk]) -> np.ndarray:
+    async def _embed_chunks(
+        self,
+        chunks: Sequence[PlainRAGChunk],
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> np.ndarray:
         if not chunks:
             return np.zeros((0, 0), dtype=np.float32)
 
         embeddings: List[List[float]] = []
         texts = [chunk.text for chunk in chunks]
-        for start in range(0, len(texts), self.batch_size):
+        total_chunks = len(texts)
+        total_batches = (total_chunks + self.batch_size - 1) // self.batch_size
+        embedding_started = time.monotonic()
+        for batch_index, start in enumerate(range(0, total_chunks, self.batch_size), start=1):
             batch = texts[start : start + self.batch_size]
+            batch_started = time.monotonic()
             vectors = await self._embed_many(batch)
             embeddings.extend(vectors)
+            now = time.monotonic()
+            completed_chunks = len(embeddings)
+            elapsed = now - embedding_started
+            remaining_chunks = max(0, total_chunks - completed_chunks)
+            eta = (elapsed / completed_chunks * remaining_chunks) if completed_chunks else None
+            self._emit_progress(
+                progress_callback,
+                {
+                    "event": "embedding_batch",
+                    "batch_index": batch_index,
+                    "batch_count": total_batches,
+                    "batch_size": len(batch),
+                    "completed_chunks": completed_chunks,
+                    "total_chunks": total_chunks,
+                    "batch_elapsed": now - batch_started,
+                    "elapsed": elapsed,
+                    "eta": eta,
+                },
+            )
 
         matrix = np.asarray(embeddings, dtype=np.float32)
         return self._normalize_matrix(matrix)
+
+    def _emit_progress(
+        self,
+        progress_callback: Optional[ProgressCallback],
+        event: Dict[str, Any],
+    ) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(dict(event))
+        except Exception as exc:
+            logger.warning("[PlainVectorRAG] progress callback failed: %s", exc)
 
     async def _embed_one(self, text: str) -> List[float]:
         try:

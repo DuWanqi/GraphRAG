@@ -86,11 +86,11 @@ class Settings(BaseSettings):
         alias="PLAIN_RAG_INPUT_DIR",
     )
     plain_rag_embedding_backend: str = Field(
-        default="hunyuan",
+        default="ollama",
         alias="PLAIN_RAG_EMBEDDING_BACKEND",
     )
     plain_rag_embedding_model: str = Field(
-        default="hunyuan-embedding",
+        default="nomic-embed-text",
         alias="PLAIN_RAG_EMBEDDING_MODEL",
     )
     plain_rag_cache_dir: str = Field(

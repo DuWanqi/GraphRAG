@@ -54,6 +54,7 @@ secrets.json
 
 # Cache directories
 .cache/
+data/plain_vector_rag_cache/
 
 # Trae IDE documents
 .trae/documents/

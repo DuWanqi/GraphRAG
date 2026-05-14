@@ -168,6 +168,35 @@ def test_plain_vector_rag_build_index_reports_cache_hit_and_force(tmp_path):
     assert forced_embedding.batch_calls > 0
 
 
+def test_plain_vector_rag_build_index_emits_progress_events(tmp_path):
+    input_dir = tmp_path / "input"
+    cache_dir = tmp_path / "cache"
+    input_dir.mkdir()
+    (input_dir / "history.txt").write_text(
+        "深圳蛇口在改革开放初期承担了重要试验任务，工业区建设推动了制度创新。",
+        encoding="utf-8",
+    )
+
+    events = []
+    retriever = _make_retriever(input_dir, cache_dir, FakeEmbedding())
+    stats = _run(retriever.build_index(progress_callback=events.append))
+
+    event_names = [event["event"] for event in events]
+    assert stats["cache_hit"] is False
+    assert "chunks_loaded" in event_names
+    assert "embedding_batch" in event_names
+    assert "cache_saved" in event_names
+
+    chunks_event = next(event for event in events if event["event"] == "chunks_loaded")
+    batch_event = next(event for event in events if event["event"] == "embedding_batch")
+    assert chunks_event["input_file_count"] == 1
+    assert chunks_event["chunk_count"] == stats["chunk_count"]
+    assert batch_event["completed_chunks"] == stats["chunk_count"]
+    assert batch_event["total_chunks"] == stats["chunk_count"]
+    assert batch_event["batch_elapsed"] >= 0
+    assert batch_event["elapsed"] >= 0
+
+
 def test_plain_vector_rag_rebuilds_when_input_changes(tmp_path):
     input_dir = tmp_path / "input"
     cache_dir = tmp_path / "cache"
