@@ -1040,6 +1040,7 @@ async def evaluate_retrieval_quality(
 
     per_doc_scores = []
     rel_vector = [0.0] * len(text_units)
+    judge_error = None
 
     try:
         response = await llm_adapter.chat(
@@ -1083,6 +1084,7 @@ async def evaluate_retrieval_quality(
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"LLM judge 评估失败: {e}")
+        judge_error = str(e)
         for i, text in enumerate(text_units):
             per_doc_scores.append({
                 "doc_id": i + 1,
@@ -1111,6 +1113,7 @@ async def evaluate_retrieval_quality(
         "mrr": mrr,
         "relevance_vector": rel_vector,
         "per_doc_scores": per_doc_scores,
+        "judge_error": judge_error,
     }
 
 
