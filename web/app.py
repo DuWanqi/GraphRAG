@@ -1836,6 +1836,11 @@ def _fmt_score(v, pct: bool = False) -> str:
     return f"{v:.1%}" if pct else f"{v:.3f}"
 
 
+def _benchmark_rows_snapshot(rows: List[List[str]]) -> List[List[str]]:
+    """Return a detached snapshot for Gradio streaming updates."""
+    return [list(row) for row in rows]
+
+
 def batch_benchmark_stream(
     dataset_dir: str,
     provider: str,
@@ -1928,7 +1933,7 @@ def batch_benchmark_stream(
         f"当前配置：{provider}{f'/{model}' if model else ''} · "
         f"风格 `{style}` · 整篇目标生成 `{bg_lo}`–`{bg_hi}` 字 · "
         f"温度 `{temperature}` · 检索 `{', '.join(label for _, label in retrieval_specs)}`",
-        rows,
+        _benchmark_rows_snapshot(rows),
         empty_avg,
         None,
         None,
@@ -1944,7 +1949,7 @@ def batch_benchmark_stream(
                 stopped_early = True
                 yield (
                     f"🛑 已停止：在第 {idx} / {total} 条段落开始前中止。已完成 {len(rows)} 条，正在导出…",
-                    rows, empty_avg, None, None, None,
+                    _benchmark_rows_snapshot(rows), empty_avg, None, None, None,
                 )
                 break
 
@@ -1967,14 +1972,21 @@ def batch_benchmark_stream(
                 f"- 历史标签: {tags_str}\n"
                 f"- 已耗时: {time.monotonic() - bench_start:.1f}s\n"
             )
-            yield (base_status + "\n_正在检索…_", rows, empty_avg, None, None, None)
-
             row = [
                 source_file, seg_id, chapter, tags_str, run_label,
                 _truncate(original_text, 120), "",
                 "—", "—", "—", "—", "—", "—", "—",
                 "—", "进行中",
             ]
+            rows.append(row)
+            yield (
+                base_status + "\n_正在检索…_",
+                _benchmark_rows_snapshot(rows),
+                empty_avg,
+                None,
+                None,
+                None,
+            )
 
             generated_text = ""
             ndcg5 = mrr = factscore = safe_score = relevance = literary = compliance = None
@@ -1992,7 +2004,14 @@ def batch_benchmark_stream(
 
                 # ── 2. 检索质量（按需，先于生成，避免生成失败吞掉检索指标） ──
                 if enable_retrieval_quality:
-                    yield (base_status + "\n_正在评估检索质量…_", rows, empty_avg, None, None, None)
+                    yield (
+                        base_status + "\n_正在评估检索质量…_",
+                        _benchmark_rows_snapshot(rows),
+                        empty_avg,
+                        None,
+                        None,
+                        None,
+                    )
                     try:
                         eval_result = loop.run_until_complete(asyncio.wait_for(
                             evaluate_retrieval_quality(
@@ -2020,7 +2039,14 @@ def batch_benchmark_stream(
                         error_msg = (error_msg + " | " if error_msg else "") + f"检索评估: {e}"
 
                 # ── 3. 扩写（必跑） ──
-                yield (base_status + "\n_正在生成扩写…_", rows, empty_avg, None, None, None)
+                yield (
+                    base_status + "\n_正在生成扩写…_",
+                    _benchmark_rows_snapshot(rows),
+                    empty_avg,
+                    None,
+                    None,
+                    None,
+                )
                 gen_result = loop.run_until_complete(asyncio.wait_for(
                     generator.generate(
                         memoir_text=original_text,
@@ -2034,7 +2060,14 @@ def batch_benchmark_stream(
                 ))
                 generated_text = gen_result.content or ""
                 row[6] = _truncate(generated_text, 120)
-                yield (base_status + "\n_扩写完成，进入评估…_", rows, empty_avg, None, None, None)
+                yield (
+                    base_status + "\n_扩写完成，进入评估…_",
+                    _benchmark_rows_snapshot(rows),
+                    empty_avg,
+                    None,
+                    None,
+                    None,
+                )
 
                 # ── 4. 准确性 + LLM-as-Judge（按需） ──
                 if enable_fact_check or enable_safe_check or enable_llm_judge:
@@ -2087,7 +2120,6 @@ def batch_benchmark_stream(
                 row[15] = f"❌ {_truncate(str(e), 80)}"
                 error_msg = (error_msg + " | " if error_msg else "") + str(e)
 
-            rows.append(row)
             detail_records.append({
                 "source_file": source_file,
                 "id": seg_id,
@@ -2109,7 +2141,7 @@ def batch_benchmark_stream(
                 "elapsed_seconds": round(seg_elapsed, 2),
                 "error": error_msg or None,
             })
-            yield (base_status, rows, empty_avg, None, None, None)
+            yield (base_status, _benchmark_rows_snapshot(rows), empty_avg, None, None, None)
 
         # ── 处理结束（正常完成或中途停止）：导出 JSON / Markdown / CSV ──
         done_count = len(rows)
@@ -2117,7 +2149,7 @@ def batch_benchmark_stream(
             f"💾 已处理 {done_count} / {total} 条段落"
             f"{'（已停止）' if stopped_early else ''}，"
             f"共耗时 {time.monotonic() - bench_start:.1f}s，正在导出…",
-            rows, empty_avg, None, None, None,
+            _benchmark_rows_snapshot(rows), empty_avg, None, None, None,
         )
 
         out_dir = Path(tempfile.mkdtemp(prefix="benchmark_"))
@@ -2253,7 +2285,7 @@ def batch_benchmark_stream(
         yield (
             f"{final_icon} {final_label}！已处理 {len(detail_records)} / {total_jobs} 个任务，"
             f"导出完毕（总耗时 {run_settings['total_elapsed_seconds']}s）。",
-            rows,
+            _benchmark_rows_snapshot(rows),
             averages_md,
             str(json_path),
             str(md_path),
