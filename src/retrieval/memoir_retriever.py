@@ -9,7 +9,7 @@ import asyncio
 import time
 import re
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -100,6 +100,9 @@ class MemoirRetriever:
         self._relationships_df = None
         self._text_units_df = None
         self._communities_df = None
+        self._vector_retriever = None
+        self._entity_rows_by_id: Dict[str, Dict[str, Any]] = {}
+        self._text_unit_rows_by_id: Dict[str, Dict[str, Any]] = {}
         
         # 加载数据
         self._load_data()
@@ -123,6 +126,7 @@ class MemoirRetriever:
         ]
         community_files = [
             output_dir / "community_reports.parquet",
+            output_dir / "communities.parquet",
             output_dir / "create_final_community_reports.parquet"
         ]
         
@@ -145,6 +149,9 @@ class MemoirRetriever:
             if file_path.exists():
                 self._communities_df = pd.read_parquet(file_path)
                 break
+
+        self._entity_rows_by_id = self._build_row_map(self._entities_df)
+        self._text_unit_rows_by_id = self._build_row_map(self._text_units_df)
         
         print(f"[DEBUG] 加载实体: {len(self._entities_df) if self._entities_df is not None else 0} 条")
         print(f"[DEBUG] 加载关系: {len(self._relationships_df) if self._relationships_df is not None else 0} 条")
@@ -185,6 +192,7 @@ class MemoirRetriever:
         """关键词检索"""
         result = RetrievalResult()
         result.context = context
+        result.query = context.to_query()
         
         # 搜索实体、关系、文本单元和社区报告
         result.entities = self._search_entities(context, top_k)
@@ -195,17 +203,512 @@ class MemoirRetriever:
         return result
     
     async def _vector_retrieve(self, context: MemoirContext, top_k: int) -> RetrievalResult:
-        """向量检索"""
-        # 简单实现：使用关键词检索作为回退
-        return await self._keyword_retrieve(context, top_k)
+        """GraphRAG Local Search 风格检索。
+
+        入口是实体描述向量召回；随后沿图谱扩展相关关系、文本单元和社区。
+        这比普通 chunk 向量检索多利用了 GraphRAG 产出的结构化图谱。
+        """
+        result = RetrievalResult(context=context, query=self._build_local_search_query(context))
+        vector_retriever = self._get_vector_retriever()
+
+        if not vector_retriever.is_ready():
+            raise RuntimeError("GraphRAG 向量索引未就绪：未找到 entity_description LanceDB 表。")
+
+        entity_limit = max(top_k * 8, 60)
+        text_limit = max(top_k * 3, 20)
+
+        entity_hits = await vector_retriever.search_entities(result.query, top_k=entity_limit)
+        keyword_entity_seeds = self._search_entities(context, min(top_k, 10))
+        for seed in keyword_entity_seeds:
+            seed["source"] = "graphrag_local_keyword_seed"
+            seed["distance"] = 0.7
+
+        vector_text_records = await vector_retriever.search_text_unit_records(
+            result.query, top_k=text_limit
+        )
+        keyword_text_records = [
+            {
+                "id": "",
+                "text": text,
+                "score": 0.7,
+                "distance": 0.7,
+                "source": "keyword_seed",
+                "metadata": {},
+            }
+            for text in self._search_text_units(context, min(top_k, 8))
+        ]
+        vector_text_records = vector_text_records + keyword_text_records
+        seed_text_ids = {
+            str(r.get("id", "")).strip() for r in vector_text_records if str(r.get("id", "")).strip()
+        }
+        text_entity_ids = self._entity_ids_from_text_records(vector_text_records)
+        text_neighbor_entities = self._entities_from_ids(
+            text_entity_ids,
+            source="graphrag_local_text_unit_neighbor",
+        )
+
+        entity_hits = self._dedupe_entities(
+            entity_hits + keyword_entity_seeds + text_neighbor_entities
+        )
+        entity_hits = self._rerank_entities(entity_hits, context)
+        selected_entities = entity_hits[: min(top_k, 10)]
+        selected_entity_ids = {
+            str(e.get("id", "")).strip() for e in selected_entities if str(e.get("id", "")).strip()
+        } | text_entity_ids
+        selected_entity_names = {
+            str(e.get("name", "")).strip() for e in selected_entities if str(e.get("name", "")).strip()
+        }
+        text_records = self._collect_local_text_units(
+            vector_text_records,
+            selected_entity_ids,
+            context,
+            top_k=top_k,
+        )
+        selected_text_ids = {
+            str(r.get("id", "")).strip() for r in text_records if str(r.get("id", "")).strip()
+        } | seed_text_ids
+
+        relationships = self._collect_local_relationships(
+            selected_entity_names,
+            selected_text_ids,
+            context,
+            top_k=top_k,
+        )
+        selected_relationship_ids = {
+            str(r.get("id", "")).strip() for r in relationships if str(r.get("id", "")).strip()
+        }
+
+        # 再用关系补充文本单元，贴近官方 Local Search 的 graph neighborhood 思路。
+        text_records = self._collect_local_text_units(
+            text_records,
+            selected_entity_ids,
+            context,
+            top_k=top_k,
+            relationship_ids=selected_relationship_ids,
+        )
+
+        result.entities = selected_entities
+        result.relationships = relationships
+        result.text_units = [self._format_local_text_unit(r) for r in text_records]
+        result.communities = self._collect_local_communities(
+            selected_entity_ids,
+            selected_relationship_ids,
+            context,
+            top_k=min(top_k, 3),
+        )
+
+        return result
     
     async def _hybrid_retrieve(self, context: MemoirContext, top_k: int) -> RetrievalResult:
-        """混合检索"""
-        # 获取关键词检索结果
+        """混合检索：GraphRAG Local Search + 关键词规则补充。"""
+        vector_result = await self._vector_retrieve(context, top_k)
         keyword_result = await self._keyword_retrieve(context, top_k)
-        
-        # 合并结果（去重）
-        return keyword_result
+        return self._merge_retrieval_results(vector_result, keyword_result, top_k)
+
+    @staticmethod
+    def _build_row_map(df: Optional[pd.DataFrame]) -> Dict[str, Dict[str, Any]]:
+        if df is None or df.empty or "id" not in df.columns:
+            return {}
+        out: Dict[str, Dict[str, Any]] = {}
+        for _, row in df.iterrows():
+            row_dict = row.to_dict()
+            row_id = str(row_dict.get("id", "")).strip()
+            if row_id:
+                out[row_id] = row_dict
+        return out
+
+    @staticmethod
+    def _as_list(value: Any) -> List[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, (tuple, set)):
+            return list(value)
+        if hasattr(value, "tolist"):
+            return value.tolist()
+        if isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return []
+            if s.startswith("[") and s.endswith("]"):
+                try:
+                    import ast
+                    parsed = ast.literal_eval(s)
+                    if isinstance(parsed, list):
+                        return parsed
+                except Exception:
+                    pass
+            return [s]
+        try:
+            if pd.isna(value):
+                return []
+        except Exception:
+            pass
+        return [value]
+
+    def _get_vector_retriever(self):
+        if self._vector_retriever is None:
+            from .vector_retriever import VectorRetriever
+
+            self._vector_retriever = VectorRetriever(
+                index_dir=str(self.index_dir),
+                llm_adapter=self.llm_adapter,
+            )
+        return self._vector_retriever
+
+    def _build_local_search_query(self, context: MemoirContext) -> str:
+        parts: List[str] = []
+        if context.original_text:
+            parts.append(context.original_text[:500])
+        if context.year:
+            parts.append(f"时间：{context.year}年")
+        if context.location:
+            parts.append(f"地点：{context.location}")
+        keywords = [str(k) for k in (context.keywords or [])[:8] if k]
+        if keywords:
+            parts.append("关键词：" + "、".join(keywords))
+        return "\n".join(parts).strip() or context.to_query()
+
+    def _context_overlap_score(self, text: str, context: MemoirContext) -> float:
+        haystack = (text or "").upper()
+        score = 0.0
+        if context.year and str(context.year).upper() in haystack:
+            score += 25.0
+        location_aliases = {
+            "深圳": ["SHENZHEN"],
+            "广州": ["GUANGZHOU", "CANTON"],
+            "广东": ["GUANGDONG"],
+            "香港": ["HONG KONG"],
+            "上海": ["SHANGHAI"],
+            "北京": ["BEIJING"],
+            "佛山": ["FOSHAN"],
+            "东莞": ["DONGGUAN"],
+            "柳州": ["LIUZHOU"],
+            "广西": ["GUANGXI"],
+        }
+        if context.location:
+            loc_terms = [str(context.location), *location_aliases.get(str(context.location), [])]
+            if any(term.upper() in haystack for term in loc_terms):
+                score += 20.0
+        for kw in (context.keywords or [])[:8]:
+            if kw and str(kw).upper() in haystack:
+                score += 8.0
+        return score
+
+    def _entity_ids_from_text_records(self, records: List[Dict[str, Any]]) -> Set[str]:
+        entity_ids: Set[str] = set()
+        for record in records:
+            metadata = record.get("metadata") or {}
+            for entity_id in self._as_list(metadata.get("entity_ids")):
+                entity_id = str(entity_id).strip()
+                if entity_id:
+                    entity_ids.add(entity_id)
+        return entity_ids
+
+    def _entities_from_ids(self, entity_ids: Set[str], source: str) -> List[Dict[str, Any]]:
+        entities = []
+        for entity_id in entity_ids:
+            row = self._entity_rows_by_id.get(entity_id)
+            if not row:
+                continue
+            entities.append({
+                "id": entity_id,
+                "name": row.get("title") or row.get("name", ""),
+                "description": row.get("description", ""),
+                "type": row.get("type", "unknown"),
+                "score": 0.8,
+                "distance": 0.8,
+                "source": source,
+            })
+        return entities
+
+    @staticmethod
+    def _dedupe_entities(entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        seen_ids = set()
+        seen_names = set()
+        out = []
+        for entity in entities:
+            entity_id = str(entity.get("id", "")).strip()
+            name = str(entity.get("name", "")).strip().lower()
+            key = entity_id or name
+            if not key or key in seen_ids or name in seen_names:
+                continue
+            seen_ids.add(key)
+            if name:
+                seen_names.add(name)
+            out.append(entity)
+        return out
+
+    def _rerank_entities(
+        self,
+        entities: List[Dict[str, Any]],
+        context: MemoirContext,
+    ) -> List[Dict[str, Any]]:
+        reranked = []
+        for rank, entity in enumerate(entities):
+            e = dict(entity)
+            if self._is_low_value_local_entity(e):
+                continue
+            distance = float(e.get("distance", e.get("score", 1.0)) or 1.0)
+            text = f"{e.get('name', '')} {e.get('description', '')}"
+            relevance = 100.0 / (1.0 + max(distance, 0.0))
+            local_score = relevance + self._context_overlap_score(text, context) - rank * 0.01
+            e["distance"] = distance
+            e["score"] = round(local_score, 4)
+            e["source"] = "graphrag_local_entity_vector"
+            reranked.append(e)
+        reranked.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        return reranked
+
+    @staticmethod
+    def _is_low_value_local_entity(entity: Dict[str, Any]) -> bool:
+        name = str(entity.get("name", "")).strip()
+        desc = str(entity.get("description", "")).strip()
+        entity_type = str(entity.get("type", "")).upper()
+        if not name:
+            return True
+        if re.fullmatch(r"\d{4}(?:年)?(?:\d{1,2}月\d{1,2}日)?", name):
+            return True
+        if re.fullmatch(r"\d{1,2}月\d{1,2}日", name):
+            return True
+        if entity_type in {"DATE", "TIME"} and len(desc) < 40:
+            return True
+        generic_entities = {
+            "中国", "中华人民共和国", "国家", "政府", "中央", "国务院",
+            "北京", "上海", "STATE COUNCIL", "CPC CENTRAL COMMITTEE",
+        }
+        return name.upper() in {g.upper() for g in generic_entities}
+
+    def _collect_local_text_units(
+        self,
+        seed_records: List[Dict[str, Any]],
+        entity_ids: Set[str],
+        context: MemoirContext,
+        top_k: int,
+        relationship_ids: Optional[Set[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        relationship_ids = relationship_ids or set()
+        candidates: Dict[str, Dict[str, Any]] = {}
+
+        def add_record(record: Dict[str, Any], graph_bonus: float = 0.0) -> None:
+            text = str(record.get("text", "")).strip()
+            if not text:
+                return
+            text_id = str(record.get("id", "")).strip()
+            key = text_id or text[:120]
+            distance = float(record.get("distance", record.get("score", 1.0)) or 1.0)
+            vector_score = 100.0 / (1.0 + max(distance, 0.0))
+            score = vector_score + graph_bonus + self._context_overlap_score(text, context)
+            existing = candidates.get(key)
+            if existing is None or score > existing.get("score", 0.0):
+                item = dict(record)
+                item["id"] = text_id
+                item["score"] = round(score, 4)
+                item["distance"] = distance
+                candidates[key] = item
+
+        for record in seed_records:
+            add_record(record, graph_bonus=5.0 if record.get("source") == "vector" else 0.0)
+
+        for entity_id in entity_ids:
+            entity_row = self._entity_rows_by_id.get(entity_id)
+            if not entity_row:
+                continue
+            for text_unit_id in self._as_list(entity_row.get("text_unit_ids"))[:4]:
+                text_row = self._text_unit_rows_by_id.get(str(text_unit_id))
+                if text_row:
+                    add_record({
+                        "id": str(text_unit_id),
+                        "text": text_row.get("text", ""),
+                        "distance": 1.0,
+                        "source": "graph_entity_neighbor",
+                        "metadata": text_row,
+                    }, graph_bonus=35.0)
+
+        if relationship_ids and self._relationships_df is not None:
+            rel_df = self._relationships_df
+            if "id" in rel_df.columns:
+                rel_df = rel_df[rel_df["id"].astype(str).isin(relationship_ids)]
+            for _, rel in rel_df.iterrows():
+                for text_unit_id in self._as_list(rel.get("text_unit_ids"))[:3]:
+                    text_row = self._text_unit_rows_by_id.get(str(text_unit_id))
+                    if text_row:
+                        add_record({
+                            "id": str(text_unit_id),
+                            "text": text_row.get("text", ""),
+                            "distance": 1.0,
+                            "source": "graph_relationship_neighbor",
+                            "metadata": text_row,
+                        }, graph_bonus=25.0)
+
+        out = list(candidates.values())
+        out.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        return out[: min(top_k, 10)]
+
+    def _collect_local_relationships(
+        self,
+        entity_names: Set[str],
+        text_unit_ids: Set[str],
+        context: MemoirContext,
+        top_k: int,
+    ) -> List[Dict[str, Any]]:
+        if self._relationships_df is None or self._relationships_df.empty:
+            return []
+
+        candidates: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        entity_names_norm = {n.upper() for n in entity_names if n}
+
+        for _, row in self._relationships_df.iterrows():
+            source = str(row.get("source", row.get("source_title", ""))).strip()
+            target = str(row.get("target", row.get("target_title", ""))).strip()
+            desc = str(row.get("description", "")).strip()
+            rel_text_units = {str(x) for x in self._as_list(row.get("text_unit_ids"))}
+
+            source_hit = source.upper() in entity_names_norm
+            target_hit = target.upper() in entity_names_norm
+            text_hit = bool(rel_text_units & text_unit_ids)
+            if not (source_hit or target_hit or text_hit):
+                continue
+
+            weight = float(row.get("weight", 1.0) or 1.0)
+            graph_score = (20.0 if source_hit else 0.0) + (20.0 if target_hit else 0.0)
+            graph_score += 15.0 if text_hit else 0.0
+            graph_score += min(weight, 10.0)
+            graph_score += self._context_overlap_score(f"{source} {target} {desc}", context)
+
+            key = (source, target, desc[:80])
+            item = {
+                "id": str(row.get("id", "")).strip(),
+                "source": source,
+                "target": target,
+                "description": desc,
+                "weight": weight,
+                "score": round(graph_score, 4),
+                "retrieval_source": "graphrag_local_relationship",
+            }
+            if key not in candidates or graph_score > candidates[key].get("score", 0.0):
+                candidates[key] = item
+
+        out = list(candidates.values())
+        out.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        return out[: min(top_k, 10)]
+
+    def _collect_local_communities(
+        self,
+        entity_ids: Set[str],
+        relationship_ids: Set[str],
+        context: MemoirContext,
+        top_k: int,
+    ) -> List[Dict[str, Any]]:
+        if self._communities_df is None or self._communities_df.empty:
+            return []
+
+        candidates = []
+        for _, row in self._communities_df.iterrows():
+            row_entity_ids = {str(x) for x in self._as_list(row.get("entity_ids"))}
+            row_relationship_ids = {str(x) for x in self._as_list(row.get("relationship_ids"))}
+            entity_hits = row_entity_ids & entity_ids
+            relationship_hits = row_relationship_ids & relationship_ids
+            if not entity_hits and not relationship_hits:
+                continue
+
+            title = str(row.get("title", "") or f"Community {row.get('community', '')}").strip()
+            summary = str(
+                row.get("summary", "")
+                or row.get("full_content", "")
+                or self._summarize_community_row(row, entity_hits)
+            ).strip()
+            score = len(entity_hits) * 10.0 + len(relationship_hits) * 4.0
+            score += self._context_overlap_score(f"{title} {summary}", context)
+            candidates.append({
+                "title": title,
+                "summary": summary[:600],
+                "score": round(score, 4),
+                "id": str(row.get("id", "")).strip(),
+                "source": "graphrag_local_community",
+            })
+
+        candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        return candidates[:top_k]
+
+    def _summarize_community_row(self, row: pd.Series, entity_hits: Set[str]) -> str:
+        entity_names = []
+        for entity_id in list(entity_hits)[:8]:
+            entity_row = self._entity_rows_by_id.get(entity_id)
+            if entity_row:
+                title = entity_row.get("title") or entity_row.get("name")
+                if title:
+                    entity_names.append(str(title))
+        size = row.get("size", "")
+        period = row.get("period", "")
+        parts = []
+        if entity_names:
+            parts.append("相关实体：" + "、".join(entity_names))
+        if size:
+            parts.append(f"社区规模：{size}")
+        if period:
+            parts.append(f"索引时期：{period}")
+        return "；".join(parts) or str(row.get("title", ""))
+
+    @staticmethod
+    def _format_local_text_unit(record: Dict[str, Any]) -> str:
+        text = str(record.get("text", "")).strip()
+        source = record.get("source", "graphrag_local")
+        score = record.get("score")
+        text_id = str(record.get("id", "")).strip()
+        meta = [f"source={source}"]
+        if score is not None:
+            meta.append(f"score={float(score):.2f}")
+        if text_id:
+            meta.append(f"id={text_id[:12]}")
+        return f"【GraphRAG Local Search】{' | '.join(meta)}\n{text}"
+
+    def _merge_retrieval_results(
+        self,
+        primary: RetrievalResult,
+        secondary: RetrievalResult,
+        top_k: int,
+    ) -> RetrievalResult:
+        merged = RetrievalResult(context=primary.context, query=primary.query or secondary.query)
+
+        def dedupe_dicts(items: List[Dict[str, Any]], key_fields: Tuple[str, ...], limit: int) -> List[Dict[str, Any]]:
+            seen = set()
+            out = []
+            for item in items:
+                key = tuple(str(item.get(f, "")).lower() for f in key_fields)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(item)
+                if len(out) >= limit:
+                    break
+            return out
+
+        merged.entities = dedupe_dicts(
+            primary.entities + secondary.entities,
+            ("name",),
+            min(top_k, 10),
+        )
+        merged.relationships = dedupe_dicts(
+            primary.relationships + secondary.relationships,
+            ("source", "target", "description"),
+            min(top_k, 10),
+        )
+        seen_text = set()
+        for text in primary.text_units + secondary.text_units:
+            key = str(text).strip()[:160]
+            if key and key not in seen_text:
+                seen_text.add(key)
+                merged.text_units.append(text)
+            if len(merged.text_units) >= min(top_k, 10):
+                break
+        merged.communities = dedupe_dicts(
+            primary.communities + secondary.communities,
+            ("title", "summary"),
+            min(top_k, 3),
+        )
+        return merged
     
     def _search_entities(
         self,
@@ -328,9 +831,11 @@ class MemoirRetriever:
                 score += 10
             
             results.append({
+                "id": row.get("id", ""),
                 "name": entity_name,
                 "type": row.get("type", "unknown"),
                 "description": entity_desc,
+                "text_unit_ids": row.get("text_unit_ids", []),
                 "score": score,
             })
         
@@ -471,10 +976,12 @@ class MemoirRetriever:
                 score += 10
             
             results.append({
+                "id": row.get("id", ""),
                 "source": source,
                 "target": target,
                 "description": desc,
                 "weight": row.get("weight", 1),
+                "text_unit_ids": row.get("text_unit_ids", []),
                 "score": score,
             })
         

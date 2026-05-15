@@ -138,8 +138,15 @@ def _format_retrieval_details(retrieval_result, retrieval_mode: str) -> str:
                 md += f"{i}. {preview}...\n"
         return md
 
+    if retrieval_mode == "vector":
+        backend_label = "GraphRAG Local Search（实体向量 + 关系/文本/社区扩展）"
+    elif retrieval_mode == "hybrid":
+        backend_label = "GraphRAG Hybrid（Local Search + 关键词补充）"
+    else:
+        backend_label = "GraphRAG 关键词检索"
+
     md = (
-        "**检索后端**: GraphRAG\n"
+        f"**检索后端**: {backend_label}\n"
         f"**找到实体**: {len(retrieval_result.entities)} 个  "
         f"**找到关系**: {len(retrieval_result.relationships)} 个  "
         f"**社区报告**: {len(retrieval_result.communities)} 个  "
@@ -1708,11 +1715,20 @@ def _benchmark_retrieval_specs(
     compare_plain_vector_rag: bool,
 ) -> List[Tuple[str, str]]:
     """Return retrieval modes to run for benchmark rows."""
+    def graph_label(mode: str) -> str:
+        if mode == "vector":
+            return "GraphRAG Local Search"
+        if mode == "hybrid":
+            return "GraphRAG Hybrid"
+        if mode == "keyword":
+            return "GraphRAG 关键词"
+        return f"GraphRAG:{mode}"
+
     if not compare_plain_vector_rag:
         label = (
             "普通向量RAG"
             if _is_plain_vector_rag_mode(retrieval_mode)
-            else f"GraphRAG:{retrieval_mode}"
+            else graph_label(retrieval_mode)
         )
         return [(retrieval_mode, label)]
 
@@ -1721,7 +1737,7 @@ def _benchmark_retrieval_specs(
         graph_mode = "hybrid"
 
     return [
-        (graph_mode, f"GraphRAG:{graph_mode}"),
+        (graph_mode, graph_label(graph_mode)),
         (PLAIN_VECTOR_RAG_MODE, "普通向量RAG"),
     ]
 
@@ -3043,9 +3059,9 @@ def create_ui():
 
                         retrieval_mode_select = gr.Radio(
                             choices=[
-                                ("关键词检索 (快速)", "keyword"),
-                                ("向量检索 (精准)", "vector"),
-                                ("混合检索 (推荐)", "hybrid"),
+                                ("GraphRAG 关键词检索", "keyword"),
+                                ("GraphRAG Local Search（实体向量+图谱）", "vector"),
+                                ("GraphRAG Hybrid（Local+关键词）", "hybrid"),
                                 ("普通 RAG（向量 baseline）", PLAIN_VECTOR_RAG_MODE),
                             ],
                             value="vector",

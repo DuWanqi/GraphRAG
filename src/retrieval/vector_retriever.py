@@ -78,6 +78,8 @@ class VectorRetriever:
         # 加载实体和关系数据（用于关联向量检索结果）
         self._entities_df = None
         self._relationships_df = None
+        self._text_units_df = None
+        self._communities_df = None
         self._load_graph_data()
         
         # 使用Ollama embedding
@@ -111,6 +113,27 @@ class VectorRetriever:
                 print(f"[VectorRetriever] 加载 {len(self._relationships_df)} 个关系")
             except Exception as e:
                 print(f"[VectorRetriever] 加载关系数据失败: {e}")
+
+        text_units_path = output_dir / "text_units.parquet"
+        if text_units_path.exists():
+            try:
+                self._text_units_df = pd.read_parquet(text_units_path)
+                print(f"[VectorRetriever] 加载 {len(self._text_units_df)} 个文本单元")
+            except Exception as e:
+                print(f"[VectorRetriever] 加载文本单元失败: {e}")
+
+        community_paths = [
+            output_dir / "community_reports.parquet",
+            output_dir / "communities.parquet",
+        ]
+        for communities_path in community_paths:
+            if communities_path.exists():
+                try:
+                    self._communities_df = pd.read_parquet(communities_path)
+                    print(f"[VectorRetriever] 加载 {len(self._communities_df)} 个社区")
+                    break
+                except Exception as e:
+                    print(f"[VectorRetriever] 加载社区数据失败: {e}")
     
     def _connect(self):
         """连接LanceDB"""
@@ -302,19 +325,57 @@ class VectorRetriever:
         if embedding is None:
             return []
         
+        records = await self.search_text_unit_records(query, top_k=top_k)
+        return [r["text"] for r in records if r.get("text")]
+
+    async def search_text_unit_records(
+        self,
+        query: str,
+        top_k: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """向量检索文本单元，并保留 GraphRAG text_unit id 与距离。"""
+        self._connect()
+
+        if self._text_unit_table is None:
+            return []
+
+        embedding = await self._get_query_embedding(query)
+        if embedding is None:
+            return []
+
         try:
             query_vector = np.array(embedding, dtype=np.float32)
-            
             results = self._text_unit_table.search(query_vector).limit(top_k).to_pandas()
-            
-            texts = []
+
+            records = []
             for _, row in results.iterrows():
+                text_id = row.get("id", "")
+                distance = float(row.get("_distance", 1.0))
                 text = row.get("text", "")
+                metadata: Dict[str, Any] = {}
+
+                if (not text) and self._text_units_df is not None and text_id:
+                    text_row = self._text_units_df[self._text_units_df["id"] == text_id]
+                    if not text_row.empty:
+                        text = text_row.iloc[0].get("text", "")
+                        metadata = text_row.iloc[0].to_dict()
+                elif self._text_units_df is not None and text_id:
+                    text_row = self._text_units_df[self._text_units_df["id"] == text_id]
+                    if not text_row.empty:
+                        metadata = text_row.iloc[0].to_dict()
+
                 if text:
-                    texts.append(text)
-            
-            return texts
-            
+                    records.append({
+                        "id": text_id,
+                        "text": text,
+                        "score": distance,
+                        "distance": distance,
+                        "source": "vector",
+                        "metadata": metadata,
+                    })
+
+            return records
+
         except Exception as e:
             print(f"[VectorRetriever] 文本检索失败: {e}")
             return []
