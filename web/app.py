@@ -1671,6 +1671,7 @@ def compare_providers(
 # ────────────────────────────────────────────────────────────
 
 BENCHMARK_DEFAULT_DIR = Path(__file__).resolve().parent.parent / "data" / "memoirs" / "segments"
+BENCHMARK_MAX_CASES = 100
 
 BENCHMARK_COLUMNS = [
     "来源文件",
@@ -2312,6 +2313,8 @@ def _batch_benchmark_stream(
         skipped_files = resume_state["skipped_files"]
         retrieval_specs = resume_state["retrieval_specs"]
         segment_total = int(resume_state["segment_total"])
+        loaded_case_total = int(resume_state.get("loaded_case_total", segment_total))
+        case_limit = int(resume_state.get("case_limit", BENCHMARK_MAX_CASES))
         total_jobs = int(resume_state["total_jobs"])
         total = total_jobs
         bg_lo = int(resume_state["bg_lo"])
@@ -2331,12 +2334,16 @@ def _batch_benchmark_stream(
             _benchmark_running_event.clear()
             return
 
-        total = len(dataset)
-        if total == 0:
+        loaded_case_total = len(dataset)
+        if loaded_case_total == 0:
             skip_note = f"\n跳过的文件: {', '.join(skipped_files)}" if skipped_files else ""
             yield (f"⚠️ 目录下未找到有效测试集 *.json。{skip_note}", [], empty_avg, None, None, None)
             _benchmark_running_event.clear()
             return
+
+        case_limit = BENCHMARK_MAX_CASES
+        if loaded_case_total > case_limit:
+            dataset = dataset[:case_limit]
 
         bg_lo, bg_hi = _clamp_generation_char_bounds(total_gen_min_chars, total_gen_max_chars)
         single_cfg = single_segment_generation_config_from_range(bg_lo, bg_hi)
@@ -2344,7 +2351,7 @@ def _batch_benchmark_stream(
             retrieval_mode,
             bool(compare_plain_vector_rag),
         )
-        segment_total = total
+        segment_total = len(dataset)
         benchmark_jobs: List[dict] = []
         for item in dataset:
             for run_mode, run_label in retrieval_specs:
@@ -2368,6 +2375,8 @@ def _batch_benchmark_stream(
     files_note = f" 来源: {len(loaded_files)} 个文件 ({', '.join(loaded_files)})"
     if skipped_files:
         files_note += f" · 跳过: {', '.join(skipped_files)}"
+    if loaded_case_total > segment_total:
+        files_note += f" · 仅评估前 {segment_total}/{loaded_case_total} 条 case"
     start_label = "继续" if resume_state else "开始"
     yield (
         f"⏳ {start_label}批量测试：共 {segment_total} 条段落、{len(retrieval_specs)} 个检索模式，合计 {total_jobs} 个任务。"
@@ -2720,6 +2729,8 @@ def _batch_benchmark_stream(
             "skipped_files": skipped_files,
             "timestamp": ts,
             "total_segments": segment_total,
+            "loaded_case_total": loaded_case_total,
+            "case_limit": case_limit,
             "total_jobs": total_jobs,
             "completed_segments": len(detail_records),
             "stopped_early": stopped_early,
@@ -2802,7 +2813,11 @@ def _batch_benchmark_stream(
             f.write(f"- 数据来源: `{dataset_dir}`（{len(loaded_files)} 个文件: {', '.join(loaded_files)}）\n")
             if skipped_files:
                 f.write(f"- 跳过: {', '.join(skipped_files)}\n")
-            f.write(f"- 段落数: {segment_total} | 任务数: {total_jobs} | 总耗时: {run_settings['total_elapsed_seconds']}s\n\n")
+            f.write(
+                f"- 段落数: {segment_total}"
+                f"{f' / 已加载 {loaded_case_total}，仅评估前 {case_limit} 条' if loaded_case_total > segment_total else ''}"
+                f" | 任务数: {total_jobs} | 总耗时: {run_settings['total_elapsed_seconds']}s\n\n"
+            )
             f.write("## 📊 指标平均\n\n")
             f.write(averages_md + "\n\n---\n\n")
             for r in detail_records:
@@ -2854,6 +2869,8 @@ def _batch_benchmark_stream(
                 "skipped_files": skipped_files,
                 "retrieval_specs": retrieval_specs,
                 "segment_total": segment_total,
+                "loaded_case_total": loaded_case_total,
+                "case_limit": case_limit,
                 "total_jobs": total_jobs,
                 "bg_lo": bg_lo,
                 "bg_hi": bg_hi,
