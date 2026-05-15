@@ -31,6 +31,65 @@ except ImportError:
     JIEBA_AVAILABLE = False
 
 
+_PERSONAL_NARRATIVE_RE = re.compile(
+    r"(?:我|我们|自己|家里|父亲|母亲|妻子|丈夫|孩子|同学|朋友|老板|同事|邻居|"
+    r"每天|早上|晚上|周末|回到|走进|坐在|站在|背着|拿着|看着|听见|闻到|"
+    r"心里|觉得|感到|想起|记得|喜欢|害怕|盼望|失落|激动|难过|高兴|"
+    r"阳光|微风|灯光|气味|味道|声音|热浪|霓虹|楼道|出租屋|风扇|云吞面)"
+)
+
+_HISTORICAL_BACKGROUND_RE = re.compile(
+    r"(?:\d{4}年|[一二三四五六七八九十百千万亿]+年|"
+    r"改革开放|南巡|金融危机|亚运会|奥运会|世博会|加入WTO|市场经济|"
+    r"政策|制度|法律|条例|会议|全会|讲话|规划|试点|特区|开发区|新区|"
+    r"政府|国家|国务院|人大|省委|市委|海关|央行|银行|交易会|广交会|"
+    r"经济|产业|行业|外贸|出口|进口|贸易|金融|就业|城市化|基建|建设|"
+    r"中国|全国|广东|广州|深圳|上海|北京|香港|白云区|天河区|珠三角|长三角)"
+)
+
+
+def is_historical_background_fact(text: str) -> bool:
+    """
+    Return True only for public historical/background facts worth checking.
+
+    FActScore/SAFE should not score personal memoir narration, sensory details,
+    emotions, or purely literary connective prose.
+    """
+    s = (text or "").strip()
+    if len(s) < 6:
+        return False
+
+    has_background_signal = bool(_HISTORICAL_BACKGROUND_RE.search(s))
+    if not has_background_signal:
+        return False
+
+    is_personal = bool(_PERSONAL_NARRATIVE_RE.search(s))
+    has_public_institutional_signal = bool(re.search(
+        r"(?:政策|制度|法律|条例|会议|全会|政府|国家|国务院|人大|海关|央行|"
+        r"经济|产业|行业|外贸|出口|进口|贸易|金融|建设|举办|召开|实施|出台|"
+        r"增长|下降|危机|改革|开放|城市化|基建)",
+        s,
+    ))
+
+    if is_personal and not has_public_institutional_signal:
+        return False
+
+    return True
+
+
+def filter_historical_background_facts(facts: List[str]) -> List[str]:
+    """Keep only deduplicated historical background facts."""
+    filtered: List[str] = []
+    for fact in facts:
+        s = str(fact).strip()
+        if not is_historical_background_fact(s):
+            continue
+        if any(s in existing or existing in s for existing in filtered):
+            continue
+        filtered.append(s)
+    return filtered
+
+
 def _retrieval_result_to_text(retrieval_result: Any) -> str:
     """将 RetrievalResult 的各字段拼接为纯文本，供事实检查使用。"""
     parts = []
@@ -85,20 +144,21 @@ class FActScoreChecker:
     """
     
     # 原子事实分解prompt（短）
-    DECOMPOSE_PROMPT = """请将以下文本拆解为独立的原子事实。
+    DECOMPOSE_PROMPT = """请从以下文本中只抽取“历史背景事实”，并拆解为独立的原子事实。
 
 规则：
-1. 每个原子事实是一个简短、独立、可核查的陈述句
-2. 每条只包含一个信息点（一个时间、一个地点、一个事件等）
-3. 去掉主观评价、文学修辞、模糊表述，只保留客观可验证的事实
-4. 保持原文的人名、地名、数字不变
-5. 如果没有可验证的事实，返回空列表 []
+1. 只抽取公共历史背景、时代背景、政策制度、经济社会环境、城市/行业/机构/历史事件等事实。
+2. 每个原子事实必须是一个简短、独立、可核查的历史背景陈述句，只包含一个信息点。
+3. 不要抽取个人经历、日常叙事、动作描写、场景描写、感官描写、情绪心理、文学修辞、过渡句。
+4. 不要把“我/我们/家人/朋友/老板/同事”的经历、住处、通勤、吃饭、感受拆成原子事实。
+5. 保持原文中的年份、地名、机构名、事件名不变。
+6. 如果文本中没有历史背景事实，返回空列表 []。
 
 文本：
 {text}
 
 请以JSON数组格式返回，每条是一个字符串。例如：
-["十一届三中全会于1978年12月召开", "十一届三中全会在北京举行"]
+["2009年全球金融危机影响中国外贸出口", "广州于2010年举办亚运会"]
 
 只返回JSON数组，不要其他内容。"""
     
@@ -315,14 +375,12 @@ class FActScoreChecker:
         # 分解生成文本为原子事实
         logger.info("[FActScore] 分解生成文本为原子事实...")
         atomic_facts = await self._decompose_text(generated_text)
+        atomic_facts = filter_historical_background_facts(atomic_facts)
         if max_atomic_facts is not None and len(atomic_facts) > max_atomic_facts:
             logger.info(
                 f"[FActScore] 原子事实 {len(atomic_facts)} 条超过上限 {max_atomic_facts}，截断以控制成本"
             )
             atomic_facts = atomic_facts[:max_atomic_facts]
-
-        # 过滤纯文学描写，只保留可验证的事实性陈述
-        atomic_facts = self._filter_literary_sentences(atomic_facts)
 
         total_facts = len(atomic_facts)
         logger.info(f"[FActScore] 过滤后剩余 {total_facts} 个可验证事实")
@@ -503,39 +561,10 @@ class FActScoreChecker:
     @staticmethod
     def _filter_literary_sentences(facts: List[str]) -> List[str]:
         """
-        过滤纯文学描写句，只保留含可验证信息的陈述。
-
-        策略：
-        1. 保留包含时间、地点、数字的事实性陈述
-        2. 过滤纯感官描写、情感描写、场景描写
+        兼容旧调用名：现在只保留历史背景事实，过滤个人叙事、
+        感官/情绪描写、文学修辞和普通生活细节。
         """
-        filtered = []
-        for fact in facts:
-            s = fact.strip()
-            if len(s) < 6:
-                continue
-
-            # 检查是否包含可验证信息（实体/事件标志）
-            has_verifiable = bool(re.search(
-                r"[\d一二三四五六七八九十百千万亿]"  # 包含数字
-                r"|[年月日号]"                        # 包含时间词
-                r"|(?:省|市|县|区|镇|村|塬|河|山)"    # 包含地名标志
-                r"|(?:会议|全会|政策|制度|法律|条例|特区|开发区)"  # 包含事件/制度标志
-                r"|(?:大学|学院|研究所|公司|企业|组织|团体)"  # 包含机构标志
-                r"|(?:主席|总理|部长|书记|院士|教授|队长)"  # 包含职位标志
-                r"|(?:叫|姓|名|是|在|从|到|去|来|做|当|任)", s  # 包含事实性动词
-            ))
-
-            # 检查是否是纯感官/情感描写（排除）
-            is_pure_narrative = bool(re.search(
-                r"^[^。！？]*(?:阳光|微风|树叶|灯光|气息|味道|声音|窗帘|缝隙|光影|斑驳)[^。！？]*[。！？]?$"  # 纯感官描写
-                r"|^[^。！？]*(?:激动|兴奋|幸福|期待|憧憬|沉甸甸)[^。！？]*[。！？]?$"  # 纯情感描写
-                r"|^[^。！？]*(?:坐在|站在|躺在|走进|打开|放下|抬头|低头|闭上)[^。！？]*[。！？]?$", s  # 纯动作描写
-            ))
-
-            if has_verifiable and not is_pure_narrative:
-                filtered.append(s)
-        return filtered
+        return filter_historical_background_facts(facts)
 
     @staticmethod
     def _rule_match_against_source(
@@ -609,9 +638,7 @@ class FActScoreChecker:
             if any(char.isalnum() for char in sentence):
                 facts.append(sentence)
         
-        # 如果没有拆分出任何事实，将整个文本作为一个事实
-        if not facts and text.strip():
-            facts.append(text.strip())
+        facts = filter_historical_background_facts(facts)
         
         end_time = time.time()
         print(f"[DEBUG] 规则拆分完成，耗时: {(end_time - start_time):.4f} 秒，拆分出 {len(facts)} 个事实")
@@ -652,6 +679,7 @@ class FActScoreChecker:
             )
             if not isinstance(facts, list):
                 facts = []
+            facts = filter_historical_background_facts(facts)
             self._decompose_cache[cache_key] = facts
             return facts
 

@@ -25,6 +25,7 @@ from typing import Optional, List, Dict, Any
 import httpx
 
 from ..llm import LLMAdapter
+from .factscore_adapter import filter_historical_background_facts
 
 logger = logging.getLogger(__name__)
 
@@ -64,20 +65,21 @@ class SAFECheckResult:
 # Prompts
 # ---------------------------------------------------------------------------
 
-_DECOMPOSE_PROMPT = """请将以下文本拆解为独立的原子事实。
+_DECOMPOSE_PROMPT = """请从以下文本中只抽取“历史背景事实”，并拆解为独立的原子事实。
 
 规则：
-1. 每个原子事实是一个简短、独立、可核查的陈述句
-2. 每条只包含一个信息点（一个时间、一个地点、一个事件等）
-3. 去掉主观评价、文学修辞、模糊表述，只保留客观可验证的事实
-4. 保持原文的人名、地名、数字不变
-5. 如果没有可验证的事实，返回空列表 []
+1. 只抽取公共历史背景、时代背景、政策制度、经济社会环境、城市/行业/机构/历史事件等事实。
+2. 每个原子事实必须是一个简短、独立、可核查的历史背景陈述句，只包含一个信息点。
+3. 不要抽取个人经历、日常叙事、动作描写、场景描写、感官描写、情绪心理、文学修辞、过渡句。
+4. 不要把“我/我们/家人/朋友/老板/同事”的经历、住处、通勤、吃饭、感受拆成原子事实。
+5. 保持原文中的年份、地名、机构名、事件名不变。
+6. 如果文本中没有历史背景事实，返回空列表 []。
 
 文本：
 {text}
 
 请以JSON数组格式返回，每条是一个字符串。例如：
-["十一届三中全会于1978年12月召开", "十一届三中全会在北京举行"]
+["2009年全球金融危机影响中国外贸出口", "广州于2010年举办亚运会"]
 
 只返回JSON数组，不要其他内容。"""
 
@@ -190,6 +192,8 @@ class SAFEFactChecker:
         # 1. 分解原子事实
         if atomic_facts is None:
             atomic_facts = await self._decompose_text(generated_text)
+        else:
+            atomic_facts = filter_historical_background_facts(atomic_facts)
         total = len(atomic_facts)
         if total == 0:
             return SAFECheckResult(
@@ -260,6 +264,7 @@ class SAFEFactChecker:
             )
             if not isinstance(facts, list):
                 facts = []
+            facts = filter_historical_background_facts(facts)
             self._decompose_cache[cache_key] = facts
             return facts
         except Exception as e:
@@ -280,7 +285,7 @@ class SAFEFactChecker:
                 continue
             if any(c.isalnum() for c in s):
                 facts.append(s)
-        return facts
+        return filter_historical_background_facts(facts)
 
     @staticmethod
     def _extract_json_array(text: str) -> List[str]:

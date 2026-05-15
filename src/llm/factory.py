@@ -34,7 +34,7 @@ ADAPTER_REGISTRY: Dict[LLMProvider, Type[LLMAdapter]] = {
 DEFAULT_MODELS: Dict[LLMProvider, str] = {
     LLMProvider.DEEPSEEK: "deepseek-chat",
     LLMProvider.QWEN: "qwen-plus",
-    LLMProvider.HUNYUAN: "hunyuan-turbos-latest",
+    LLMProvider.HUNYUAN: "hunyuan-lite",
     LLMProvider.GEMINI: "gemini-2.5-flash",
     LLMProvider.GLM: "glm-4.7-flash",
     LLMProvider.OPENAI: "gpt-4o-mini",
@@ -46,8 +46,8 @@ PROVIDER_MODELS: Dict[LLMProvider, List[str]] = {
     LLMProvider.DEEPSEEK: ["deepseek-chat", "deepseek-v4-flash", "deepseek-v4-pro"],
     LLMProvider.QWEN: ["qwen-plus"],
     LLMProvider.HUNYUAN: [
-        "hunyuan-turbos-latest",
         "hunyuan-lite",
+        "hunyuan-turbos-latest",
         "hy3-preview",
     ],
     LLMProvider.GEMINI: ["gemini-2.5-flash"],

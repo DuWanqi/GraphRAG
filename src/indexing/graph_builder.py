@@ -121,7 +121,7 @@ class GraphBuilder:
                 "env_var_name": "HUNYUAN_API_KEY",
                 "model_provider": "openai",  # 混元 OpenAI 兼容接口
                 "api_base": settings.hunyuan_api_base or "https://api.hunyuan.cloud.tencent.com/v1",
-                "chat_model": self.llm_model or settings.default_llm_model or "hunyuan-turbos-latest",
+                "chat_model": self.llm_model or settings.default_llm_model or "hunyuan-lite",
                 "embedding_model": "hunyuan-embedding",
                 "embedding_provider": "openai",
             },

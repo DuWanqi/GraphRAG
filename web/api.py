@@ -64,7 +64,7 @@ app.add_middleware(
 class GenerateRequest(BaseModel):
     """生成请求"""
     memoir_text: str = Field(..., description="回忆录文本")
-    provider: str = Field(default="deepseek", description="LLM提供商")
+    provider: str = Field(default="hunyuan", description="LLM提供商")
     style: str = Field(default="standard", description="写作风格")
     temperature: float = Field(default=0.7, ge=0.1, le=1.0, description="创意度")
     length_bucket: str = Field(
@@ -91,7 +91,7 @@ class GenerateRequest(BaseModel):
         ge=100,
         description="分章模式：每章目标上限；若缺省则尝试用 generation_*，否则默认 800",
     )
-    retrieval_mode: str = Field(default="keyword", description="keyword / vector / hybrid")
+    retrieval_mode: str = Field(default="vector", description="keyword / vector / hybrid")
     chapter_mode: bool = Field(default=False, description="分章/长文：按段检索与生成后合并")
 
 

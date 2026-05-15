@@ -63,8 +63,8 @@ class Settings(BaseSettings):
     )
     
     # 默认LLM配置
-    default_llm_provider: str = Field(default="deepseek", alias="DEFAULT_LLM_PROVIDER")
-    default_llm_model: str = Field(default="deepseek-chat", alias="DEFAULT_LLM_MODEL")
+    default_llm_provider: str = Field(default="hunyuan", alias="DEFAULT_LLM_PROVIDER")
+    default_llm_model: str = Field(default="hunyuan-lite", alias="DEFAULT_LLM_MODEL")
 
     # Ollama（本地）配置
     # LiteLLM 连接 Ollama 时使用的 base URL（例如 http://localhost:11434）

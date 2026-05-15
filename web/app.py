@@ -43,6 +43,7 @@ from src.evaluation import (
     FActScoreChecker,
     SAFECheckResult,
     aggregate_scores,
+    calculate_all_metrics,
     evaluate_retrieval_quality,
     evaluate_long_form,
     long_form_eval_to_json,
@@ -64,7 +65,7 @@ current_provider: Optional[str] = None  # 跟踪当前使用的 provider
 current_model: Optional[str] = None  # 跟踪当前使用的模型名（与各供应商共用）
 
 
-def init_components(provider: str = "gemini", model: Optional[str] = None):
+def init_components(provider: str = "hunyuan", model: Optional[str] = None):
     """初始化组件"""
     global retriever, plain_rag_retriever, generator, current_provider, current_model
 
@@ -810,7 +811,7 @@ async def process_memoir_async(
     total_gen_max_chars: int,
     temperature: float,
     enable_fact_check: bool = True,
-    retrieval_mode: str = "keyword",
+    retrieval_mode: str = "vector",
     use_rule_decompose: bool = False,
     chapter_mode: bool = False,
     chapter_gen_min_chars: int = 400,
@@ -1056,7 +1057,7 @@ def process_memoir(
     total_gen_max_chars: int,
     temperature: float,
     enable_fact_check: bool = True,
-    retrieval_mode: str = "keyword",
+    retrieval_mode: str = "vector",
     use_rule_decompose: bool = False,
     chapter_mode: bool = False,
     chapter_gen_min_chars: int = 400,
@@ -1110,7 +1111,7 @@ def process_memoir_stream(
     total_gen_max_chars: int,
     temperature: float,
     enable_fact_check: bool = True,
-    retrieval_mode: str = "keyword",
+    retrieval_mode: str = "vector",
     use_rule_decompose: bool = False,
     enable_safe_check: bool = False,
     enable_retrieval_quality: bool = True,
@@ -1674,11 +1675,29 @@ BENCHMARK_COLUMNS = [
     "扩写文本",
     "nDCG@5",
     "MRR",
+    "Precision",
+    "Recall",
+    "F1",
+    "Hit@3",
+    "Hit@5",
+    "Hit@10",
+    "检索耗时(ms)",
     "FActScore",
     "SAFE",
+    "时间一致性",
+    "幻觉风险控制",
     "相关性",
+    "主题一致性",
     "文学性",
+    "长度得分",
+    "衔接词使用",
+    "描写丰富度",
+    "RAG利用率",
+    "信息增量",
+    "扩展溯源率",
     "合规性",
+    "综合分",
+    "段级综合分",
     "耗时(s)",
     "状态",
 ]
@@ -1710,11 +1729,29 @@ def _benchmark_retrieval_specs(
 BENCHMARK_METRIC_KEYS = [
     ("ndcg_at_5", "nDCG@5", False),
     ("mrr", "MRR", False),
+    ("precision", "Precision", False),
+    ("recall", "Recall", False),
+    ("f1", "F1", False),
+    ("hit_at_3", "Hit@3", False),
+    ("hit_at_5", "Hit@5", False),
+    ("hit_at_10", "Hit@10", False),
+    ("retrieval_latency_ms", "检索耗时(ms)", False),
     ("factscore", "FActScore", True),
     ("safe_score", "SAFE", True),
+    ("temporal_coherence", "时间一致性", False),
+    ("hallucination", "幻觉风险控制", False),
     ("relevance", "相关性", False),
+    ("topic_coherence", "主题一致性", False),
     ("literary", "文学性", False),
+    ("length_score", "长度得分", False),
+    ("transition_usage", "衔接词使用", False),
+    ("descriptive_richness", "描写丰富度", False),
+    ("rag_utilization", "RAG利用率", False),
+    ("information_gain", "信息增量", False),
+    ("expansion_grounding", "扩展溯源率", False),
     ("compliance", "合规性", False),
+    ("overall_score", "综合分", False),
+    ("aggregated_score", "段级综合分", False),
     ("elapsed_seconds", "平均耗时(s)", False),
 ]
 
@@ -1939,6 +1976,115 @@ def _fmt_score(v, pct: bool = False) -> str:
     return f"{v:.1%}" if pct else f"{v:.3f}"
 
 
+def _retrieval_binary_metrics(eval_result: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    """Derive binary retrieval metrics from LLM relevance scores.
+
+    The batch memoir datasets do not provide manual qrels. We therefore use the
+    same LLM relevance vector as nDCG/MRR and treat score >= 2 as relevant.
+    Recall is measured over relevant documents within the returned top-10 list.
+    """
+    rel_vector = list(eval_result.get("relevance_vector") or [])
+    if not rel_vector:
+        return {
+            "precision": None,
+            "recall": None,
+            "f1": None,
+            "hit_at_3": None,
+            "hit_at_5": None,
+            "hit_at_10": None,
+        }
+
+    relevant = [1 if float(v) >= 2.0 else 0 for v in rel_vector]
+    returned = len(relevant)
+    total_relevant = sum(relevant)
+    precision = total_relevant / returned if returned else None
+    recall = 1.0 if total_relevant > 0 else 0.0
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if precision is not None and recall is not None and (precision + recall) > 0
+        else 0.0
+    )
+
+    def hit_at(k: int) -> float:
+        return 1.0 if any(relevant[:k]) else 0.0
+
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "hit_at_3": hit_at(3),
+        "hit_at_5": hit_at(5),
+        "hit_at_10": hit_at(10),
+    }
+
+
+async def _calculate_benchmark_rule_metrics(
+    original_text: str,
+    generated_text: str,
+    retrieval_result: Any,
+    min_chars: int,
+    max_chars: int,
+) -> Dict[str, Optional[float]]:
+    """Compute the same rule/new-content metrics used by long-form evaluation."""
+    novel_brief = getattr(retrieval_result, "_novel_content_brief", None)
+    retrieval_entities: List[str] = []
+    if novel_brief is not None:
+        retrieval_entities = list(getattr(novel_brief, "novel_entity_names", []) or [])[:10]
+    elif retrieval_result is not None:
+        for e in (getattr(retrieval_result, "entities", None) or [])[:15]:
+            name = e.get("name") or e.get("title") or ""
+            if name:
+                retrieval_entities.append(name)
+
+    ctx = getattr(retrieval_result, "context", None)
+    metrics = await calculate_all_metrics(
+        original_text,
+        generated_text,
+        reference_entities=retrieval_entities,
+        reference_year=getattr(ctx, "year", None),
+        keywords=getattr(ctx, "keywords", None),
+        literary_length_min=max(50, min_chars),
+        literary_length_max=max(max_chars, min_chars + 1),
+        literary_optimal_min=max(50, min_chars),
+        literary_optimal_max=max(max_chars, min_chars + 1),
+        novel_content_brief=novel_brief,
+        task_type="expansion",
+        min_required_entities=2,
+    )
+
+    scores: Dict[str, Optional[float]] = {
+        key: metrics[key].normalized if key in metrics else None
+        for key in (
+            "temporal_coherence",
+            "topic_coherence",
+            "length_score",
+            "transition_usage",
+            "descriptive_richness",
+            "rag_utilization",
+            "hallucination",
+        )
+    }
+    scores["aggregated_score"] = aggregate_scores(metrics) if metrics else None
+
+    novel_info = getattr(novel_brief, "has_novel_content", False) if novel_brief is not None else False
+    if novel_brief is not None and novel_info:
+        from src.evaluation import analyze_novel_content
+
+        analysis = await analyze_novel_content(
+            original_text,
+            generated_text,
+            novel_brief,
+            None,
+        )
+        scores["information_gain"] = analysis.information_gain
+        scores["expansion_grounding"] = analysis.expansion_grounding
+    else:
+        scores["information_gain"] = None
+        scores["expansion_grounding"] = None
+
+    return scores
+
+
 def _benchmark_rows_snapshot(rows: List[List[str]]) -> List[List[str]]:
     """Return a detached snapshot for Gradio streaming updates."""
     return [list(row) for row in rows]
@@ -1959,7 +2105,7 @@ def batch_benchmark_stream(
     enable_retrieval_quality: bool,
     enable_llm_judge: bool,
     batch_size: int,
-    compare_plain_vector_rag: bool = False,
+    compare_plain_vector_rag: bool = True,
 ):
     yield from _with_benchmark_control_button(
         _batch_benchmark_stream(
@@ -2046,7 +2192,7 @@ def _batch_benchmark_stream(
     enable_retrieval_quality: bool,
     enable_llm_judge: bool,
     batch_size: int,
-    compare_plain_vector_rag: bool = False,
+    compare_plain_vector_rag: bool = True,
     resume: bool = False,
 ):
     """
@@ -2227,8 +2373,10 @@ def _batch_benchmark_stream(
             row = [
                 source_file, seg_id, chapter, tags_str, run_label,
                 _truncate(original_text, 120), "",
-                "—", "—", "—", "—", "—", "—", "—",
-                "—", "进行中",
+                "—", "—", "—", "—", "—", "—", "—", "—", "—",
+                "—", "—", "—", "—", "—", "—", "—", "—", "—",
+                "—", "—", "—", "—", "—", "—", "—", "—",
+                "进行中",
             ]
             rows.append(row)
             yield (
@@ -2241,18 +2389,27 @@ def _batch_benchmark_stream(
             )
 
             generated_text = ""
-            ndcg5 = mrr = factscore = safe_score = relevance = literary = compliance = None
+            ndcg5 = mrr = precision = recall = f1 = hit_at_3 = hit_at_5 = hit_at_10 = None
+            retrieval_latency_ms = None
+            factscore = safe_score = temporal_coherence = hallucination = None
+            relevance = topic_coherence = literary = length_score = None
+            transition_usage = descriptive_richness = None
+            rag_utilization = information_gain = expansion_grounding = None
+            compliance = overall_score = aggregated_score = None
             error_msg = ""
             retrieval_result = None
 
             try:
                 # ── 1. 检索 ──
+                retrieval_start = time.monotonic()
                 retrieval_result = loop.run_until_complete(asyncio.wait_for(
                     active_retriever.retrieve(
                         original_text, top_k=10, use_llm_parsing=False, mode=run_mode,
                     ),
                     timeout=60.0,
                 ))
+                retrieval_latency_ms = (time.monotonic() - retrieval_start) * 1000
+                row[15] = f"{retrieval_latency_ms:.1f}"
 
                 # ── 2. 检索质量（按需，先于生成，避免生成失败吞掉检索指标） ──
                 if enable_retrieval_quality:
@@ -2283,8 +2440,21 @@ def _batch_benchmark_stream(
                         else:
                             ndcg5 = eval_result.get("ndcg_at_5")
                             mrr = eval_result.get("mrr")
+                            rbm = _retrieval_binary_metrics(eval_result)
+                            precision = rbm.get("precision")
+                            recall = rbm.get("recall")
+                            f1 = rbm.get("f1")
+                            hit_at_3 = rbm.get("hit_at_3")
+                            hit_at_5 = rbm.get("hit_at_5")
+                            hit_at_10 = rbm.get("hit_at_10")
                             row[7] = _fmt_score(ndcg5)
                             row[8] = _fmt_score(mrr)
+                            row[9] = _fmt_score(precision)
+                            row[10] = _fmt_score(recall)
+                            row[11] = _fmt_score(f1)
+                            row[12] = _fmt_score(hit_at_3)
+                            row[13] = _fmt_score(hit_at_5)
+                            row[14] = _fmt_score(hit_at_10)
                     except Exception as e:
                         row[7] = "失败"
                         row[8] = "失败"
@@ -2321,7 +2491,42 @@ def _batch_benchmark_stream(
                     None,
                 )
 
-                # ── 4. 准确性 + LLM-as-Judge（按需） ──
+                # ── 4. 长文同款规则指标 + 新内容指标 ──
+                try:
+                    rule_metric_scores = loop.run_until_complete(asyncio.wait_for(
+                        _calculate_benchmark_rule_metrics(
+                            original_text=original_text,
+                            generated_text=generated_text,
+                            retrieval_result=retrieval_result,
+                            min_chars=bg_lo,
+                            max_chars=bg_hi,
+                        ),
+                        timeout=180.0,
+                    ))
+                    temporal_coherence = rule_metric_scores.get("temporal_coherence")
+                    hallucination = rule_metric_scores.get("hallucination")
+                    topic_coherence = rule_metric_scores.get("topic_coherence")
+                    length_score = rule_metric_scores.get("length_score")
+                    transition_usage = rule_metric_scores.get("transition_usage")
+                    descriptive_richness = rule_metric_scores.get("descriptive_richness")
+                    rag_utilization = rule_metric_scores.get("rag_utilization")
+                    information_gain = rule_metric_scores.get("information_gain")
+                    expansion_grounding = rule_metric_scores.get("expansion_grounding")
+                    aggregated_score = rule_metric_scores.get("aggregated_score")
+                    row[18] = _fmt_score(temporal_coherence)
+                    row[19] = _fmt_score(hallucination)
+                    row[21] = _fmt_score(topic_coherence)
+                    row[23] = _fmt_score(length_score)
+                    row[24] = _fmt_score(transition_usage)
+                    row[25] = _fmt_score(descriptive_richness)
+                    row[26] = _fmt_score(rag_utilization)
+                    row[27] = _fmt_score(information_gain)
+                    row[28] = _fmt_score(expansion_grounding)
+                    row[31] = _fmt_score(aggregated_score)
+                except Exception as e:
+                    error_msg = (error_msg + " | " if error_msg else "") + f"规则指标: {e}"
+
+                # ── 5. 准确性 + LLM-as-Judge（按需） ──
                 if enable_fact_check or enable_safe_check or enable_llm_judge:
                     try:
                         async def _eval():
@@ -2346,30 +2551,32 @@ def _batch_benchmark_stream(
 
                         if eval_res.fact_check:
                             factscore = eval_res.fact_check.factscore
-                            row[9] = _fmt_score(factscore, pct=True)
+                            row[16] = _fmt_score(factscore, pct=True)
                         if eval_res.safe_check:
                             safe_score = eval_res.safe_check.safe_score
-                            row[10] = _fmt_score(safe_score, pct=True)
+                            row[17] = _fmt_score(safe_score, pct=True)
                         if "relevance" in eval_res.scores:
                             relevance = eval_res.scores["relevance"].score
-                            row[11] = f"{relevance:.1f}"
+                            row[20] = f"{relevance:.1f}"
                         if "literary" in eval_res.scores:
                             literary = eval_res.scores["literary"].score
-                            row[12] = f"{literary:.1f}"
+                            row[22] = f"{literary:.1f}"
                         if "compliance" in eval_res.scores:
                             compliance = eval_res.scores["compliance"].score
-                            row[13] = f"{compliance:.1f}"
+                            row[29] = f"{compliance:.1f}"
+                        overall_score = eval_res.overall_score
+                        row[30] = _fmt_score(overall_score)
                     except Exception as e:
                         error_msg = (error_msg + " | " if error_msg else "") + f"评估: {e}"
 
                 seg_elapsed = time.monotonic() - seg_start
-                row[14] = f"{seg_elapsed:.1f}"
-                row[15] = "✅ 完成" if not error_msg else f"⚠️ {_truncate(error_msg, 80)}"
+                row[32] = f"{seg_elapsed:.1f}"
+                row[33] = "✅ 完成" if not error_msg else f"⚠️ {_truncate(error_msg, 80)}"
 
             except Exception as e:
                 seg_elapsed = time.monotonic() - seg_start
-                row[14] = f"{seg_elapsed:.1f}"
-                row[15] = f"❌ {_truncate(str(e), 80)}"
+                row[32] = f"{seg_elapsed:.1f}"
+                row[33] = f"❌ {_truncate(str(e), 80)}"
                 error_msg = (error_msg + " | " if error_msg else "") + str(e)
 
             detail_records.append({
@@ -2384,11 +2591,29 @@ def _batch_benchmark_stream(
                 "scores": {
                     "ndcg_at_5": ndcg5,
                     "mrr": mrr,
+                    "precision": precision,
+                    "recall": recall,
+                    "f1": f1,
+                    "hit_at_3": hit_at_3,
+                    "hit_at_5": hit_at_5,
+                    "hit_at_10": hit_at_10,
+                    "retrieval_latency_ms": retrieval_latency_ms,
                     "factscore": factscore,
                     "safe_score": safe_score,
+                    "temporal_coherence": temporal_coherence,
+                    "hallucination": hallucination,
                     "relevance": relevance,
+                    "topic_coherence": topic_coherence,
                     "literary": literary,
+                    "length_score": length_score,
+                    "transition_usage": transition_usage,
+                    "descriptive_richness": descriptive_richness,
+                    "rag_utilization": rag_utilization,
+                    "information_gain": information_gain,
+                    "expansion_grounding": expansion_grounding,
                     "compliance": compliance,
+                    "overall_score": overall_score,
+                    "aggregated_score": aggregated_score,
                 },
                 "elapsed_seconds": round(seg_elapsed, 2),
                 "error": error_msg or None,
@@ -2478,8 +2703,13 @@ def _batch_benchmark_stream(
             w.writerow([
                 "source_file", "id", "chapter", "historical_tag", "retrieval_mode",
                 "original_text", "generated_text",
-                "ndcg_at_5", "mrr", "factscore", "safe_score",
-                "relevance", "literary", "compliance",
+                "ndcg_at_5", "mrr", "precision", "recall", "f1",
+                "hit_at_3", "hit_at_5", "hit_at_10", "retrieval_latency_ms",
+                "factscore", "safe_score", "temporal_coherence", "hallucination",
+                "relevance", "topic_coherence", "literary", "length_score",
+                "transition_usage", "descriptive_richness", "rag_utilization",
+                "information_gain", "expansion_grounding", "compliance",
+                "overall_score", "aggregated_score",
                 "elapsed_seconds", "error",
             ])
             for r in detail_records:
@@ -2488,8 +2718,13 @@ def _batch_benchmark_stream(
                     r.get("source_file", ""), r["id"], r["chapter"], "|".join(r["historical_tag"]),
                     r.get("retrieval_label") or r.get("retrieval_mode", ""),
                     r["original_text"], r["generated_text"],
-                    s["ndcg_at_5"], s["mrr"], s["factscore"], s["safe_score"],
-                    s["relevance"], s["literary"], s["compliance"],
+                    s["ndcg_at_5"], s["mrr"], s["precision"], s["recall"], s["f1"],
+                    s["hit_at_3"], s["hit_at_5"], s["hit_at_10"], s["retrieval_latency_ms"],
+                    s["factscore"], s["safe_score"], s["temporal_coherence"], s["hallucination"],
+                    s["relevance"], s["topic_coherence"], s["literary"], s["length_score"],
+                    s["transition_usage"], s["descriptive_richness"], s["rag_utilization"],
+                    s["information_gain"], s["expansion_grounding"], s["compliance"],
+                    s["overall_score"], s["aggregated_score"],
                     r["elapsed_seconds"], r["error"] or "",
                 ])
             # 平均值行
@@ -2497,9 +2732,17 @@ def _batch_benchmark_stream(
             w.writerow([
                 "AVERAGE", f"n={len(detail_records)}", "", "", "", "", "",
                 averages.get("ndcg_at_5"), averages.get("mrr"),
+                averages.get("precision"), averages.get("recall"), averages.get("f1"),
+                averages.get("hit_at_3"), averages.get("hit_at_5"), averages.get("hit_at_10"),
+                averages.get("retrieval_latency_ms"),
                 averages.get("factscore"), averages.get("safe_score"),
-                averages.get("relevance"), averages.get("literary"),
-                averages.get("compliance"),
+                averages.get("temporal_coherence"), averages.get("hallucination"),
+                averages.get("relevance"), averages.get("topic_coherence"),
+                averages.get("literary"), averages.get("length_score"),
+                averages.get("transition_usage"), averages.get("descriptive_richness"),
+                averages.get("rag_utilization"), averages.get("information_gain"),
+                averages.get("expansion_grounding"), averages.get("compliance"),
+                averages.get("overall_score"), averages.get("aggregated_score"),
                 averages.get("elapsed_seconds"), "",
             ])
 
@@ -2529,11 +2772,29 @@ def _batch_benchmark_stream(
                 f.write("### 评分\n\n")
                 f.write(f"- nDCG@5: {_fmt_score(s['ndcg_at_5'])}\n")
                 f.write(f"- MRR: {_fmt_score(s['mrr'])}\n")
+                f.write(f"- Precision: {_fmt_score(s['precision'])}\n")
+                f.write(f"- Recall: {_fmt_score(s['recall'])}\n")
+                f.write(f"- F1: {_fmt_score(s['f1'])}\n")
+                f.write(f"- Hit@3: {_fmt_score(s['hit_at_3'])}\n")
+                f.write(f"- Hit@5: {_fmt_score(s['hit_at_5'])}\n")
+                f.write(f"- Hit@10: {_fmt_score(s['hit_at_10'])}\n")
+                f.write(f"- 检索耗时(ms): {_fmt_score(s['retrieval_latency_ms'])}\n")
                 f.write(f"- FActScore: {_fmt_score(s['factscore'], pct=True)}\n")
                 f.write(f"- SAFE: {_fmt_score(s['safe_score'], pct=True)}\n")
+                f.write(f"- 时间一致性: {_fmt_score(s['temporal_coherence'])}\n")
+                f.write(f"- 幻觉风险控制: {_fmt_score(s['hallucination'])}\n")
                 f.write(f"- 相关性: {_fmt_score(s['relevance'])}\n")
+                f.write(f"- 主题一致性: {_fmt_score(s['topic_coherence'])}\n")
                 f.write(f"- 文学性: {_fmt_score(s['literary'])}\n")
+                f.write(f"- 长度得分: {_fmt_score(s['length_score'])}\n")
+                f.write(f"- 衔接词使用: {_fmt_score(s['transition_usage'])}\n")
+                f.write(f"- 描写丰富度: {_fmt_score(s['descriptive_richness'])}\n")
+                f.write(f"- RAG利用率: {_fmt_score(s['rag_utilization'])}\n")
+                f.write(f"- 信息增量: {_fmt_score(s['information_gain'])}\n")
+                f.write(f"- 扩展溯源率: {_fmt_score(s['expansion_grounding'])}\n")
                 f.write(f"- 合规性: {_fmt_score(s['compliance'])}\n")
+                f.write(f"- 综合分: {_fmt_score(s['overall_score'])}\n")
+                f.write(f"- 段级综合分: {_fmt_score(s['aggregated_score'])}\n")
                 f.write(f"- 耗时: {r['elapsed_seconds']}s\n")
                 if r["error"]:
                     f.write(f"\n**错误**: {r['error']}\n")
@@ -2759,7 +3020,7 @@ def create_ui():
                                 ("混合检索 (推荐)", "hybrid"),
                                 ("普通 RAG（向量 baseline）", PLAIN_VECTOR_RAG_MODE),
                             ],
-                            value="hybrid",
+                            value="vector",
                             label="检索模式",
                             info="选择 GraphRAG 或普通向量 RAG 检索策略",
                         )
@@ -3067,7 +3328,7 @@ def create_ui():
                 )
 
                 bench_compare_plain_rag_checkbox = gr.Checkbox(
-                    value=False,
+                    value=True,
                     label="对比普通 RAG（向量 baseline）",
                     info="开启后，每条样本会同时跑当前 GraphRAG 检索模式和普通向量 RAG，各生成一行结果。",
                 )
@@ -3159,7 +3420,7 @@ def create_ui():
                 | Qwen | `QWEN_API_KEY` | qwen-plus |
                 | 智谱GLM | `GLM_API_KEY` | glm-4.7-flash |
                 | OpenAI | `OPENAI_API_KEY` | gpt-4o / gpt-5（UI 可选） |
-                | 混元 | `HUNYUAN_API_KEY` | hy3-preview 等（OpenAI 兼容） |
+                | 混元 | `HUNYUAN_API_KEY` | hunyuan-lite 等（OpenAI 兼容） |
 
                 **注意**：首次构建索引需要几分钟时间，会产生一定的 API 费用。
                 """)

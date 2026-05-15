@@ -83,9 +83,9 @@ HUNYUAN_API_KEY=your_hunyuan_api_key
 # Google Gemini
 GOOGLE_API_KEY=your_google_api_key
 
-# 默认 LLM 配置（可选 Ollama 本地模型）
-DEFAULT_LLM_PROVIDER=gemini
-DEFAULT_LLM_MODEL=gemini-2.5-flash
+# 默认 LLM 配置
+DEFAULT_LLM_PROVIDER=hunyuan
+DEFAULT_LLM_MODEL=hunyuan-lite
 
 # 使用 Ollama 本地模型时
 # DEFAULT_LLM_PROVIDER=ollama
@@ -274,11 +274,11 @@ Content-Type: application/json
 
 {
     "memoir_text": "1988年夏天，我从大学毕业，来到了深圳...",
-    "provider": "deepseek",
+    "provider": "hunyuan",
     "style": "standard",
     "temperature": 0.7,
     "length_bucket": "400-800",
-    "retrieval_mode": "keyword",
+    "retrieval_mode": "vector",
     "chapter_mode": false
 }
 ```
