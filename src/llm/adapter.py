@@ -485,7 +485,7 @@ class HunyuanAdapter(LLMAdapter):
     
     @property
     def default_model(self) -> str:
-        return "hy3-preview"
+        return "hunyuan-turbos-latest"
     
     @property
     def default_api_base(self) -> str:

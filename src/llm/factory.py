@@ -34,7 +34,7 @@ ADAPTER_REGISTRY: Dict[LLMProvider, Type[LLMAdapter]] = {
 DEFAULT_MODELS: Dict[LLMProvider, str] = {
     LLMProvider.DEEPSEEK: "deepseek-chat",
     LLMProvider.QWEN: "qwen-plus",
-    LLMProvider.HUNYUAN: "hy3-preview",
+    LLMProvider.HUNYUAN: "hunyuan-turbos-latest",
     LLMProvider.GEMINI: "gemini-2.5-flash",
     LLMProvider.GLM: "glm-4.7-flash",
     LLMProvider.OPENAI: "gpt-4o-mini",
@@ -45,7 +45,11 @@ DEFAULT_MODELS: Dict[LLMProvider, str] = {
 PROVIDER_MODELS: Dict[LLMProvider, List[str]] = {
     LLMProvider.DEEPSEEK: ["deepseek-chat", "deepseek-v4-flash", "deepseek-v4-pro"],
     LLMProvider.QWEN: ["qwen-plus"],
-    LLMProvider.HUNYUAN: ["hy3-preview", "hunyuan-lite"],
+    LLMProvider.HUNYUAN: [
+        "hunyuan-turbos-latest",
+        "hunyuan-lite",
+        "hy3-preview",
+    ],
     LLMProvider.GEMINI: ["gemini-2.5-flash"],
     LLMProvider.GLM: ["glm-4.7-flash"],
     LLMProvider.OPENAI: ["gpt-4o", "gpt-5"],
@@ -64,8 +68,8 @@ def get_provider_models(provider: str) -> List[str]:
     except ValueError:
         return []
 
+    settings = get_settings()
     if provider_enum == LLMProvider.OLLAMA:
-        settings = get_settings()
         try:
             names = list_ollama_models_sync(settings.ollama_api_base)
         except Exception:
@@ -74,10 +78,20 @@ def get_provider_models(provider: str) -> List[str]:
             return names
         return [DEFAULT_MODELS[LLMProvider.OLLAMA]]
 
-    models = PROVIDER_MODELS.get(provider_enum)
-    if models:
-        return list(models)
-    return [DEFAULT_MODELS[provider_enum]]
+    models = list(PROVIDER_MODELS.get(provider_enum) or [DEFAULT_MODELS[provider_enum]])
+
+    configured_default = (settings.default_llm_model or "").strip()
+    if (
+        configured_default
+        and provider_enum.value == (settings.default_llm_provider or "").strip().lower()
+        and configured_default not in models
+    ):
+        models.insert(0, configured_default)
+    elif configured_default in models and provider_enum.value == (settings.default_llm_provider or "").strip().lower():
+        models.remove(configured_default)
+        models.insert(0, configured_default)
+
+    return models
 
 
 def create_llm_adapter(

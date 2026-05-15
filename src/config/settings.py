@@ -79,6 +79,24 @@ class Settings(BaseSettings):
         default=str(PROJECT_ROOT / "data" / "graphrag_output"),
         alias="GRAPHRAG_OUTPUT_DIR"
     )
+
+    # Plain vector RAG baseline configuration.
+    plain_rag_input_dir: str = Field(
+        default=str(PROJECT_ROOT / "data" / "graphrag_output" / "input"),
+        alias="PLAIN_RAG_INPUT_DIR",
+    )
+    plain_rag_embedding_backend: str = Field(
+        default="ollama",
+        alias="PLAIN_RAG_EMBEDDING_BACKEND",
+    )
+    plain_rag_embedding_model: str = Field(
+        default="nomic-embed-text",
+        alias="PLAIN_RAG_EMBEDDING_MODEL",
+    )
+    plain_rag_cache_dir: str = Field(
+        default=str(PROJECT_ROOT / "data" / "plain_vector_rag_cache"),
+        alias="PLAIN_RAG_CACHE_DIR",
+    )
     
     # 应用配置
     app_host: str = Field(default="0.0.0.0", alias="APP_HOST")

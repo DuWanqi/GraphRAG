@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import copy
 import csv
 import json
 import logging
@@ -25,7 +26,7 @@ from src.llm import (
     LLMRouter,
 )
 from src.indexing import GraphBuilder
-from src.retrieval import MemoirRetriever
+from src.retrieval import MemoirRetriever, PlainVectorRAGRetriever, PLAIN_VECTOR_RAG_MODE
 from src.generation import (
     LiteraryGenerator,
     PromptTemplates,
@@ -57,6 +58,7 @@ logger = logging.getLogger(__name__)
 # 全局变量
 settings = get_settings()
 retriever: Optional[MemoirRetriever] = None
+plain_rag_retriever: Optional[PlainVectorRAGRetriever] = None
 generator: Optional[LiteraryGenerator] = None
 current_provider: Optional[str] = None  # 跟踪当前使用的 provider
 current_model: Optional[str] = None  # 跟踪当前使用的模型名（与各供应商共用）
@@ -64,13 +66,14 @@ current_model: Optional[str] = None  # 跟踪当前使用的模型名（与各�
 
 def init_components(provider: str = "gemini", model: Optional[str] = None):
     """初始化组件"""
-    global retriever, generator, current_provider, current_model
+    global retriever, plain_rag_retriever, generator, current_provider, current_model
 
     # 如果 provider / model 相同且组件已初始化，则跳过
     if (
         provider == current_provider
         and model == current_model
         and retriever is not None
+        and plain_rag_retriever is not None
         and generator is not None
     ):
         return f"✅ 已使用 {provider}{f'/{model}' if model else ''} 模型"
@@ -78,6 +81,7 @@ def init_components(provider: str = "gemini", model: Optional[str] = None):
     try:
         llm_adapter = create_llm_adapter(provider=provider, model=model)
         retriever = MemoirRetriever(llm_adapter=llm_adapter)
+        plain_rag_retriever = PlainVectorRAGRetriever()
         generator = LiteraryGenerator(llm_adapter=llm_adapter)
         current_provider = provider
         current_model = model
@@ -91,12 +95,71 @@ def _make_llm(provider, model):
     return create_llm_adapter(provider=provider, model=model)
 
 
+def _is_plain_vector_rag_mode(retrieval_mode: str) -> bool:
+    return retrieval_mode == PLAIN_VECTOR_RAG_MODE
+
+
+def _get_retriever_for_mode(retrieval_mode: str):
+    global plain_rag_retriever
+    if _is_plain_vector_rag_mode(retrieval_mode):
+        if plain_rag_retriever is None:
+            plain_rag_retriever = PlainVectorRAGRetriever()
+        return plain_rag_retriever
+    return retriever
+
+
+def _format_retrieval_details(retrieval_result, retrieval_mode: str) -> str:
+    """Format retrieval details for the Gradio retrieval panel."""
+    if _is_plain_vector_rag_mode(retrieval_mode):
+        meta = getattr(retrieval_result, "_plain_rag_meta", {}) or {}
+        md = (
+            "**检索后端**: 普通 RAG（向量 baseline）\n"
+            f"**知识库路径**: `{meta.get('input_dir', settings.plain_rag_input_dir)}`\n"
+            f"**Embedding**: `{meta.get('embedding_backend', settings.plain_rag_embedding_backend)}` / "
+            f"`{meta.get('embedding_model', settings.plain_rag_embedding_model)}`\n"
+            f"**索引 chunks**: {meta.get('chunk_count', 0)}  "
+            f"**返回 chunks**: {len(retrieval_result.text_units)}\n"
+        )
+        top_scores = meta.get("top_scores") or []
+        if top_scores:
+            md += "\n**Top chunks**:\n"
+            for item in top_scores[:3]:
+                title = item.get("title") or item.get("source_file", "")
+                md += (
+                    f"- #{item.get('rank')} `{item.get('source_file')}` "
+                    f"chunk={item.get('chunk_index')} score={float(item.get('score', 0.0)):.4f}"
+                    f"{f' · {title}' if title else ''}\n"
+                )
+        if retrieval_result.text_units:
+            md += "\n**片段预览**:\n"
+            for i, text in enumerate(retrieval_result.text_units[:3], 1):
+                preview = str(text).replace("\n", " ")[:180]
+                md += f"{i}. {preview}...\n"
+        return md
+
+    md = (
+        "**检索后端**: GraphRAG\n"
+        f"**找到实体**: {len(retrieval_result.entities)} 个  "
+        f"**找到关系**: {len(retrieval_result.relationships)} 个  "
+        f"**社区报告**: {len(retrieval_result.communities)} 个  "
+        f"**相关文本**: {len(retrieval_result.text_units)} 段"
+    )
+    if retrieval_result.entities:
+        md += "\n\n**主要实体**:\n"
+        for entity in retrieval_result.entities[:5]:
+            md += f"- {entity.get('name', '未知')}: {entity.get('description', '')[:100]}...\n"
+    return md
+
+
 def _format_retrieval_quality(eval_result):
     """格式化检索质量评估结果为 Markdown"""
     md = f"**nDCG@3**: {eval_result['ndcg_at_3']:.4f}  "
     md += f"**nDCG@5**: {eval_result['ndcg_at_5']:.4f}  "
     md += f"**nDCG@10**: {eval_result['ndcg_at_10']:.4f}\n\n"
     md += f"**MRR**: {eval_result['mrr']:.4f}\n"
+    if eval_result.get("relevance_vector"):
+        vector = ", ".join(f"{v:.0f}" for v in eval_result["relevance_vector"])
+        md += f"\n**LLM相关性向量**: [{vector}]（0-3；MRR按首个 >=2 的文档计算）\n"
     if eval_result["per_doc_scores"]:
         md += "\n| # | 文档摘要 | 相关性 | 理由 |\n|---|----------|--------|------|\n"
         for item in eval_result["per_doc_scores"][:10]:
@@ -298,6 +361,15 @@ def _format_chapter_entities_block(
         f"- **解析时间**: {ctx.year or '—'}｜**地点**: {ctx.location or '—'}\n"
         f"- **实体数**: {len(rr.entities or [])}｜**关系数**: {len(rr.relationships or [])}"
     )
+    plain_meta = getattr(rr, "_plain_rag_meta", None)
+    if plain_meta:
+        lines.append(
+            f"- **普通向量 RAG chunks**: {len(rr.text_units or [])} / "
+            f"{plain_meta.get('chunk_count', 0)}"
+        )
+        for j, text in enumerate((rr.text_units or [])[:3], 1):
+            preview = str(text).replace("\n", " ")[:160]
+            lines.append(f"  {j}. {preview}...")
 
     brief = getattr(rr, "_novel_content_brief", None)
     nu = novel_used or set()
@@ -767,6 +839,7 @@ async def process_memoir_async(
         init_result = init_components(provider, model=model)
         if "失败" in init_result:
             return init_result, "", "", ""
+    active_retriever = _get_retriever_for_mode(retrieval_mode)
     
     try:
         start_time = time.time()
@@ -786,7 +859,7 @@ async def process_memoir_async(
             lf = await asyncio.wait_for(
                 run_long_form_generation(
                     memoir_text,
-                    retriever,
+                    active_retriever,
                     generator,
                     style=style,
                     temperature=temperature,
@@ -807,11 +880,18 @@ async def process_memoir_async(
                     f"- 第{i + 1}章: 年 {ctx.year or '—'} 地 {ctx.location or '—'}"
                 )
             extracted_info = "\n".join(lines)
-            rent = [len(ch.retrieval_result.entities) for ch in lf.chapters]
-            retrieval_info = (
-                f"**分章检索**: 各章实体数 {rent}；"
-                f"关系总计 {sum(len(ch.retrieval_result.relationships) for ch in lf.chapters)}"
-            )
+            if _is_plain_vector_rag_mode(retrieval_mode):
+                chunk_counts = [len(ch.retrieval_result.text_units) for ch in lf.chapters]
+                retrieval_info = (
+                    "**分章检索后端**: 普通 RAG（向量 baseline）；"
+                    f"各章 chunks 数 {chunk_counts}"
+                )
+            else:
+                rent = [len(ch.retrieval_result.entities) for ch in lf.chapters]
+                retrieval_info = (
+                    f"**分章检索**: 各章实体数 {rent}；"
+                    f"关系总计 {sum(len(ch.retrieval_result.relationships) for ch in lf.chapters)}"
+                )
             fact_check_info = f"**生成总耗时**: {gen_time:.2f} 秒\n"
             if enable_fact_check:
                 try:
@@ -844,7 +924,7 @@ async def process_memoir_async(
         retrieve_start = time.time()
         print("[DEBUG] 开始检索相关内容...")
         retrieval_result = await asyncio.wait_for(
-            retriever.retrieve(
+            active_retriever.retrieve(
                 memoir_text,
                 top_k=10,
                 use_llm_parsing=False,
@@ -862,15 +942,7 @@ async def process_memoir_async(
 **生成的查询**: {retrieval_result.query}
 **提取+检索耗时**: {retrieve_time:.2f} 秒"""
         
-        retrieval_info = f"""**找到实体**: {len(retrieval_result.entities)} 个
-**找到关系**: {len(retrieval_result.relationships)} 个
-**社区报告**: {len(retrieval_result.communities)} 个
-**相关文本**: {len(retrieval_result.text_units)} 段"""
-        
-        if retrieval_result.entities:
-            retrieval_info += "\n\n**主要实体**:\n"
-            for entity in retrieval_result.entities[:5]:
-                retrieval_info += f"- {entity.get('name', '未知')}: {entity.get('description', '')[:100]}...\n"
+        retrieval_info = _format_retrieval_details(retrieval_result, retrieval_mode)
         
         # 生成文本
         gen_start = time.time()
@@ -1076,6 +1148,7 @@ def process_memoir_stream(
         if "失败" in init_result:
             yield (init_result,) + ("",) * 9
             return
+    active_retriever = _get_retriever_for_mode(retrieval_mode)
 
     t_lo, t_hi = _clamp_generation_char_bounds(total_gen_min_chars, total_gen_max_chars)
     single_cfg = single_segment_generation_config_from_range(t_lo, t_hi)
@@ -1114,7 +1187,7 @@ def process_memoir_stream(
             async def _long_form():
                 return await run_long_form_generation(
                     memoir_text,
-                    retriever,
+                    active_retriever,
                     generator,
                     style=style,
                     temperature=temperature,
@@ -1262,7 +1335,7 @@ def process_memoir_stream(
                         asyncio.wait_for(
                             regenerate_chapters(
                                 lf,
-                                retriever,
+                                active_retriever,
                                 generator,
                                 chapters_to_regenerate=to_regen,
                                 prompt_adjustments=merged_adj,
@@ -1366,7 +1439,7 @@ def process_memoir_stream(
 
         # ── 1. 检索 ──
         retrieval_result = loop.run_until_complete(asyncio.wait_for(
-            retriever.retrieve(
+            active_retriever.retrieve(
                 memoir_text, top_k=10, use_llm_parsing=False, mode=retrieval_mode,
             ),
             timeout=45.0,
@@ -1378,10 +1451,7 @@ def process_memoir_stream(
             f"**提取的地点**: {context.location or '未识别'}\n"
             f"**关键词**: {', '.join(context.keywords) if context.keywords else '无'}\n"
             f"**生成的查询**: {retrieval_result.query}\n\n"
-            f"**找到实体**: {len(retrieval_result.entities)} 个  "
-            f"**找到关系**: {len(retrieval_result.relationships)} 个  "
-            f"**社区报告**: {len(retrieval_result.communities)} 个  "
-            f"**相关文本**: {len(retrieval_result.text_units)} 段"
+            + _format_retrieval_details(retrieval_result, retrieval_mode)
         )
         yield ("", extracted_md, retrieval_q_md, accuracy_md, safe_md, "", relevance_md, literary_md, compliance_md, "")
 
@@ -1592,12 +1662,14 @@ def compare_providers(
 # 批量测试 (Benchmark) — 在固定测试集上系统性地跑生成 + 评估
 # ────────────────────────────────────────────────────────────
 
-BENCHMARK_DATASET_PATH = Path(__file__).resolve().parent.parent / "historical_background_segments.json"
+BENCHMARK_DEFAULT_DIR = Path(__file__).resolve().parent.parent / "data" / "memoirs" / "segments"
 
 BENCHMARK_COLUMNS = [
+    "来源文件",
     "ID",
     "章节",
     "历史标签",
+    "检索模式",
     "原文",
     "扩写文本",
     "nDCG@5",
@@ -1612,7 +1684,134 @@ BENCHMARK_COLUMNS = [
 ]
 
 
+def _benchmark_retrieval_specs(
+    retrieval_mode: str,
+    compare_plain_vector_rag: bool,
+) -> List[Tuple[str, str]]:
+    """Return retrieval modes to run for benchmark rows."""
+    if not compare_plain_vector_rag:
+        label = (
+            "普通向量RAG"
+            if _is_plain_vector_rag_mode(retrieval_mode)
+            else f"GraphRAG:{retrieval_mode}"
+        )
+        return [(retrieval_mode, label)]
+
+    graph_mode = retrieval_mode
+    if _is_plain_vector_rag_mode(graph_mode):
+        graph_mode = "hybrid"
+
+    return [
+        (graph_mode, f"GraphRAG:{graph_mode}"),
+        (PLAIN_VECTOR_RAG_MODE, "普通向量RAG"),
+    ]
+
+# 用于求平均的数值指标键 → 显示名 / 是否百分比
+BENCHMARK_METRIC_KEYS = [
+    ("ndcg_at_5", "nDCG@5", False),
+    ("mrr", "MRR", False),
+    ("factscore", "FActScore", True),
+    ("safe_score", "SAFE", True),
+    ("relevance", "相关性", False),
+    ("literary", "文学性", False),
+    ("compliance", "合规性", False),
+    ("elapsed_seconds", "平均耗时(s)", False),
+]
+
+
 _benchmark_stop_event = threading.Event()
+_benchmark_running_event = threading.Event()
+_benchmark_resume_lock = threading.Lock()
+_benchmark_resume_state: Optional[Dict[str, Any]] = None
+
+
+def _clear_benchmark_resume_state() -> None:
+    global _benchmark_resume_state
+    with _benchmark_resume_lock:
+        _benchmark_resume_state = None
+
+
+def _get_benchmark_resume_state() -> Optional[Dict[str, Any]]:
+    with _benchmark_resume_lock:
+        return copy.deepcopy(_benchmark_resume_state)
+
+
+def _save_benchmark_resume_state(state: Dict[str, Any]) -> None:
+    global _benchmark_resume_state
+    with _benchmark_resume_lock:
+        _benchmark_resume_state = copy.deepcopy(state)
+
+
+def _benchmark_params_snapshot(
+    dataset_dir: str,
+    provider: str,
+    model: Optional[str],
+    style: str,
+    total_gen_min_chars: int,
+    total_gen_max_chars: int,
+    temperature: float,
+    enable_fact_check: bool,
+    retrieval_mode: str,
+    use_rule_decompose: bool,
+    enable_safe_check: bool,
+    enable_retrieval_quality: bool,
+    enable_llm_judge: bool,
+    batch_size: int,
+    compare_plain_vector_rag: bool,
+) -> Dict[str, Any]:
+    return {
+        "dataset_dir": dataset_dir,
+        "provider": provider,
+        "model": model,
+        "style": style,
+        "total_gen_min_chars": int(total_gen_min_chars),
+        "total_gen_max_chars": int(total_gen_max_chars),
+        "temperature": float(temperature),
+        "enable_fact_check": bool(enable_fact_check),
+        "retrieval_mode": retrieval_mode,
+        "use_rule_decompose": bool(use_rule_decompose),
+        "enable_safe_check": bool(enable_safe_check),
+        "enable_retrieval_quality": bool(enable_retrieval_quality),
+        "enable_llm_judge": bool(enable_llm_judge),
+        "batch_size": int(batch_size),
+        "compare_plain_vector_rag": bool(compare_plain_vector_rag),
+    }
+
+
+def _restore_benchmark_params(params: Dict[str, Any]) -> Tuple[
+    str,
+    str,
+    Optional[str],
+    str,
+    int,
+    int,
+    float,
+    bool,
+    str,
+    bool,
+    bool,
+    bool,
+    bool,
+    int,
+    bool,
+]:
+    return (
+        params["dataset_dir"],
+        params["provider"],
+        params.get("model"),
+        params["style"],
+        int(params["total_gen_min_chars"]),
+        int(params["total_gen_max_chars"]),
+        float(params["temperature"]),
+        bool(params["enable_fact_check"]),
+        params["retrieval_mode"],
+        bool(params["use_rule_decompose"]),
+        bool(params["enable_safe_check"]),
+        bool(params["enable_retrieval_quality"]),
+        bool(params["enable_llm_judge"]),
+        int(params["batch_size"]),
+        bool(params["compare_plain_vector_rag"]),
+    )
 
 
 def request_benchmark_stop() -> str:
@@ -1621,9 +1820,111 @@ def request_benchmark_stop() -> str:
     return "🛑 已请求停止：将在当前段落处理完成后中止，并导出已完成部分的结果。"
 
 
-def _load_benchmark_dataset() -> List[dict]:
-    with open(BENCHMARK_DATASET_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+def _benchmark_control_button_update():
+    """Return the UI state for the combined stop/resume benchmark button."""
+    if _benchmark_running_event.is_set():
+        if _benchmark_stop_event.is_set():
+            return gr.update(value="⏳ 停止中…", variant="secondary", interactive=False)
+        return gr.update(value="⏹️ 停止", variant="stop", interactive=True)
+    if _get_benchmark_resume_state():
+        return gr.update(value="▶️ 继续批量测试", variant="secondary", interactive=True)
+    return gr.update(value="⏹️ 停止 / ▶️ 继续", variant="secondary", interactive=True)
+
+
+def _with_benchmark_control_button(stream):
+    """Append the combined stop/resume button update to benchmark UI stream outputs."""
+    for output in stream:
+        yield (*output, _benchmark_control_button_update())
+
+
+def _load_benchmark_dataset(dataset_dir: str) -> Tuple[List[dict], List[str], List[str]]:
+    """
+    加载文件夹下的所有 *.json 测试集。每条片段附加 `source_file` 字段。
+
+    Returns: (segments, loaded_files, skipped_files)
+    """
+    p = Path(dataset_dir).expanduser()
+    if not p.is_absolute():
+        p = (Path(__file__).resolve().parent.parent / p).resolve()
+    if not p.exists() or not p.is_dir():
+        raise FileNotFoundError(f"目录不存在或不是文件夹: {p}")
+
+    segments: List[dict] = []
+    loaded: List[str] = []
+    skipped: List[str] = []
+    for fp in sorted(p.glob("*.json")):
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, list) or not all(
+                isinstance(x, dict) and "original_text" in x for x in data
+            ):
+                skipped.append(f"{fp.name} (schema 不匹配)")
+                continue
+            for item in data:
+                item = dict(item)
+                item["source_file"] = fp.name
+                segments.append(item)
+            loaded.append(fp.name)
+        except Exception as e:
+            skipped.append(f"{fp.name} ({type(e).__name__}: {e})")
+    return segments, loaded, skipped
+
+
+def _compute_averages(detail_records: List[dict]) -> Dict[str, Optional[float]]:
+    """对所有数值评估指标 + elapsed_seconds 求平均（忽略 None）。"""
+    out: Dict[str, Optional[float]] = {}
+    for key, _, _ in BENCHMARK_METRIC_KEYS:
+        if key == "elapsed_seconds":
+            vals = [r.get("elapsed_seconds") for r in detail_records if r.get("elapsed_seconds") is not None]
+        else:
+            vals = [r["scores"].get(key) for r in detail_records if r["scores"].get(key) is not None]
+        out[key] = (sum(vals) / len(vals)) if vals else None
+    return out
+
+
+def _format_averages_md(averages: Dict[str, Optional[float]], n: int) -> str:
+    """渲染平均值为 Markdown 表（用于 UI 与导出）。"""
+    if n == 0:
+        return "_暂无数据_"
+    lines = ["| 指标 | 平均值 | 有效样本 |", "| --- | --- | --- |"]
+    for key, label, pct in BENCHMARK_METRIC_KEYS:
+        v = averages.get(key)
+        if v is None:
+            cell = "—"
+        elif pct:
+            cell = f"{v:.1%}"
+        elif key == "elapsed_seconds":
+            cell = f"{v:.2f}s"
+        else:
+            cell = f"{v:.3f}"
+        lines.append(f"| {label} | {cell} | {n} |")
+    return "\n".join(lines)
+
+
+def _format_grouped_averages_md(detail_records: List[dict]) -> str:
+    """Render overall and per-retrieval-mode benchmark averages."""
+    if not detail_records:
+        return "_暂无数据_"
+
+    sections = ["### Overall\n", _format_averages_md(_compute_averages(detail_records), len(detail_records))]
+    modes = []
+    seen = set()
+    for record in detail_records:
+        mode_label = record.get("retrieval_label") or record.get("retrieval_mode") or "unknown"
+        if mode_label not in seen:
+            seen.add(mode_label)
+            modes.append(mode_label)
+
+    for mode_label in modes:
+        group = [
+            r for r in detail_records
+            if (r.get("retrieval_label") or r.get("retrieval_mode") or "unknown") == mode_label
+        ]
+        sections.append(f"\n### {mode_label}\n")
+        sections.append(_format_averages_md(_compute_averages(group), len(group)))
+
+    return "\n\n".join(sections)
 
 
 def _truncate(text: Optional[str], n: int = 100) -> str:
@@ -1638,7 +1939,13 @@ def _fmt_score(v, pct: bool = False) -> str:
     return f"{v:.1%}" if pct else f"{v:.3f}"
 
 
+def _benchmark_rows_snapshot(rows: List[List[str]]) -> List[List[str]]:
+    """Return a detached snapshot for Gradio streaming updates."""
+    return [list(row) for row in rows]
+
+
 def batch_benchmark_stream(
+    dataset_dir: str,
     provider: str,
     model: Optional[str],
     style: str,
@@ -1652,24 +1959,149 @@ def batch_benchmark_stream(
     enable_retrieval_quality: bool,
     enable_llm_judge: bool,
     batch_size: int,
+    compare_plain_vector_rag: bool = False,
+):
+    yield from _with_benchmark_control_button(
+        _batch_benchmark_stream(
+            dataset_dir=dataset_dir,
+            provider=provider,
+            model=model,
+            style=style,
+            total_gen_min_chars=total_gen_min_chars,
+            total_gen_max_chars=total_gen_max_chars,
+            temperature=temperature,
+            enable_fact_check=enable_fact_check,
+            retrieval_mode=retrieval_mode,
+            use_rule_decompose=use_rule_decompose,
+            enable_safe_check=enable_safe_check,
+            enable_retrieval_quality=enable_retrieval_quality,
+            enable_llm_judge=enable_llm_judge,
+            batch_size=batch_size,
+            compare_plain_vector_rag=compare_plain_vector_rag,
+            resume=False,
+        )
+    )
+
+
+def resume_benchmark_stream():
+    state = _get_benchmark_resume_state()
+    if not state:
+        yield (
+            "⚠️ 当前没有可继续的批量测试。请先运行批量测试并在中途停止。",
+            [],
+            "_暂无可继续的平均值_",
+            None,
+            None,
+            None,
+        )
+        return
+
+    yield from _batch_benchmark_stream(
+        *_restore_benchmark_params(state["params"]),
+        resume=True,
+    )
+
+
+def benchmark_stop_or_resume_stream():
+    if _benchmark_running_event.is_set():
+        _benchmark_stop_event.set()
+        yield (
+            "🛑 已请求停止：将在当前段落处理完成后中止，并导出已完成部分的结果。",
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            _benchmark_control_button_update(),
+        )
+        return
+
+    if not _get_benchmark_resume_state():
+        yield (
+            "⚠️ 当前没有可继续的批量测试。请先运行批量测试并在中途停止。",
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            _benchmark_control_button_update(),
+        )
+        return
+
+    yield from _with_benchmark_control_button(resume_benchmark_stream())
+
+
+def _batch_benchmark_stream(
+    dataset_dir: str,
+    provider: str,
+    model: Optional[str],
+    style: str,
+    total_gen_min_chars: int,
+    total_gen_max_chars: int,
+    temperature: float,
+    enable_fact_check: bool,
+    retrieval_mode: str,
+    use_rule_decompose: bool,
+    enable_safe_check: bool,
+    enable_retrieval_quality: bool,
+    enable_llm_judge: bool,
+    batch_size: int,
+    compare_plain_vector_rag: bool = False,
+    resume: bool = False,
 ):
     """
-    在 historical_background_segments.json 上系统性地跑扩写 + 评估。
+    在指定文件夹下的所有 *.json 测试集上系统性地跑扩写 + 评估。
 
     - 扩写文本始终生成（无视 UI 评估开关）
     - 评估模块按 UI 当前勾选状态执行
     - 所有参数沿用主标签页 UI 设置
+    - 跑完后对所有数值指标求平均，回写到 UI / JSON / Markdown / CSV
 
-    yields: (status_md, dataframe_rows, json_file, md_file, csv_file)
+    yields: (status_md, dataframe_rows, averages_md, json_file, md_file, csv_file)
     """
     global retriever, generator, current_provider, current_model
 
     # 重置停止标志，避免上次残留
     _benchmark_stop_event.clear()
+    _benchmark_running_event.set()
+    empty_avg = "_尚未开始_"
+    params = _benchmark_params_snapshot(
+        dataset_dir=dataset_dir,
+        provider=provider,
+        model=model,
+        style=style,
+        total_gen_min_chars=total_gen_min_chars,
+        total_gen_max_chars=total_gen_max_chars,
+        temperature=temperature,
+        enable_fact_check=enable_fact_check,
+        retrieval_mode=retrieval_mode,
+        use_rule_decompose=use_rule_decompose,
+        enable_safe_check=enable_safe_check,
+        enable_retrieval_quality=enable_retrieval_quality,
+        enable_llm_judge=enable_llm_judge,
+        batch_size=batch_size,
+        compare_plain_vector_rag=compare_plain_vector_rag,
+    )
 
     if not provider:
-        yield ("⚠️ 请先在「生成历史背景」标签页选择 LLM 模型（供应商）。", [], None, None, None)
+        yield ("⚠️ 请先在「生成历史背景」标签页选择 LLM 模型（供应商）。", [], empty_avg, None, None, None)
+        _benchmark_running_event.clear()
         return
+
+    resume_state = _get_benchmark_resume_state() if resume else None
+    if resume and not resume_state:
+        yield (
+            "⚠️ 当前没有可继续的批量测试。请先运行批量测试并在中途停止。",
+            [],
+            "_暂无可继续的平均值_",
+            None,
+            None,
+            None,
+        )
+        _benchmark_running_event.clear()
+        return
+    if not resume:
+        _clear_benchmark_resume_state()
 
     # 复用 / 必要时初始化检索器与生成器
     if (
@@ -1680,31 +2112,81 @@ def batch_benchmark_stream(
     ):
         init_msg = init_components(provider, model=model)
         if "失败" in init_msg:
-            yield (init_msg, [], None, None, None)
+            yield (init_msg, [], empty_avg, None, None, None)
+            _benchmark_running_event.clear()
             return
 
-    try:
-        dataset = _load_benchmark_dataset()
-    except Exception as e:
-        yield (f"❌ 读取测试集失败 ({BENCHMARK_DATASET_PATH.name}): {e}", [], None, None, None)
-        return
+    if resume_state:
+        dataset = resume_state["dataset"]
+        loaded_files = resume_state["loaded_files"]
+        skipped_files = resume_state["skipped_files"]
+        retrieval_specs = resume_state["retrieval_specs"]
+        segment_total = int(resume_state["segment_total"])
+        total_jobs = int(resume_state["total_jobs"])
+        total = total_jobs
+        bg_lo = int(resume_state["bg_lo"])
+        bg_hi = int(resume_state["bg_hi"])
+        single_cfg = resume_state["single_cfg"]
+        rows = resume_state["rows"]
+        detail_records = resume_state["detail_records"]
+        start_index = int(resume_state.get("next_index", len(detail_records)))
+        elapsed_before = float(resume_state.get("elapsed_seconds", 0.0))
+    else:
+        try:
+            dataset, loaded_files, skipped_files = _load_benchmark_dataset(
+                dataset_dir or str(BENCHMARK_DEFAULT_DIR)
+            )
+        except Exception as e:
+            yield (f"❌ 读取测试集目录失败: {e}", [], empty_avg, None, None, None)
+            _benchmark_running_event.clear()
+            return
 
-    total = len(dataset)
-    if total == 0:
-        yield ("⚠️ 测试集为空。", [], None, None, None)
-        return
+        total = len(dataset)
+        if total == 0:
+            skip_note = f"\n跳过的文件: {', '.join(skipped_files)}" if skipped_files else ""
+            yield (f"⚠️ 目录下未找到有效测试集 *.json。{skip_note}", [], empty_avg, None, None, None)
+            _benchmark_running_event.clear()
+            return
 
-    bg_lo, bg_hi = _clamp_generation_char_bounds(total_gen_min_chars, total_gen_max_chars)
-    single_cfg = single_segment_generation_config_from_range(bg_lo, bg_hi)
+        bg_lo, bg_hi = _clamp_generation_char_bounds(total_gen_min_chars, total_gen_max_chars)
+        single_cfg = single_segment_generation_config_from_range(bg_lo, bg_hi)
+        retrieval_specs = _benchmark_retrieval_specs(
+            retrieval_mode,
+            bool(compare_plain_vector_rag),
+        )
+        segment_total = total
+        benchmark_jobs: List[dict] = []
+        for item in dataset:
+            for run_mode, run_label in retrieval_specs:
+                job = dict(item)
+                job["_benchmark_retrieval_mode"] = run_mode
+                job["_benchmark_retrieval_label"] = run_label
+                benchmark_jobs.append(job)
+        dataset = benchmark_jobs
+        total_jobs = len(dataset)
+        total = total_jobs
+        rows = []
+        detail_records = []
+        start_index = 0
+        elapsed_before = 0.0
 
-    rows: List[List[str]] = []
-    detail_records: List[dict] = []
-    bench_start = time.monotonic()
+    def current_averages_md() -> str:
+        return _format_grouped_averages_md(detail_records) if detail_records else empty_avg
 
+    bench_start = time.monotonic() - elapsed_before
+
+    files_note = f" 来源: {len(loaded_files)} 个文件 ({', '.join(loaded_files)})"
+    if skipped_files:
+        files_note += f" · 跳过: {', '.join(skipped_files)}"
+    start_label = "继续" if resume_state else "开始"
     yield (
-        f"⏳ 共 {total} 条段落待处理。当前配置：{provider}{f'/{model}' if model else ''} · "
-        f"整篇目标生成 `{bg_lo}`–`{bg_hi}` 字 · 温度 `{temperature}` · 检索 `{retrieval_mode}`",
-        rows,
+        f"⏳ {start_label}批量测试：共 {segment_total} 条段落、{len(retrieval_specs)} 个检索模式，合计 {total_jobs} 个任务。"
+        f"已完成 {len(detail_records)} 个，将从第 {start_index + 1} 个任务继续。{files_note}\n\n"
+        f"当前配置：{provider}{f'/{model}' if model else ''} · "
+        f"风格 `{style}` · 整篇目标生成 `{bg_lo}`–`{bg_hi}` 字 · "
+        f"温度 `{temperature}` · 检索 `{', '.join(label for _, label in retrieval_specs)}`",
+        _benchmark_rows_snapshot(rows),
+        current_averages_md(),
         None,
         None,
         None,
@@ -1713,37 +2195,50 @@ def batch_benchmark_stream(
     loop = asyncio.new_event_loop()
     stopped_early = False
     try:
-        for idx, item in enumerate(dataset, start=1):
+        for idx, item in enumerate(dataset[start_index:], start=start_index + 1):
             # 段落级停止检查：只在新段落开始前响应停止请求
             if _benchmark_stop_event.is_set():
                 stopped_early = True
                 yield (
                     f"🛑 已停止：在第 {idx} / {total} 条段落开始前中止。已完成 {len(rows)} 条，正在导出…",
-                    rows, None, None, None,
+                    _benchmark_rows_snapshot(rows), current_averages_md(), None, None, None,
                 )
                 break
 
+            source_file = item.get("source_file", "")
             seg_id = item.get("id", f"#{idx}")
             chapter = item.get("chapter", "")
             tags = item.get("historical_tag", []) or []
             tags_str = "、".join(tags)
             original_text = item.get("original_text", "")
+            run_mode = item.get("_benchmark_retrieval_mode", retrieval_mode)
+            run_label = item.get("_benchmark_retrieval_label", run_mode)
+            active_retriever = _get_retriever_for_mode(run_mode)
 
             seg_start = time.monotonic()
             base_status = (
                 f"### 进度: {idx} / {total}\n\n"
+                f"- 来源: `{source_file}`\n"
                 f"- 当前: **{seg_id}** — {chapter}\n"
+                f"- 检索模式: `{run_label}`\n"
                 f"- 历史标签: {tags_str}\n"
                 f"- 已耗时: {time.monotonic() - bench_start:.1f}s\n"
             )
-            yield (base_status + "\n_正在检索…_", rows, None, None, None)
-
             row = [
-                seg_id, chapter, tags_str,
+                source_file, seg_id, chapter, tags_str, run_label,
                 _truncate(original_text, 120), "",
                 "—", "—", "—", "—", "—", "—", "—",
                 "—", "进行中",
             ]
+            rows.append(row)
+            yield (
+                base_status + "\n_正在检索…_",
+                _benchmark_rows_snapshot(rows),
+                current_averages_md(),
+                None,
+                None,
+                None,
+            )
 
             generated_text = ""
             ndcg5 = mrr = factscore = safe_score = relevance = literary = compliance = None
@@ -1753,14 +2248,57 @@ def batch_benchmark_stream(
             try:
                 # ── 1. 检索 ──
                 retrieval_result = loop.run_until_complete(asyncio.wait_for(
-                    retriever.retrieve(
-                        original_text, top_k=10, use_llm_parsing=False, mode=retrieval_mode,
+                    active_retriever.retrieve(
+                        original_text, top_k=10, use_llm_parsing=False, mode=run_mode,
                     ),
                     timeout=60.0,
                 ))
 
-                # ── 2. 扩写（必跑） ──
-                yield (base_status + "\n_正在生成扩写…_", rows, None, None, None)
+                # ── 2. 检索质量（按需，先于生成，避免生成失败吞掉检索指标） ──
+                if enable_retrieval_quality:
+                    yield (
+                        base_status + "\n_正在评估检索质量…_",
+                        _benchmark_rows_snapshot(rows),
+                        current_averages_md(),
+                        None,
+                        None,
+                        None,
+                    )
+                    try:
+                        eval_result = loop.run_until_complete(asyncio.wait_for(
+                            evaluate_retrieval_quality(
+                                query_text=original_text,
+                                text_units=retrieval_result.text_units,
+                                llm_adapter=_make_llm(provider, model),
+                            ),
+                            timeout=60.0,
+                        ))
+                        if eval_result.get("judge_error"):
+                            row[7] = "失败"
+                            row[8] = "失败"
+                            error_msg = (
+                                (error_msg + " | " if error_msg else "")
+                                + f"检索评估: {eval_result['judge_error']}"
+                            )
+                        else:
+                            ndcg5 = eval_result.get("ndcg_at_5")
+                            mrr = eval_result.get("mrr")
+                            row[7] = _fmt_score(ndcg5)
+                            row[8] = _fmt_score(mrr)
+                    except Exception as e:
+                        row[7] = "失败"
+                        row[8] = "失败"
+                        error_msg = (error_msg + " | " if error_msg else "") + f"检索评估: {e}"
+
+                # ── 3. 扩写（必跑） ──
+                yield (
+                    base_status + "\n_正在生成扩写…_",
+                    _benchmark_rows_snapshot(rows),
+                    current_averages_md(),
+                    None,
+                    None,
+                    None,
+                )
                 gen_result = loop.run_until_complete(asyncio.wait_for(
                     generator.generate(
                         memoir_text=original_text,
@@ -1773,28 +2311,15 @@ def batch_benchmark_stream(
                     timeout=120.0,
                 ))
                 generated_text = gen_result.content or ""
-                row[4] = _truncate(generated_text, 120)
-                yield (base_status + "\n_扩写完成，进入评估…_", rows, None, None, None)
-
-                # ── 3. 检索质量（按需） ──
-                if enable_retrieval_quality:
-                    try:
-                        eval_result = loop.run_until_complete(asyncio.wait_for(
-                            evaluate_retrieval_quality(
-                                query_text=original_text,
-                                text_units=retrieval_result.text_units,
-                                llm_adapter=_make_llm(provider, model),
-                            ),
-                            timeout=60.0,
-                        ))
-                        ndcg5 = eval_result.get("ndcg_at_5")
-                        mrr = eval_result.get("mrr")
-                        row[5] = _fmt_score(ndcg5)
-                        row[6] = _fmt_score(mrr)
-                    except Exception as e:
-                        row[5] = "失败"
-                        row[6] = "失败"
-                        error_msg = (error_msg + " | " if error_msg else "") + f"检索评估: {e}"
+                row[6] = _truncate(generated_text, 120)
+                yield (
+                    base_status + "\n_扩写完成，进入评估…_",
+                    _benchmark_rows_snapshot(rows),
+                    current_averages_md(),
+                    None,
+                    None,
+                    None,
+                )
 
                 # ── 4. 准确性 + LLM-as-Judge（按需） ──
                 if enable_fact_check or enable_safe_check or enable_llm_judge:
@@ -1821,37 +2346,39 @@ def batch_benchmark_stream(
 
                         if eval_res.fact_check:
                             factscore = eval_res.fact_check.factscore
-                            row[7] = _fmt_score(factscore, pct=True)
+                            row[9] = _fmt_score(factscore, pct=True)
                         if eval_res.safe_check:
                             safe_score = eval_res.safe_check.safe_score
-                            row[8] = _fmt_score(safe_score, pct=True)
+                            row[10] = _fmt_score(safe_score, pct=True)
                         if "relevance" in eval_res.scores:
                             relevance = eval_res.scores["relevance"].score
-                            row[9] = f"{relevance:.1f}"
+                            row[11] = f"{relevance:.1f}"
                         if "literary" in eval_res.scores:
                             literary = eval_res.scores["literary"].score
-                            row[10] = f"{literary:.1f}"
+                            row[12] = f"{literary:.1f}"
                         if "compliance" in eval_res.scores:
                             compliance = eval_res.scores["compliance"].score
-                            row[11] = f"{compliance:.1f}"
+                            row[13] = f"{compliance:.1f}"
                     except Exception as e:
                         error_msg = (error_msg + " | " if error_msg else "") + f"评估: {e}"
 
                 seg_elapsed = time.monotonic() - seg_start
-                row[12] = f"{seg_elapsed:.1f}"
-                row[13] = "✅ 完成" if not error_msg else f"⚠️ {_truncate(error_msg, 30)}"
+                row[14] = f"{seg_elapsed:.1f}"
+                row[15] = "✅ 完成" if not error_msg else f"⚠️ {_truncate(error_msg, 80)}"
 
             except Exception as e:
                 seg_elapsed = time.monotonic() - seg_start
-                row[12] = f"{seg_elapsed:.1f}"
-                row[13] = f"❌ {_truncate(str(e), 30)}"
+                row[14] = f"{seg_elapsed:.1f}"
+                row[15] = f"❌ {_truncate(str(e), 80)}"
                 error_msg = (error_msg + " | " if error_msg else "") + str(e)
 
-            rows.append(row)
             detail_records.append({
+                "source_file": source_file,
                 "id": seg_id,
                 "chapter": chapter,
                 "historical_tag": tags,
+                "retrieval_mode": run_mode,
+                "retrieval_label": run_label,
                 "original_text": original_text,
                 "generated_text": generated_text,
                 "scores": {
@@ -1866,7 +2393,14 @@ def batch_benchmark_stream(
                 "elapsed_seconds": round(seg_elapsed, 2),
                 "error": error_msg or None,
             })
-            yield (base_status, rows, None, None, None)
+            yield (
+                base_status + f"\n_实时平均值已更新：{len(detail_records)} / {total} 个任务已纳入统计。_",
+                _benchmark_rows_snapshot(rows),
+                current_averages_md(),
+                None,
+                None,
+                None,
+            )
 
         # ── 处理结束（正常完成或中途停止）：导出 JSON / Markdown / CSV ──
         done_count = len(rows)
@@ -1874,7 +2408,7 @@ def batch_benchmark_stream(
             f"💾 已处理 {done_count} / {total} 条段落"
             f"{'（已停止）' if stopped_early else ''}，"
             f"共耗时 {time.monotonic() - bench_start:.1f}s，正在导出…",
-            rows, None, None, None,
+            _benchmark_rows_snapshot(rows), current_averages_md(), None, None, None,
         )
 
         out_dir = Path(tempfile.mkdtemp(prefix="benchmark_"))
@@ -1882,6 +2416,14 @@ def batch_benchmark_stream(
         json_path = out_dir / f"benchmark_{ts}.json"
         md_path = out_dir / f"benchmark_{ts}.md"
         csv_path = out_dir / f"benchmark_{ts}.csv"
+
+        # ── 计算平均值（用于 UI / JSON / Markdown / CSV）──
+        averages = _compute_averages(detail_records)
+        averages_by_mode = {
+            label: _compute_averages([r for r in detail_records if r.get("retrieval_label") == label])
+            for _, label in retrieval_specs
+        }
+        averages_md = _format_grouped_averages_md(detail_records)
 
         run_settings = {
             "provider": provider,
@@ -1891,6 +2433,11 @@ def batch_benchmark_stream(
             "total_gen_max_chars": bg_hi,
             "temperature": temperature,
             "retrieval_mode": retrieval_mode,
+            "retrieval_modes": [
+                {"mode": mode, "label": label}
+                for mode, label in retrieval_specs
+            ],
+            "compare_plain_vector_rag": bool(compare_plain_vector_rag),
             "evals": {
                 "retrieval_quality": enable_retrieval_quality,
                 "fact_check": enable_fact_check,
@@ -1899,8 +2446,12 @@ def batch_benchmark_stream(
             },
             "batch_size": int(batch_size),
             "use_rule_decompose": use_rule_decompose,
+            "dataset_dir": dataset_dir,
+            "loaded_files": loaded_files,
+            "skipped_files": skipped_files,
             "timestamp": ts,
-            "total_segments": total,
+            "total_segments": segment_total,
+            "total_jobs": total_jobs,
             "completed_segments": len(detail_records),
             "stopped_early": stopped_early,
             "total_elapsed_seconds": round(time.monotonic() - bench_start, 2),
@@ -1908,13 +2459,24 @@ def batch_benchmark_stream(
 
         # JSON
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump({"settings": run_settings, "results": detail_records}, f, ensure_ascii=False, indent=2)
+            json.dump(
+                {
+                    "settings": run_settings,
+                    "summary": {
+                        "averages": averages,
+                        "averages_by_mode": averages_by_mode,
+                        "n": len(detail_records),
+                    },
+                    "results": detail_records,
+                },
+                f, ensure_ascii=False, indent=2,
+            )
 
         # CSV
         with open(csv_path, "w", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
             w.writerow([
-                "id", "chapter", "historical_tag",
+                "source_file", "id", "chapter", "historical_tag", "retrieval_mode",
                 "original_text", "generated_text",
                 "ndcg_at_5", "mrr", "factscore", "safe_score",
                 "relevance", "literary", "compliance",
@@ -1923,26 +2485,44 @@ def batch_benchmark_stream(
             for r in detail_records:
                 s = r["scores"]
                 w.writerow([
-                    r["id"], r["chapter"], "|".join(r["historical_tag"]),
+                    r.get("source_file", ""), r["id"], r["chapter"], "|".join(r["historical_tag"]),
+                    r.get("retrieval_label") or r.get("retrieval_mode", ""),
                     r["original_text"], r["generated_text"],
                     s["ndcg_at_5"], s["mrr"], s["factscore"], s["safe_score"],
                     s["relevance"], s["literary"], s["compliance"],
                     r["elapsed_seconds"], r["error"] or "",
                 ])
+            # 平均值行
+            w.writerow([])
+            w.writerow([
+                "AVERAGE", f"n={len(detail_records)}", "", "", "", "", "",
+                averages.get("ndcg_at_5"), averages.get("mrr"),
+                averages.get("factscore"), averages.get("safe_score"),
+                averages.get("relevance"), averages.get("literary"),
+                averages.get("compliance"),
+                averages.get("elapsed_seconds"), "",
+            ])
 
         # Markdown
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(f"# 批量测试结果 ({ts})\n\n")
             f.write(f"- LLM: `{provider}`{f' / `{model}`' if model else ''}\n")
-            f.write(f"- 风格: `{style}` | 目标生成字数: `{bg_lo}`–`{bg_hi}` | 温度: `{temperature}` | 检索: `{retrieval_mode}`\n")
+            f.write(f"- 风格: `{style}` | 目标生成字数: `{bg_lo}`-`{bg_hi}` | 温度: `{temperature}` | 检索: `{', '.join(label for _, label in retrieval_specs)}`\n")
             f.write(
                 f"- 评估: 检索质量={enable_retrieval_quality}, "
                 f"FActScore={enable_fact_check}, SAFE={enable_safe_check}, LLM-Judge={enable_llm_judge}\n"
             )
-            f.write(f"- 段落数: {total} | 总耗时: {run_settings['total_elapsed_seconds']}s\n\n---\n\n")
+            f.write(f"- 数据来源: `{dataset_dir}`（{len(loaded_files)} 个文件: {', '.join(loaded_files)}）\n")
+            if skipped_files:
+                f.write(f"- 跳过: {', '.join(skipped_files)}\n")
+            f.write(f"- 段落数: {segment_total} | 任务数: {total_jobs} | 总耗时: {run_settings['total_elapsed_seconds']}s\n\n")
+            f.write("## 📊 指标平均\n\n")
+            f.write(averages_md + "\n\n---\n\n")
             for r in detail_records:
                 s = r["scores"]
                 f.write(f"## {r['id']} — {r['chapter']}\n\n")
+                f.write(f"**来源**: `{r.get('source_file', '')}`  |  ")
+                f.write(f"**检索**: `{r.get('retrieval_label') or r.get('retrieval_mode', '')}`  |  ")
                 f.write(f"**历史标签**: {'、'.join(r['historical_tag'])}\n\n")
                 f.write(f"### 原文\n\n{r['original_text']}\n\n")
                 f.write(f"### 扩写\n\n{r['generated_text'] or '_未生成_'}\n\n")
@@ -1961,15 +2541,38 @@ def batch_benchmark_stream(
 
         final_icon = "🛑" if stopped_early else "✅"
         final_label = "已停止" if stopped_early else "完成"
+        if stopped_early and len(detail_records) < total_jobs:
+            _save_benchmark_resume_state({
+                "params": params,
+                "dataset": dataset,
+                "loaded_files": loaded_files,
+                "skipped_files": skipped_files,
+                "retrieval_specs": retrieval_specs,
+                "segment_total": segment_total,
+                "total_jobs": total_jobs,
+                "bg_lo": bg_lo,
+                "bg_hi": bg_hi,
+                "single_cfg": single_cfg,
+                "rows": rows,
+                "detail_records": detail_records,
+                "next_index": len(detail_records),
+                "elapsed_seconds": time.monotonic() - bench_start,
+            })
+        else:
+            _clear_benchmark_resume_state()
+        _benchmark_running_event.clear()
         yield (
-            f"{final_icon} {final_label}！已处理 {len(detail_records)} / {total} 条段落，"
-            f"导出完毕（总耗时 {run_settings['total_elapsed_seconds']}s）。",
-            rows,
+            f"{final_icon} {final_label}！已处理 {len(detail_records)} / {total_jobs} 个任务，"
+            f"导出完毕（总耗时 {run_settings['total_elapsed_seconds']}s）。"
+            f"{'点击「继续批量测试」可从下一条继续。' if stopped_early and len(detail_records) < total_jobs else ''}",
+            _benchmark_rows_snapshot(rows),
+            averages_md,
             str(json_path),
             str(md_path),
             str(csv_path),
         )
     finally:
+        _benchmark_running_event.clear()
         try:
             loop.close()
         except Exception:
@@ -2033,13 +2636,19 @@ def create_ui():
     if not available_providers:
         available_providers = ["deepseek"]  # 无可配密钥时的占位
 
+    configured_provider = (settings.default_llm_provider or "").strip().lower()
     _default_provider = (
-        "openai"
-        if "openai" in available_providers
+        configured_provider
+        if configured_provider in available_providers
         else (available_providers[0] if available_providers else None)
     )
     _initial_model_choices = get_provider_models(_default_provider) if _default_provider else []
-    _initial_model_value = _initial_model_choices[0] if _initial_model_choices else None
+    configured_model = (settings.default_llm_model or "").strip()
+    _initial_model_value = (
+        configured_model
+        if configured_model in _initial_model_choices
+        else (_initial_model_choices[0] if _initial_model_choices else None)
+    )
 
     with gr.Blocks(
         title="记忆图谱 - 历史背景注入系统",
@@ -2148,10 +2757,11 @@ def create_ui():
                                 ("关键词检索 (快速)", "keyword"),
                                 ("向量检索 (精准)", "vector"),
                                 ("混合检索 (推荐)", "hybrid"),
+                                ("普通 RAG（向量 baseline）", PLAIN_VECTOR_RAG_MODE),
                             ],
                             value="hybrid",
                             label="检索模式",
-                            info="选择知识图谱检索策略",
+                            info="选择 GraphRAG 或普通向量 RAG 检索策略",
                         )
 
                         with gr.Group():
@@ -2275,10 +2885,10 @@ def create_ui():
                         with gr.Accordion("\U0001f4cb 提取与检索信息", open=False):
                             extracted_info = gr.Markdown(label="提取的信息")
 
-                        with gr.Accordion("\U0001f3af 检索质量", open=False):
+                        with gr.Accordion("\U0001f3af 评估：检索质量", open=False):
                             retrieval_quality_output = gr.Markdown(label="检索质量")
 
-                        with gr.Accordion("\u2705 事实准确性", open=True):
+                        with gr.Accordion("\u2705 评估：事实准确性", open=True):
                             gr.Markdown("#### \U0001f4da 基于知识库 (FActScore)")
                             accuracy_output = gr.Markdown(label="事实准确性 (KB)")
                             gr.Markdown("---\n#### \U0001f310 独立知识验证 (SAFE)")
@@ -2289,13 +2899,13 @@ def create_ui():
                                 label="RAG 利用率 · 新实体使用 · 新事实溯源（分章）",
                             )
 
-                        with gr.Accordion("\U0001f517 相关性", open=False):
+                        with gr.Accordion("\U0001f517 评估：相关性", open=False):
                             relevance_output = gr.Markdown(label="相关性")
 
-                        with gr.Accordion("\u270d\ufe0f 文学性", open=False):
+                        with gr.Accordion("\u270d\ufe0f 评估：文学性", open=False):
                             literary_output = gr.Markdown(label="文学性")
 
-                        with gr.Accordion("\U0001f6e1\ufe0f 合规性", open=False):
+                        with gr.Accordion("\U0001f6e1\ufe0f 评估：合规性", open=False):
                             compliance_output = gr.Markdown(label="合规性")
 
                         with gr.Accordion("\U0001f6a6 质量门控", open=False):
@@ -2348,7 +2958,13 @@ def create_ui():
                             gr.update(visible=False),
                         )
                     models = get_provider_models(provider)
-                    value = models[0] if models else None
+                    configured_model = (settings.default_llm_model or "").strip()
+                    configured_provider = (settings.default_llm_provider or "").strip().lower()
+                    value = (
+                        configured_model
+                        if provider == configured_provider and configured_model in models
+                        else (models[0] if models else None)
+                    )
                     show_ollama_refresh = provider == "ollama"
                     return (
                         gr.update(choices=models, value=value, visible=True),
@@ -2430,22 +3046,43 @@ def create_ui():
                     f"""
                     ## 批量测试 (Benchmark)
 
-                    在固定测试集 `{BENCHMARK_DATASET_PATH.name}` 上系统性地跑扩写生成。
+                    在指定文件夹下的所有 `*.json` 测试集上系统性地跑扩写生成。
 
+                    - **数据来源**：默认 `{BENCHMARK_DEFAULT_DIR.relative_to(Path(__file__).resolve().parent.parent)}`，
+                      可在下方输入框修改；所有 schema 合法的 `*.json` 会被合并成一份测试集。
                     - **参数复用**：LLM / 模型 / 风格 / **整篇目标生成字数** / 温度 / 检索模式 / 评估开关 / batch_size 等，
                       全部沿用「\U0001f4dd 生成历史背景」标签页当前的设置。
                     - **扩写文本**：每次都会生成（与评估开关无关）。
                     - **评估模块**：按主标签页当前勾选状态执行；未勾选的不跑。
-                    - **进度**：逐条流式更新，结束后导出 JSON / Markdown / CSV 三种格式供下载。
+                    - **进度**：逐条流式更新；跑完后**对所有数值指标求平均**并展示在 UI，同时导出
+                      JSON / Markdown / CSV 三种格式供下载（导出文件均含平均值汇总）。
                     """
+                )
+
+                bench_dataset_dir = gr.Textbox(
+                    label="测试集目录",
+                    value=str(BENCHMARK_DEFAULT_DIR),
+                    placeholder="data/memoirs/segments/",
+                    info="可填绝对路径或相对项目根目录的相对路径；目录下所有 *.json 会被合并使用。",
+                )
+
+                bench_compare_plain_rag_checkbox = gr.Checkbox(
+                    value=False,
+                    label="对比普通 RAG（向量 baseline）",
+                    info="开启后，每条样本会同时跑当前 GraphRAG 检索模式和普通向量 RAG，各生成一行结果。",
                 )
 
                 with gr.Row():
                     bench_btn = gr.Button("▶️ 开始批量测试", variant="primary")
-                    bench_stop_btn = gr.Button("⏹️ 停止", variant="stop")
+                    bench_stop_resume_btn = gr.Button("⏹️ 停止 / ▶️ 继续", variant="secondary")
 
                 bench_status = gr.Markdown(
-                    value="点击「开始批量测试」启动；运行中可点「停止」让任务在当前段落跑完后中止。",
+                    value="点击「开始批量测试」启动；运行中可点同一个控制按钮停止，停止完成后再点同一个按钮继续。",
+                )
+
+                bench_averages = gr.Markdown(
+                    value="_尚未开始_",
+                    label="📊 指标平均值",
                 )
 
                 bench_table = gr.Dataframe(
@@ -2464,6 +3101,7 @@ def create_ui():
                 bench_btn.click(
                     fn=batch_benchmark_stream,
                     inputs=[
+                        bench_dataset_dir,
                         provider_select,
                         model_select,
                         style_select,
@@ -2477,21 +3115,32 @@ def create_ui():
                         retrieval_quality_checkbox,
                         llm_judge_checkbox,
                         batch_size_slider,
+                        bench_compare_plain_rag_checkbox,
                     ],
                     outputs=[
                         bench_status,
                         bench_table,
+                        bench_averages,
                         bench_json_file,
                         bench_md_file,
                         bench_csv_file,
+                        bench_stop_resume_btn,
                     ],
                 )
 
-                # 停止按钮：queue=False 让它绕过队列，立刻把停止标志位置上
-                bench_stop_btn.click(
-                    fn=request_benchmark_stop,
+                # 同一个控制按钮：运行中请求停止；停止导出后再点则从下一条继续
+                bench_stop_resume_btn.click(
+                    fn=benchmark_stop_or_resume_stream,
                     inputs=[],
-                    outputs=[bench_status],
+                    outputs=[
+                        bench_status,
+                        bench_table,
+                        bench_averages,
+                        bench_json_file,
+                        bench_md_file,
+                        bench_csv_file,
+                        bench_stop_resume_btn,
+                    ],
                     queue=False,
                 )
 

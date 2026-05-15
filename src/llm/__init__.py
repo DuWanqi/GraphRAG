@@ -15,6 +15,7 @@ from .factory import create_llm_adapter, get_available_providers, get_provider_m
 from .router import LLMRouter, MultiLLMResponse
 from .local_embedding import LocalEmbedding, get_local_embedding
 from .ollama_embedding import OllamaEmbedding, OllamaEmbeddingConfig, get_ollama_embedding
+from .hunyuan_embedding import HunyuanEmbedding, HunyuanEmbeddingConfig, get_hunyuan_embedding
 
 __all__ = [
     "LLMAdapter",
@@ -38,4 +39,7 @@ __all__ = [
     "OllamaEmbedding",
     "OllamaEmbeddingConfig",
     "get_ollama_embedding",
+    "HunyuanEmbedding",
+    "HunyuanEmbeddingConfig",
+    "get_hunyuan_embedding",
 ]
