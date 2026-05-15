@@ -42,7 +42,6 @@ from .long_form_eval import (
     LongFormEvalResult,
     SegmentEvalRecord,
     long_form_eval_to_json,
-    document_year_diversity,
 )
 from .quality_gate import (
     QualityGateResult,
@@ -85,7 +84,6 @@ __all__ = [
     "LongFormEvalResult",
     "SegmentEvalRecord",
     "long_form_eval_to_json",
-    "document_year_diversity",
     "QualityGateResult",
     "QualityThresholds",
     "ChapterGateResult",

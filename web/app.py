@@ -509,13 +509,6 @@ def _format_long_form_novel_content(ev: Any) -> str:
         gf = nci.get("grounded_facts") or []
         ug = nci.get("ungrounded_facts") or []
 
-        ig = nci.get("information_gain")
-        eg = nci.get("expansion_grounding")
-        if ig is not None:
-            lines.append(f"\n- **\u4FE1\u606F\u589E\u76CA\uff08\u5206\u6790\u5B57\u6BB5 raw\uff09**: {float(ig):.1%}")
-        if eg is not None:
-            lines.append(f"\n- **\u6269\u5C55\u6EAF\u6EAF\uff08\u5206\u6790\u5B57\u6BB5\uff09**: {float(eg):.1%}")
-
         lines.append("\n\n#### \u65B0\u4E8B\u5B9E / \u6EAF\u6EAF\n")
         lines.append(f"- \u751F\u6210\u4E2D\u51FA\u73B0\u7684\u4E13\u6709\u4FE1\u606F\u6761\u76EE: {len(nf)}\n")
         if nf:
@@ -2704,6 +2697,15 @@ def create_ui():
                                 "行情好的时候一夜卖空，行情差时货压在仓里，心里像压着石头。"
                                 "我学着看人脸色谈合作，学着在风险里做决定。那几年，机会与不确定并存，我也在改革开放的浪潮里一点点找到自己的位置。",
                             ),
+                            (
+                                "广州外贸\uff5c金融危机下的坚守",
+                                "2009年春天，我背着一个旧行李箱，从湖南老家来到广州。那时的广州，到处都是机会的味道。"
+                                "我在天河区租了一间小房子，月租800块，房间不大，但离市中心很近。每天早上，我都会挤地铁去白云区的一家外贸公司上班。"
+                                "公司主要做纺织品出口，客户遍布欧美。那年生意特别难做，电视上天天说国外经济不好，很多同行公司都裁员甚至关门了。"
+                                "记得那年4月份，老板让我去参加一个大型商品交易会，我第一次见到那么多外国商人，虽然他们比往年少了很多。"
+                                "周末的时候，我喜欢去老城区逛逛，经常去一条叫上下九的步行街，吃一碗云吞面。"
+                                "转过年来，2010年了，广州要办亚运会，到处都在建设，整个城市都是一片热火朝天的景象。",
+                            ),
                         ]
 
                         with gr.Row():
@@ -2894,7 +2896,7 @@ def create_ui():
 
                         with gr.Accordion("\U0001f4dd 新内容评估", open=False):
                             novel_content_output = gr.Markdown(
-                                label="信息增益 · RAG 利用率 · 新事实溯源（分章）",
+                                label="RAG 利用率 · 新实体使用 · 新事实溯源（分章）",
                             )
 
                         with gr.Accordion("\U0001f517 评估：相关性", open=False):
