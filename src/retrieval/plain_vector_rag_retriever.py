@@ -272,7 +272,17 @@ class PlainVectorRAGRetriever:
 
         try:
             cached_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if cached_manifest != manifest:
+            # 只比较关键字段，忽略 input_dir 路径差异
+            key_fields = ["version", "embedding_backend", "embedding_model", "chunk_size", "chunk_overlap"]
+            for field in key_fields:
+                if cached_manifest.get(field) != manifest.get(field):
+                    logger.info(f"[PlainVectorRAG] cache mismatch: {field}")
+                    return False
+            # 比较文件列表（只比较文件名和大小，忽略路径）
+            cached_files = {f["path"]: f["size"] for f in cached_manifest.get("files", [])}
+            current_files = {f["path"]: f["size"] for f in manifest.get("files", [])}
+            if cached_files != current_files:
+                logger.info("[PlainVectorRAG] cache mismatch: file list")
                 return False
             chunks = []
             with chunks_path.open("r", encoding="utf-8") as f:
