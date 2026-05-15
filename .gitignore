@@ -59,6 +59,10 @@ data/plain_vector_rag_cache/
 # Trae IDE documents
 .trae/documents/
 .trae/rules/
+.trae/specs/
+
+# Docs
+docs/
 
 # Benchmark results
 benchmark_results/
