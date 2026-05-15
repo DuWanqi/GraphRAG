@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "input_dir": "D:\\BaiduSyncdisk\\CUHKSZ\\Y4T2\\DDA4080\\GraphRAG\\data\\graphrag_output\\input",
+  "files": [
+    {
+      "path": "1960_1978.json",
+      "size": 205607,
+      "mtime_ns": 1776361986611969800
+    },
+    {
+      "path": "1979_1992.json",
+      "size": 138942,
+      "mtime_ns": 1776361986613974100
+    },
+    {
+      "path": "1992_1997.json",
+      "size": 75016,
+      "mtime_ns": 1776361986614972700
+    },
+    {
+      "path": "1998-2003.json",
+      "size": 65426,
+      "mtime_ns": 1776361986616477200
+    },
+    {
+      "path": "2004_2025_300_beta.json",
+      "size": 74540,
+      "mtime_ns": 1776361986620004600
+    },
+    {
+      "path": "final_history_crawled.json",
+      "size": 929816,
+      "mtime_ns": 1776361986626007900
+    },
+    {
+      "path": "gaigekaifang_processed.txt",
+      "size": 178048,
+      "mtime_ns": 1776361986629060500
+    },
+    {
+      "path": "guangdong_2004_2025_470.json",
+      "size": 144179,
+      "mtime_ns": 1776361986631513600
+    },
+    {
+      "path": "history_2004_2025_700.json",
+      "size": 337818,
+      "mtime_ns": 1776361986633516600
+    },
+    {
+      "path": "history_events_1949_1959.json",
+      "size": 62391,
+      "mtime_ns": 1776361986634519100
+    },
+    {
+      "path": "history_events_1992_2004.json",
+      "size": 231337,
+      "mtime_ns": 1776361986636516100
+    },
+    {
+      "path": "sample_events.txt",
+      "size": 3713,
+      "mtime_ns": 1776361986638028000
+    },
+    {
+      "path": "shenzhen_1990_1999.json",
+      "size": 16789,
+      "mtime_ns": 1778211528012453800
+    }
+  ],
+  "embedding_backend": "ollama",
+  "embedding_model": "nomic-embed-text",
+  "chunk_size": 900,
+  "chunk_overlap": 150
+}
