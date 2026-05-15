@@ -1794,7 +1794,6 @@ def _benchmark_params_snapshot(
     enable_retrieval_quality: bool,
     enable_llm_judge: bool,
     batch_size: int,
-    benchmark_concurrency: int,
     compare_plain_vector_rag: bool,
 ) -> Dict[str, Any]:
     return {
@@ -1812,7 +1811,6 @@ def _benchmark_params_snapshot(
         "enable_retrieval_quality": bool(enable_retrieval_quality),
         "enable_llm_judge": bool(enable_llm_judge),
         "batch_size": int(batch_size),
-        "benchmark_concurrency": int(benchmark_concurrency),
         "compare_plain_vector_rag": bool(compare_plain_vector_rag),
     }
 
@@ -1832,7 +1830,6 @@ def _restore_benchmark_params(params: Dict[str, Any]) -> Tuple[
     bool,
     bool,
     int,
-    int,
     bool,
 ]:
     return (
@@ -1850,7 +1847,6 @@ def _restore_benchmark_params(params: Dict[str, Any]) -> Tuple[
         bool(params["enable_retrieval_quality"]),
         bool(params["enable_llm_judge"]),
         int(params["batch_size"]),
-        int(params.get("benchmark_concurrency", 1)),
         bool(params["compare_plain_vector_rag"]),
     )
 
@@ -1858,7 +1854,7 @@ def _restore_benchmark_params(params: Dict[str, Any]) -> Tuple[
 def request_benchmark_stop() -> str:
     """由「停止」按钮调用：设置标志位，请求批量任务在当前段落结束后中止。"""
     _benchmark_stop_event.set()
-    return "🛑 已请求停止：将在当前并发窗口处理完成后中止，并导出已完成部分的结果。"
+    return "🛑 已请求停止：将在当前段落处理完成后中止，并导出已完成部分的结果。"
 
 
 def _benchmark_control_button_update():
@@ -2117,255 +2113,6 @@ async def _calculate_benchmark_rule_metrics(
     return scores
 
 
-def _new_benchmark_row(
-    source_file: str,
-    seg_id: str,
-    chapter: str,
-    tags_str: str,
-    run_label: str,
-    original_text: str,
-    status: str = "进行中",
-) -> List[str]:
-    row = ["—"] * len(BENCHMARK_COLUMNS)
-    row[0] = source_file
-    row[1] = seg_id
-    row[2] = chapter
-    row[3] = tags_str
-    row[4] = run_label
-    row[5] = _truncate(original_text, 120)
-    row[6] = ""
-    row[-1] = status
-    return row
-
-
-async def _process_benchmark_job(
-    *,
-    item: dict,
-    row: List[str],
-    provider: str,
-    model: Optional[str],
-    style: str,
-    temperature: float,
-    enable_fact_check: bool,
-    enable_safe_check: bool,
-    enable_retrieval_quality: bool,
-    enable_llm_judge: bool,
-    batch_size: int,
-    bg_lo: int,
-    bg_hi: int,
-    single_cfg: Dict[str, Any],
-    retrieval_mode: str,
-) -> Dict[str, Any]:
-    source_file = item.get("source_file", "")
-    seg_id = item.get("id", "")
-    chapter = item.get("chapter", "")
-    tags = item.get("historical_tag", []) or []
-    original_text = item.get("original_text", "")
-    run_mode = item.get("_benchmark_retrieval_mode", retrieval_mode)
-    run_label = item.get("_benchmark_retrieval_label", run_mode)
-    active_retriever = _get_retriever_for_mode(run_mode)
-
-    seg_start = time.monotonic()
-    generated_text = ""
-    ndcg5 = mrr = precision = recall = f1 = hit_at_3 = hit_at_5 = hit_at_10 = None
-    retrieval_latency_ms = None
-    factscore = safe_score = temporal_coherence = hallucination = None
-    relevance = topic_coherence = literary = length_score = None
-    transition_usage = descriptive_richness = None
-    rag_utilization = information_gain = expansion_grounding = None
-    compliance = overall_score = aggregated_score = None
-    error_msg = ""
-    retrieval_result = None
-
-    try:
-        retrieval_start = time.monotonic()
-        retrieval_result = await asyncio.wait_for(
-            active_retriever.retrieve(
-                original_text, top_k=10, use_llm_parsing=False, mode=run_mode,
-            ),
-            timeout=60.0,
-        )
-        retrieval_latency_ms = (time.monotonic() - retrieval_start) * 1000
-        row[15] = f"{retrieval_latency_ms:.1f}"
-
-        if enable_retrieval_quality:
-            try:
-                eval_result = await asyncio.wait_for(
-                    evaluate_retrieval_quality(
-                        query_text=original_text,
-                        text_units=retrieval_result.text_units,
-                        llm_adapter=_make_llm(provider, model),
-                    ),
-                    timeout=60.0,
-                )
-                if eval_result.get("judge_error"):
-                    row[7] = "失败"
-                    row[8] = "失败"
-                    error_msg = f"检索评估: {eval_result['judge_error']}"
-                else:
-                    ndcg5 = eval_result.get("ndcg_at_5")
-                    mrr = eval_result.get("mrr")
-                    rbm = _retrieval_binary_metrics(eval_result)
-                    precision = rbm.get("precision")
-                    recall = rbm.get("recall")
-                    f1 = rbm.get("f1")
-                    hit_at_3 = rbm.get("hit_at_3")
-                    hit_at_5 = rbm.get("hit_at_5")
-                    hit_at_10 = rbm.get("hit_at_10")
-                    row[7] = _fmt_score(ndcg5)
-                    row[8] = _fmt_score(mrr)
-                    row[9] = _fmt_score(precision)
-                    row[10] = _fmt_score(recall)
-                    row[11] = _fmt_score(f1)
-                    row[12] = _fmt_score(hit_at_3)
-                    row[13] = _fmt_score(hit_at_5)
-                    row[14] = _fmt_score(hit_at_10)
-            except Exception as e:
-                row[7] = "失败"
-                row[8] = "失败"
-                error_msg = (error_msg + " | " if error_msg else "") + f"检索评估: {e}"
-
-        if generator is None:
-            raise RuntimeError("生成器未初始化")
-        gen_result = await asyncio.wait_for(
-            generator.generate(
-                memoir_text=original_text,
-                retrieval_result=retrieval_result,
-                temperature=temperature,
-                max_tokens=single_cfg["max_tokens"],
-                style=style,
-                length_hint=single_cfg["length_hint"],
-            ),
-            timeout=120.0,
-        )
-        generated_text = gen_result.content or ""
-        row[6] = _truncate(generated_text, 120)
-
-        try:
-            rule_metric_scores = await asyncio.wait_for(
-                _calculate_benchmark_rule_metrics(
-                    original_text=original_text,
-                    generated_text=generated_text,
-                    retrieval_result=retrieval_result,
-                    min_chars=bg_lo,
-                    max_chars=bg_hi,
-                ),
-                timeout=180.0,
-            )
-            temporal_coherence = rule_metric_scores.get("temporal_coherence")
-            hallucination = rule_metric_scores.get("hallucination")
-            topic_coherence = rule_metric_scores.get("topic_coherence")
-            length_score = rule_metric_scores.get("length_score")
-            transition_usage = rule_metric_scores.get("transition_usage")
-            descriptive_richness = rule_metric_scores.get("descriptive_richness")
-            rag_utilization = rule_metric_scores.get("rag_utilization")
-            information_gain = rule_metric_scores.get("information_gain")
-            expansion_grounding = rule_metric_scores.get("expansion_grounding")
-            aggregated_score = rule_metric_scores.get("aggregated_score")
-            row[18] = _fmt_score(temporal_coherence)
-            row[19] = _fmt_score(hallucination)
-            row[21] = _fmt_score(topic_coherence)
-            row[23] = _fmt_score(length_score)
-            row[24] = _fmt_score(transition_usage)
-            row[25] = _fmt_score(descriptive_richness)
-            row[26] = _fmt_score(rag_utilization)
-            row[27] = _fmt_score(information_gain)
-            row[28] = _fmt_score(expansion_grounding)
-            row[31] = _fmt_score(aggregated_score)
-        except Exception as e:
-            error_msg = (error_msg + " | " if error_msg else "") + f"规则指标: {e}"
-
-        if enable_fact_check or enable_safe_check or enable_llm_judge:
-            try:
-                llm = _make_llm(provider, model)
-                evaluator = Evaluator(
-                    llm_adapter=llm,
-                    google_api_key=settings.google_api_key,
-                    google_cse_id=getattr(settings, "google_cse_id", None),
-                )
-                eval_res = await asyncio.wait_for(
-                    evaluator.evaluate(
-                        memoir_text=original_text,
-                        generated_text=generated_text,
-                        retrieval_result=retrieval_result,
-                        use_llm=True,
-                        enable_fact_check=enable_fact_check,
-                        enable_safe_check=enable_safe_check,
-                        enable_llm_judge=enable_llm_judge,
-                        batch_size=int(batch_size),
-                    ),
-                    timeout=240.0,
-                )
-
-                if eval_res.fact_check:
-                    factscore = eval_res.fact_check.factscore
-                    row[16] = _fmt_score(factscore, pct=True)
-                if eval_res.safe_check:
-                    safe_score = eval_res.safe_check.safe_score
-                    row[17] = _fmt_score(safe_score, pct=True)
-                if "relevance" in eval_res.scores:
-                    relevance = eval_res.scores["relevance"].score
-                    row[20] = f"{relevance:.1f}"
-                if "literary" in eval_res.scores:
-                    literary = eval_res.scores["literary"].score
-                    row[22] = f"{literary:.1f}"
-                if "compliance" in eval_res.scores:
-                    compliance = eval_res.scores["compliance"].score
-                    row[29] = f"{compliance:.1f}"
-                overall_score = eval_res.overall_score
-                row[30] = _fmt_score(overall_score)
-            except Exception as e:
-                error_msg = (error_msg + " | " if error_msg else "") + f"评估: {e}"
-
-        row[33] = "✅ 完成" if not error_msg else f"⚠️ {_truncate(error_msg, 80)}"
-    except Exception as e:
-        error_msg = (error_msg + " | " if error_msg else "") + str(e)
-        row[33] = f"❌ {_truncate(str(e), 80)}"
-
-    seg_elapsed = time.monotonic() - seg_start
-    row[32] = f"{seg_elapsed:.1f}"
-
-    return {
-        "source_file": source_file,
-        "id": seg_id,
-        "chapter": chapter,
-        "historical_tag": tags,
-        "retrieval_mode": run_mode,
-        "retrieval_label": run_label,
-        "original_text": original_text,
-        "generated_text": generated_text,
-        "scores": {
-            "ndcg_at_5": ndcg5,
-            "mrr": mrr,
-            "precision": precision,
-            "recall": recall,
-            "f1": f1,
-            "hit_at_3": hit_at_3,
-            "hit_at_5": hit_at_5,
-            "hit_at_10": hit_at_10,
-            "retrieval_latency_ms": retrieval_latency_ms,
-            "factscore": factscore,
-            "safe_score": safe_score,
-            "temporal_coherence": temporal_coherence,
-            "hallucination": hallucination,
-            "relevance": relevance,
-            "topic_coherence": topic_coherence,
-            "literary": literary,
-            "length_score": length_score,
-            "transition_usage": transition_usage,
-            "descriptive_richness": descriptive_richness,
-            "rag_utilization": rag_utilization,
-            "information_gain": information_gain,
-            "expansion_grounding": expansion_grounding,
-            "compliance": compliance,
-            "overall_score": overall_score,
-            "aggregated_score": aggregated_score,
-        },
-        "elapsed_seconds": round(seg_elapsed, 2),
-        "error": error_msg or None,
-    }
-
-
 def _benchmark_rows_snapshot(rows: List[List[str]]) -> List[List[str]]:
     """Return a detached snapshot for Gradio streaming updates."""
     return [list(row) for row in rows]
@@ -2386,7 +2133,6 @@ def batch_benchmark_stream(
     enable_retrieval_quality: bool,
     enable_llm_judge: bool,
     batch_size: int,
-    benchmark_concurrency: int,
     compare_plain_vector_rag: bool = True,
 ):
     yield from _with_benchmark_control_button(
@@ -2405,7 +2151,6 @@ def batch_benchmark_stream(
             enable_retrieval_quality=enable_retrieval_quality,
             enable_llm_judge=enable_llm_judge,
             batch_size=batch_size,
-            benchmark_concurrency=benchmark_concurrency,
             compare_plain_vector_rag=compare_plain_vector_rag,
             resume=False,
         )
@@ -2435,7 +2180,7 @@ def benchmark_stop_or_resume_stream():
     if _benchmark_running_event.is_set():
         _benchmark_stop_event.set()
         yield (
-            "🛑 已请求停止：将在当前并发窗口处理完成后中止，并导出已完成部分的结果。",
+            "🛑 已请求停止：将在当前段落处理完成后中止，并导出已完成部分的结果。",
             gr.update(),
             gr.update(),
             gr.update(),
@@ -2475,7 +2220,6 @@ def _batch_benchmark_stream(
     enable_retrieval_quality: bool,
     enable_llm_judge: bool,
     batch_size: int,
-    benchmark_concurrency: int,
     compare_plain_vector_rag: bool = True,
     resume: bool = False,
 ):
@@ -2510,7 +2254,6 @@ def _batch_benchmark_stream(
         enable_retrieval_quality=enable_retrieval_quality,
         enable_llm_judge=enable_llm_judge,
         batch_size=batch_size,
-        benchmark_concurrency=benchmark_concurrency,
         compare_plain_vector_rag=compare_plain_vector_rag,
     )
 
@@ -2615,8 +2358,7 @@ def _batch_benchmark_stream(
         f"已完成 {len(detail_records)} 个，将从第 {start_index + 1} 个任务继续。{files_note}\n\n"
         f"当前配置：{provider}{f'/{model}' if model else ''} · "
         f"风格 `{style}` · 整篇目标生成 `{bg_lo}`–`{bg_hi}` 字 · "
-        f"温度 `{temperature}` · 检索 `{', '.join(label for _, label in retrieval_specs)}` · "
-        f"并发 `{max(1, min(6, int(benchmark_concurrency or 1)))}`",
+        f"温度 `{temperature}` · 检索 `{', '.join(label for _, label in retrieval_specs)}`",
         _benchmark_rows_snapshot(rows),
         current_averages_md(),
         None,
@@ -2627,42 +2369,46 @@ def _batch_benchmark_stream(
     loop = asyncio.new_event_loop()
     stopped_early = False
     try:
-        concurrency = max(1, min(6, int(benchmark_concurrency or 1)))
-        next_start = start_index
-        while next_start < total:
+        for idx, item in enumerate(dataset[start_index:], start=start_index + 1):
+            # 段落级停止检查：只在新段落开始前响应停止请求
             if _benchmark_stop_event.is_set():
                 stopped_early = True
                 yield (
-                    f"🛑 已停止：在第 {next_start + 1} / {total} 个任务开始前中止。"
-                    f"已完成 {len(detail_records)} 个，正在导出…",
+                    f"🛑 已停止：在第 {idx} / {total} 条段落开始前中止。已完成 {len(rows)} 条，正在导出…",
                     _benchmark_rows_snapshot(rows), current_averages_md(), None, None, None,
                 )
                 break
 
-            batch_items = []
-            batch_end = min(total, next_start + concurrency)
-            for zero_idx in range(next_start, batch_end):
-                item = dataset[zero_idx]
-                idx = zero_idx + 1
-                source_file = item.get("source_file", "")
-                seg_id = item.get("id", f"#{idx}")
-                chapter = item.get("chapter", "")
-                tags = item.get("historical_tag", []) or []
-                tags_str = "、".join(tags)
-                original_text = item.get("original_text", "")
-                run_label = item.get("_benchmark_retrieval_label", item.get("_benchmark_retrieval_mode", retrieval_mode))
-                row = _new_benchmark_row(
-                    source_file, seg_id, chapter, tags_str, run_label, original_text
-                )
-                rows.append(row)
-                batch_items.append((idx, item, row))
+            source_file = item.get("source_file", "")
+            seg_id = item.get("id", f"#{idx}")
+            chapter = item.get("chapter", "")
+            tags = item.get("historical_tag", []) or []
+            tags_str = "、".join(tags)
+            original_text = item.get("original_text", "")
+            run_mode = item.get("_benchmark_retrieval_mode", retrieval_mode)
+            run_label = item.get("_benchmark_retrieval_label", run_mode)
+            active_retriever = _get_retriever_for_mode(run_mode)
 
+            seg_start = time.monotonic()
+            base_status = (
+                f"### 进度: {idx} / {total}\n\n"
+                f"- 来源: `{source_file}`\n"
+                f"- 当前: **{seg_id}** — {chapter}\n"
+                f"- 检索模式: `{run_label}`\n"
+                f"- 历史标签: {tags_str}\n"
+                f"- 已耗时: {time.monotonic() - bench_start:.1f}s\n"
+            )
+            row = [
+                source_file, seg_id, chapter, tags_str, run_label,
+                _truncate(original_text, 120), "",
+                "—", "—", "—", "—", "—", "—", "—", "—", "—",
+                "—", "—", "—", "—", "—", "—", "—", "—", "—",
+                "—", "—", "—", "—", "—", "—", "—", "—",
+                "进行中",
+            ]
+            rows.append(row)
             yield (
-                f"### 并发窗口: {next_start + 1}–{batch_end} / {total}\n\n"
-                f"- 并发数: `{concurrency}`\n"
-                f"- 已完成: `{len(detail_records)}`\n"
-                f"- 已耗时: `{time.monotonic() - bench_start:.1f}s`\n\n"
-                "_当前窗口任务正在并发执行；停止请求会在本窗口结束后生效。_",
+                base_status + "\n_正在检索…_",
                 _benchmark_rows_snapshot(rows),
                 current_averages_md(),
                 None,
@@ -2670,36 +2416,238 @@ def _batch_benchmark_stream(
                 None,
             )
 
-            tasks = [
-                _process_benchmark_job(
-                    item=item,
-                    row=row,
-                    provider=provider,
-                    model=model,
-                    style=style,
-                    temperature=temperature,
-                    enable_fact_check=enable_fact_check,
-                    enable_safe_check=enable_safe_check,
-                    enable_retrieval_quality=enable_retrieval_quality,
-                    enable_llm_judge=enable_llm_judge,
-                    batch_size=int(batch_size),
-                    bg_lo=bg_lo,
-                    bg_hi=bg_hi,
-                    single_cfg=single_cfg,
-                    retrieval_mode=retrieval_mode,
+            generated_text = ""
+            ndcg5 = mrr = precision = recall = f1 = hit_at_3 = hit_at_5 = hit_at_10 = None
+            retrieval_latency_ms = None
+            factscore = safe_score = temporal_coherence = hallucination = None
+            relevance = topic_coherence = literary = length_score = None
+            transition_usage = descriptive_richness = None
+            rag_utilization = information_gain = expansion_grounding = None
+            compliance = overall_score = aggregated_score = None
+            error_msg = ""
+            retrieval_result = None
+
+            try:
+                # ── 1. 检索 ──
+                retrieval_start = time.monotonic()
+                retrieval_result = loop.run_until_complete(asyncio.wait_for(
+                    active_retriever.retrieve(
+                        original_text, top_k=10, use_llm_parsing=False, mode=run_mode,
+                    ),
+                    timeout=60.0,
+                ))
+                retrieval_latency_ms = (time.monotonic() - retrieval_start) * 1000
+                row[15] = f"{retrieval_latency_ms:.1f}"
+
+                # ── 2. 检索质量（按需，先于生成，避免生成失败吞掉检索指标） ──
+                if enable_retrieval_quality:
+                    yield (
+                        base_status + "\n_正在评估检索质量…_",
+                        _benchmark_rows_snapshot(rows),
+                        current_averages_md(),
+                        None,
+                        None,
+                        None,
+                    )
+                    try:
+                        eval_result = loop.run_until_complete(asyncio.wait_for(
+                            evaluate_retrieval_quality(
+                                query_text=original_text,
+                                text_units=retrieval_result.text_units,
+                                llm_adapter=_make_llm(provider, model),
+                            ),
+                            timeout=60.0,
+                        ))
+                        if eval_result.get("judge_error"):
+                            row[7] = "失败"
+                            row[8] = "失败"
+                            error_msg = (
+                                (error_msg + " | " if error_msg else "")
+                                + f"检索评估: {eval_result['judge_error']}"
+                            )
+                        else:
+                            ndcg5 = eval_result.get("ndcg_at_5")
+                            mrr = eval_result.get("mrr")
+                            rbm = _retrieval_binary_metrics(eval_result)
+                            precision = rbm.get("precision")
+                            recall = rbm.get("recall")
+                            f1 = rbm.get("f1")
+                            hit_at_3 = rbm.get("hit_at_3")
+                            hit_at_5 = rbm.get("hit_at_5")
+                            hit_at_10 = rbm.get("hit_at_10")
+                            row[7] = _fmt_score(ndcg5)
+                            row[8] = _fmt_score(mrr)
+                            row[9] = _fmt_score(precision)
+                            row[10] = _fmt_score(recall)
+                            row[11] = _fmt_score(f1)
+                            row[12] = _fmt_score(hit_at_3)
+                            row[13] = _fmt_score(hit_at_5)
+                            row[14] = _fmt_score(hit_at_10)
+                    except Exception as e:
+                        row[7] = "失败"
+                        row[8] = "失败"
+                        error_msg = (error_msg + " | " if error_msg else "") + f"检索评估: {e}"
+
+                # ── 3. 扩写（必跑） ──
+                yield (
+                    base_status + "\n_正在生成扩写…_",
+                    _benchmark_rows_snapshot(rows),
+                    current_averages_md(),
+                    None,
+                    None,
+                    None,
                 )
-                for _, item, row in batch_items
-            ]
-            async def _run_batch():
-                return await asyncio.gather(*tasks)
+                gen_result = loop.run_until_complete(asyncio.wait_for(
+                    generator.generate(
+                        memoir_text=original_text,
+                        retrieval_result=retrieval_result,
+                        temperature=temperature,
+                        max_tokens=single_cfg["max_tokens"],
+                        style=style,
+                        length_hint=single_cfg["length_hint"],
+                    ),
+                    timeout=120.0,
+                ))
+                generated_text = gen_result.content or ""
+                row[6] = _truncate(generated_text, 120)
+                yield (
+                    base_status + "\n_扩写完成，进入评估…_",
+                    _benchmark_rows_snapshot(rows),
+                    current_averages_md(),
+                    None,
+                    None,
+                    None,
+                )
 
-            batch_records = loop.run_until_complete(_run_batch())
-            detail_records.extend(batch_records)
-            next_start = batch_end
+                # ── 4. 长文同款规则指标 + 新内容指标 ──
+                try:
+                    rule_metric_scores = loop.run_until_complete(asyncio.wait_for(
+                        _calculate_benchmark_rule_metrics(
+                            original_text=original_text,
+                            generated_text=generated_text,
+                            retrieval_result=retrieval_result,
+                            min_chars=bg_lo,
+                            max_chars=bg_hi,
+                        ),
+                        timeout=180.0,
+                    ))
+                    temporal_coherence = rule_metric_scores.get("temporal_coherence")
+                    hallucination = rule_metric_scores.get("hallucination")
+                    topic_coherence = rule_metric_scores.get("topic_coherence")
+                    length_score = rule_metric_scores.get("length_score")
+                    transition_usage = rule_metric_scores.get("transition_usage")
+                    descriptive_richness = rule_metric_scores.get("descriptive_richness")
+                    rag_utilization = rule_metric_scores.get("rag_utilization")
+                    information_gain = rule_metric_scores.get("information_gain")
+                    expansion_grounding = rule_metric_scores.get("expansion_grounding")
+                    aggregated_score = rule_metric_scores.get("aggregated_score")
+                    row[18] = _fmt_score(temporal_coherence)
+                    row[19] = _fmt_score(hallucination)
+                    row[21] = _fmt_score(topic_coherence)
+                    row[23] = _fmt_score(length_score)
+                    row[24] = _fmt_score(transition_usage)
+                    row[25] = _fmt_score(descriptive_richness)
+                    row[26] = _fmt_score(rag_utilization)
+                    row[27] = _fmt_score(information_gain)
+                    row[28] = _fmt_score(expansion_grounding)
+                    row[31] = _fmt_score(aggregated_score)
+                except Exception as e:
+                    error_msg = (error_msg + " | " if error_msg else "") + f"规则指标: {e}"
 
+                # ── 5. 准确性 + LLM-as-Judge（按需） ──
+                if enable_fact_check or enable_safe_check or enable_llm_judge:
+                    try:
+                        async def _eval():
+                            llm = _make_llm(provider, model)
+                            evaluator = Evaluator(
+                                llm_adapter=llm,
+                                google_api_key=settings.google_api_key,
+                                google_cse_id=getattr(settings, "google_cse_id", None),
+                            )
+                            return await evaluator.evaluate(
+                                memoir_text=original_text,
+                                generated_text=generated_text,
+                                retrieval_result=retrieval_result,
+                                use_llm=True,
+                                enable_fact_check=enable_fact_check,
+                                enable_safe_check=enable_safe_check,
+                                enable_llm_judge=enable_llm_judge,
+                                batch_size=int(batch_size),
+                            )
+
+                        eval_res = loop.run_until_complete(asyncio.wait_for(_eval(), timeout=240.0))
+
+                        if eval_res.fact_check:
+                            factscore = eval_res.fact_check.factscore
+                            row[16] = _fmt_score(factscore, pct=True)
+                        if eval_res.safe_check:
+                            safe_score = eval_res.safe_check.safe_score
+                            row[17] = _fmt_score(safe_score, pct=True)
+                        if "relevance" in eval_res.scores:
+                            relevance = eval_res.scores["relevance"].score
+                            row[20] = f"{relevance:.1f}"
+                        if "literary" in eval_res.scores:
+                            literary = eval_res.scores["literary"].score
+                            row[22] = f"{literary:.1f}"
+                        if "compliance" in eval_res.scores:
+                            compliance = eval_res.scores["compliance"].score
+                            row[29] = f"{compliance:.1f}"
+                        overall_score = eval_res.overall_score
+                        row[30] = _fmt_score(overall_score)
+                    except Exception as e:
+                        error_msg = (error_msg + " | " if error_msg else "") + f"评估: {e}"
+
+                seg_elapsed = time.monotonic() - seg_start
+                row[32] = f"{seg_elapsed:.1f}"
+                row[33] = "✅ 完成" if not error_msg else f"⚠️ {_truncate(error_msg, 80)}"
+
+            except Exception as e:
+                seg_elapsed = time.monotonic() - seg_start
+                row[32] = f"{seg_elapsed:.1f}"
+                row[33] = f"❌ {_truncate(str(e), 80)}"
+                error_msg = (error_msg + " | " if error_msg else "") + str(e)
+
+            detail_records.append({
+                "source_file": source_file,
+                "id": seg_id,
+                "chapter": chapter,
+                "historical_tag": tags,
+                "retrieval_mode": run_mode,
+                "retrieval_label": run_label,
+                "original_text": original_text,
+                "generated_text": generated_text,
+                "scores": {
+                    "ndcg_at_5": ndcg5,
+                    "mrr": mrr,
+                    "precision": precision,
+                    "recall": recall,
+                    "f1": f1,
+                    "hit_at_3": hit_at_3,
+                    "hit_at_5": hit_at_5,
+                    "hit_at_10": hit_at_10,
+                    "retrieval_latency_ms": retrieval_latency_ms,
+                    "factscore": factscore,
+                    "safe_score": safe_score,
+                    "temporal_coherence": temporal_coherence,
+                    "hallucination": hallucination,
+                    "relevance": relevance,
+                    "topic_coherence": topic_coherence,
+                    "literary": literary,
+                    "length_score": length_score,
+                    "transition_usage": transition_usage,
+                    "descriptive_richness": descriptive_richness,
+                    "rag_utilization": rag_utilization,
+                    "information_gain": information_gain,
+                    "expansion_grounding": expansion_grounding,
+                    "compliance": compliance,
+                    "overall_score": overall_score,
+                    "aggregated_score": aggregated_score,
+                },
+                "elapsed_seconds": round(seg_elapsed, 2),
+                "error": error_msg or None,
+            })
             yield (
-                f"### 进度: {len(detail_records)} / {total}\n\n"
-                f"_并发窗口已完成，实时平均值已更新。_",
+                base_status + f"\n_实时平均值已更新：{len(detail_records)} / {total} 个任务已纳入统计。_",
                 _benchmark_rows_snapshot(rows),
                 current_averages_md(),
                 None,
@@ -2750,7 +2698,6 @@ def _batch_benchmark_stream(
                 "llm_judge": enable_llm_judge,
             },
             "batch_size": int(batch_size),
-            "benchmark_concurrency": max(1, min(6, int(benchmark_concurrency or 1))),
             "use_rule_decompose": use_rule_decompose,
             "dataset_dir": dataset_dir,
             "loaded_files": loaded_files,
@@ -3396,7 +3343,7 @@ def create_ui():
                       全部沿用「\U0001f4dd 生成历史背景」标签页当前的设置。
                     - **扩写文本**：每次都会生成（与评估开关无关）。
                     - **评估模块**：按主标签页当前勾选状态执行；未勾选的不跑。
-                    - **进度**：按并发窗口流式更新；跑完后**对所有数值指标求平均**并展示在 UI，同时导出
+                    - **进度**：逐条流式更新；跑完后**对所有数值指标求平均**并展示在 UI，同时导出
                       JSON / Markdown / CSV 三种格式供下载（导出文件均含平均值汇总）。
                     """
                 )
@@ -3412,15 +3359,6 @@ def create_ui():
                     value=True,
                     label="对比普通 RAG（向量 baseline）",
                     info="开启后，每条样本会同时跑当前 GraphRAG 检索模式和普通向量 RAG，各生成一行结果。",
-                )
-
-                bench_concurrency_slider = gr.Slider(
-                    minimum=1,
-                    maximum=6,
-                    value=2,
-                    step=1,
-                    label="批量并发数",
-                    info="同时处理的批量任务数；并发过高可能触发模型 API 限流或超时。",
                 )
 
                 with gr.Row():
@@ -3466,7 +3404,6 @@ def create_ui():
                         retrieval_quality_checkbox,
                         llm_judge_checkbox,
                         batch_size_slider,
-                        bench_concurrency_slider,
                         bench_compare_plain_rag_checkbox,
                     ],
                     outputs=[
