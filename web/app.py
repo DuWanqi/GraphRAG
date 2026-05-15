@@ -1943,12 +1943,28 @@ def _format_averages_md(averages: Dict[str, Optional[float]], n: int) -> str:
     return "\n".join(lines)
 
 
+def _format_average_value(
+    averages: Dict[str, Optional[float]],
+    key: str,
+    pct: bool,
+) -> str:
+    v = averages.get(key)
+    if v is None:
+        return "—"
+    if pct:
+        return f"{v:.1%}"
+    if key == "elapsed_seconds":
+        return f"{v:.2f}s"
+    if key == "retrieval_latency_ms":
+        return f"{v:.1f}"
+    return f"{v:.3f}"
+
+
 def _format_grouped_averages_md(detail_records: List[dict]) -> str:
-    """Render overall and per-retrieval-mode benchmark averages."""
+    """Render per-retrieval-mode benchmark averages as one side-by-side table."""
     if not detail_records:
         return "_暂无数据_"
 
-    sections = ["### Overall\n", _format_averages_md(_compute_averages(detail_records), len(detail_records))]
     modes = []
     seen = set()
     for record in detail_records:
@@ -1957,15 +1973,27 @@ def _format_grouped_averages_md(detail_records: List[dict]) -> str:
             seen.add(mode_label)
             modes.append(mode_label)
 
+    grouped = []
     for mode_label in modes:
-        group = [
+        records = [
             r for r in detail_records
             if (r.get("retrieval_label") or r.get("retrieval_mode") or "unknown") == mode_label
         ]
-        sections.append(f"\n### {mode_label}\n")
-        sections.append(_format_averages_md(_compute_averages(group), len(group)))
+        grouped.append((mode_label, _compute_averages(records), len(records)))
 
-    return "\n\n".join(sections)
+    header = ["指标"]
+    for mode_label, _, n in grouped:
+        header.append(f"{mode_label} (n={n})")
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(["---"] * len(header)) + " |",
+    ]
+    for key, label, pct in BENCHMARK_METRIC_KEYS:
+        row = [label]
+        for _, averages, _ in grouped:
+            row.append(_format_average_value(averages, key, pct))
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines)
 
 
 def _truncate(text: Optional[str], n: int = 100) -> str:
