@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import copy
 import csv
 import json
 import logging
@@ -1726,12 +1727,121 @@ BENCHMARK_METRIC_KEYS = [
 
 
 _benchmark_stop_event = threading.Event()
+_benchmark_running_event = threading.Event()
+_benchmark_resume_lock = threading.Lock()
+_benchmark_resume_state: Optional[Dict[str, Any]] = None
+
+
+def _clear_benchmark_resume_state() -> None:
+    global _benchmark_resume_state
+    with _benchmark_resume_lock:
+        _benchmark_resume_state = None
+
+
+def _get_benchmark_resume_state() -> Optional[Dict[str, Any]]:
+    with _benchmark_resume_lock:
+        return copy.deepcopy(_benchmark_resume_state)
+
+
+def _save_benchmark_resume_state(state: Dict[str, Any]) -> None:
+    global _benchmark_resume_state
+    with _benchmark_resume_lock:
+        _benchmark_resume_state = copy.deepcopy(state)
+
+
+def _benchmark_params_snapshot(
+    dataset_dir: str,
+    provider: str,
+    model: Optional[str],
+    style: str,
+    total_gen_min_chars: int,
+    total_gen_max_chars: int,
+    temperature: float,
+    enable_fact_check: bool,
+    retrieval_mode: str,
+    use_rule_decompose: bool,
+    enable_safe_check: bool,
+    enable_retrieval_quality: bool,
+    enable_llm_judge: bool,
+    batch_size: int,
+    compare_plain_vector_rag: bool,
+) -> Dict[str, Any]:
+    return {
+        "dataset_dir": dataset_dir,
+        "provider": provider,
+        "model": model,
+        "style": style,
+        "total_gen_min_chars": int(total_gen_min_chars),
+        "total_gen_max_chars": int(total_gen_max_chars),
+        "temperature": float(temperature),
+        "enable_fact_check": bool(enable_fact_check),
+        "retrieval_mode": retrieval_mode,
+        "use_rule_decompose": bool(use_rule_decompose),
+        "enable_safe_check": bool(enable_safe_check),
+        "enable_retrieval_quality": bool(enable_retrieval_quality),
+        "enable_llm_judge": bool(enable_llm_judge),
+        "batch_size": int(batch_size),
+        "compare_plain_vector_rag": bool(compare_plain_vector_rag),
+    }
+
+
+def _restore_benchmark_params(params: Dict[str, Any]) -> Tuple[
+    str,
+    str,
+    Optional[str],
+    str,
+    int,
+    int,
+    float,
+    bool,
+    str,
+    bool,
+    bool,
+    bool,
+    bool,
+    int,
+    bool,
+]:
+    return (
+        params["dataset_dir"],
+        params["provider"],
+        params.get("model"),
+        params["style"],
+        int(params["total_gen_min_chars"]),
+        int(params["total_gen_max_chars"]),
+        float(params["temperature"]),
+        bool(params["enable_fact_check"]),
+        params["retrieval_mode"],
+        bool(params["use_rule_decompose"]),
+        bool(params["enable_safe_check"]),
+        bool(params["enable_retrieval_quality"]),
+        bool(params["enable_llm_judge"]),
+        int(params["batch_size"]),
+        bool(params["compare_plain_vector_rag"]),
+    )
 
 
 def request_benchmark_stop() -> str:
     """由「停止」按钮调用：设置标志位，请求批量任务在当前段落结束后中止。"""
     _benchmark_stop_event.set()
     return "🛑 已请求停止：将在当前段落处理完成后中止，并导出已完成部分的结果。"
+
+
+def _benchmark_control_button_update():
+    """Return the UI state for the combined stop/resume benchmark button."""
+    if _benchmark_running_event.is_set():
+        if _benchmark_stop_event.is_set():
+            return gr.update(value="⏳ 停止中…", variant="secondary", interactive=False)
+        return gr.update(value="⏹️ 停止", variant="stop", interactive=True)
+    if _get_benchmark_resume_state():
+        return gr.update(value="▶️ 继续批量测试", variant="secondary", interactive=True)
+    return gr.update(value="⏹️ 停止 / ▶️ 继续", variant="secondary", interactive=True)
+
+
+def _with_benchmark_control_button(stream):
+    """Append the combined stop/resume button update to benchmark UI stream outputs."""
+    for output in stream:
+        yield (*output, _benchmark_control_button_update())
 
 
 def _load_benchmark_dataset(dataset_dir: str) -> Tuple[List[dict], List[str], List[str]]:
@@ -1858,6 +1968,94 @@ def batch_benchmark_stream(
     batch_size: int,
     compare_plain_vector_rag: bool = False,
 ):
+    yield from _with_benchmark_control_button(
+        _batch_benchmark_stream(
+            dataset_dir=dataset_dir,
+            provider=provider,
+            model=model,
+            style=style,
+            total_gen_min_chars=total_gen_min_chars,
+            total_gen_max_chars=total_gen_max_chars,
+            temperature=temperature,
+            enable_fact_check=enable_fact_check,
+            retrieval_mode=retrieval_mode,
+            use_rule_decompose=use_rule_decompose,
+            enable_safe_check=enable_safe_check,
+            enable_retrieval_quality=enable_retrieval_quality,
+            enable_llm_judge=enable_llm_judge,
+            batch_size=batch_size,
+            compare_plain_vector_rag=compare_plain_vector_rag,
+            resume=False,
+        )
+    )
+
+
+def resume_benchmark_stream():
+    state = _get_benchmark_resume_state()
+    if not state:
+        yield (
+            "⚠️ 当前没有可继续的批量测试。请先运行批量测试并在中途停止。",
+            [],
+            "_暂无可继续的平均值_",
+            None,
+            None,
+            None,
+        )
+        return
+
+    yield from _batch_benchmark_stream(
+        *_restore_benchmark_params(state["params"]),
+        resume=True,
+    )
+
+
+def benchmark_stop_or_resume_stream():
+    if _benchmark_running_event.is_set():
+        _benchmark_stop_event.set()
+        yield (
+            "🛑 已请求停止：将在当前段落处理完成后中止，并导出已完成部分的结果。",
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            _benchmark_control_button_update(),
+        )
+        return
+
+    if not _get_benchmark_resume_state():
+        yield (
+            "⚠️ 当前没有可继续的批量测试。请先运行批量测试并在中途停止。",
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            _benchmark_control_button_update(),
+        )
+        return
+
+    yield from _with_benchmark_control_button(resume_benchmark_stream())
+
+
+def _batch_benchmark_stream(
+    dataset_dir: str,
+    provider: str,
+    model: Optional[str],
+    style: str,
+    total_gen_min_chars: int,
+    total_gen_max_chars: int,
+    temperature: float,
+    enable_fact_check: bool,
+    retrieval_mode: str,
+    use_rule_decompose: bool,
+    enable_safe_check: bool,
+    enable_retrieval_quality: bool,
+    enable_llm_judge: bool,
+    batch_size: int,
+    compare_plain_vector_rag: bool = False,
+    resume: bool = False,
+):
     """
     在指定文件夹下的所有 *.json 测试集上系统性地跑扩写 + 评估。
 
@@ -1872,11 +2070,45 @@ def batch_benchmark_stream(
 
     # 重置停止标志，避免上次残留
     _benchmark_stop_event.clear()
+    _benchmark_running_event.set()
     empty_avg = "_尚未开始_"
+    params = _benchmark_params_snapshot(
+        dataset_dir=dataset_dir,
+        provider=provider,
+        model=model,
+        style=style,
+        total_gen_min_chars=total_gen_min_chars,
+        total_gen_max_chars=total_gen_max_chars,
+        temperature=temperature,
+        enable_fact_check=enable_fact_check,
+        retrieval_mode=retrieval_mode,
+        use_rule_decompose=use_rule_decompose,
+        enable_safe_check=enable_safe_check,
+        enable_retrieval_quality=enable_retrieval_quality,
+        enable_llm_judge=enable_llm_judge,
+        batch_size=batch_size,
+        compare_plain_vector_rag=compare_plain_vector_rag,
+    )
 
     if not provider:
         yield ("⚠️ 请先在「生成历史背景」标签页选择 LLM 模型（供应商）。", [], empty_avg, None, None, None)
+        _benchmark_running_event.clear()
         return
+
+    resume_state = _get_benchmark_resume_state() if resume else None
+    if resume and not resume_state:
+        yield (
+            "⚠️ 当前没有可继续的批量测试。请先运行批量测试并在中途停止。",
+            [],
+            "_暂无可继续的平均值_",
+            None,
+            None,
+            None,
+        )
+        _benchmark_running_event.clear()
+        return
+    if not resume:
+        _clear_benchmark_resume_state()
 
     # 复用 / 必要时初始化检索器与生成器
     if (
@@ -1888,53 +2120,80 @@ def batch_benchmark_stream(
         init_msg = init_components(provider, model=model)
         if "失败" in init_msg:
             yield (init_msg, [], empty_avg, None, None, None)
+            _benchmark_running_event.clear()
             return
-    try:
-        dataset, loaded_files, skipped_files = _load_benchmark_dataset(
-            dataset_dir or str(BENCHMARK_DEFAULT_DIR)
+
+    if resume_state:
+        dataset = resume_state["dataset"]
+        loaded_files = resume_state["loaded_files"]
+        skipped_files = resume_state["skipped_files"]
+        retrieval_specs = resume_state["retrieval_specs"]
+        segment_total = int(resume_state["segment_total"])
+        total_jobs = int(resume_state["total_jobs"])
+        total = total_jobs
+        bg_lo = int(resume_state["bg_lo"])
+        bg_hi = int(resume_state["bg_hi"])
+        single_cfg = resume_state["single_cfg"]
+        rows = resume_state["rows"]
+        detail_records = resume_state["detail_records"]
+        start_index = int(resume_state.get("next_index", len(detail_records)))
+        elapsed_before = float(resume_state.get("elapsed_seconds", 0.0))
+    else:
+        try:
+            dataset, loaded_files, skipped_files = _load_benchmark_dataset(
+                dataset_dir or str(BENCHMARK_DEFAULT_DIR)
+            )
+        except Exception as e:
+            yield (f"❌ 读取测试集目录失败: {e}", [], empty_avg, None, None, None)
+            _benchmark_running_event.clear()
+            return
+
+        total = len(dataset)
+        if total == 0:
+            skip_note = f"\n跳过的文件: {', '.join(skipped_files)}" if skipped_files else ""
+            yield (f"⚠️ 目录下未找到有效测试集 *.json。{skip_note}", [], empty_avg, None, None, None)
+            _benchmark_running_event.clear()
+            return
+
+        bg_lo, bg_hi = _clamp_generation_char_bounds(total_gen_min_chars, total_gen_max_chars)
+        single_cfg = single_segment_generation_config_from_range(bg_lo, bg_hi)
+        retrieval_specs = _benchmark_retrieval_specs(
+            retrieval_mode,
+            bool(compare_plain_vector_rag),
         )
-    except Exception as e:
-        yield (f"❌ 读取测试集目录失败: {e}", [], empty_avg, None, None, None)
-        return
+        segment_total = total
+        benchmark_jobs: List[dict] = []
+        for item in dataset:
+            for run_mode, run_label in retrieval_specs:
+                job = dict(item)
+                job["_benchmark_retrieval_mode"] = run_mode
+                job["_benchmark_retrieval_label"] = run_label
+                benchmark_jobs.append(job)
+        dataset = benchmark_jobs
+        total_jobs = len(dataset)
+        total = total_jobs
+        rows = []
+        detail_records = []
+        start_index = 0
+        elapsed_before = 0.0
 
-    total = len(dataset)
-    if total == 0:
-        skip_note = f"\n跳过的文件: {', '.join(skipped_files)}" if skipped_files else ""
-        yield (f"⚠️ 目录下未找到有效测试集 *.json。{skip_note}", [], empty_avg, None, None, None)
-        return
+    def current_averages_md() -> str:
+        return _format_grouped_averages_md(detail_records) if detail_records else empty_avg
 
-    bg_lo, bg_hi = _clamp_generation_char_bounds(total_gen_min_chars, total_gen_max_chars)
-    single_cfg = single_segment_generation_config_from_range(bg_lo, bg_hi)
-    retrieval_specs = _benchmark_retrieval_specs(
-        retrieval_mode,
-        bool(compare_plain_vector_rag),
-    )
-    segment_total = total
-    benchmark_jobs: List[dict] = []
-    for item in dataset:
-        for run_mode, run_label in retrieval_specs:
-            job = dict(item)
-            job["_benchmark_retrieval_mode"] = run_mode
-            job["_benchmark_retrieval_label"] = run_label
-            benchmark_jobs.append(job)
-    dataset = benchmark_jobs
-    total_jobs = len(dataset)
-    total = total_jobs
-
-    rows: List[List[str]] = []
-    detail_records: List[dict] = []
-    bench_start = time.monotonic()
+    bench_start = time.monotonic() - elapsed_before
 
     files_note = f" 来源: {len(loaded_files)} 个文件 ({', '.join(loaded_files)})"
     if skipped_files:
         files_note += f" · 跳过: {', '.join(skipped_files)}"
+    start_label = "继续" if resume_state else "开始"
     yield (
-        f"⏳ 共 {segment_total} 条段落、{len(retrieval_specs)} 个检索模式，合计 {total_jobs} 个任务。{files_note}\n\n"
+        f"⏳ {start_label}批量测试：共 {segment_total} 条段落、{len(retrieval_specs)} 个检索模式，合计 {total_jobs} 个任务。"
+        f"已完成 {len(detail_records)} 个，将从第 {start_index + 1} 个任务继续。{files_note}\n\n"
         f"当前配置：{provider}{f'/{model}' if model else ''} · "
         f"风格 `{style}` · 整篇目标生成 `{bg_lo}`–`{bg_hi}` 字 · "
         f"温度 `{temperature}` · 检索 `{', '.join(label for _, label in retrieval_specs)}`",
         _benchmark_rows_snapshot(rows),
-        empty_avg,
+        current_averages_md(),
         None,
         None,
         None,
@@ -1943,13 +2202,13 @@ def batch_benchmark_stream(
     loop = asyncio.new_event_loop()
     stopped_early = False
     try:
-        for idx, item in enumerate(dataset, start=1):
+        for idx, item in enumerate(dataset[start_index:], start=start_index + 1):
             # 段落级停止检查：只在新段落开始前响应停止请求
             if _benchmark_stop_event.is_set():
                 stopped_early = True
                 yield (
                     f"🛑 已停止：在第 {idx} / {total} 条段落开始前中止。已完成 {len(rows)} 条，正在导出…",
-                    _benchmark_rows_snapshot(rows), empty_avg, None, None, None,
+                    _benchmark_rows_snapshot(rows), current_averages_md(), None, None, None,
                 )
                 break
 
@@ -1982,7 +2241,7 @@ def batch_benchmark_stream(
             yield (
                 base_status + "\n_正在检索…_",
                 _benchmark_rows_snapshot(rows),
-                empty_avg,
+                current_averages_md(),
                 None,
                 None,
                 None,
@@ -2007,7 +2266,7 @@ def batch_benchmark_stream(
                     yield (
                         base_status + "\n_正在评估检索质量…_",
                         _benchmark_rows_snapshot(rows),
-                        empty_avg,
+                        current_averages_md(),
                         None,
                         None,
                         None,
@@ -2042,7 +2301,7 @@ def batch_benchmark_stream(
                 yield (
                     base_status + "\n_正在生成扩写…_",
                     _benchmark_rows_snapshot(rows),
-                    empty_avg,
+                    current_averages_md(),
                     None,
                     None,
                     None,
@@ -2063,7 +2322,7 @@ def batch_benchmark_stream(
                 yield (
                     base_status + "\n_扩写完成，进入评估…_",
                     _benchmark_rows_snapshot(rows),
-                    empty_avg,
+                    current_averages_md(),
                     None,
                     None,
                     None,
@@ -2141,7 +2400,14 @@ def batch_benchmark_stream(
                 "elapsed_seconds": round(seg_elapsed, 2),
                 "error": error_msg or None,
             })
-            yield (base_status, _benchmark_rows_snapshot(rows), empty_avg, None, None, None)
+            yield (
+                base_status + f"\n_实时平均值已更新：{len(detail_records)} / {total} 个任务已纳入统计。_",
+                _benchmark_rows_snapshot(rows),
+                current_averages_md(),
+                None,
+                None,
+                None,
+            )
 
         # ── 处理结束（正常完成或中途停止）：导出 JSON / Markdown / CSV ──
         done_count = len(rows)
@@ -2149,7 +2415,7 @@ def batch_benchmark_stream(
             f"💾 已处理 {done_count} / {total} 条段落"
             f"{'（已停止）' if stopped_early else ''}，"
             f"共耗时 {time.monotonic() - bench_start:.1f}s，正在导出…",
-            _benchmark_rows_snapshot(rows), empty_avg, None, None, None,
+            _benchmark_rows_snapshot(rows), current_averages_md(), None, None, None,
         )
 
         out_dir = Path(tempfile.mkdtemp(prefix="benchmark_"))
@@ -2282,9 +2548,30 @@ def batch_benchmark_stream(
 
         final_icon = "🛑" if stopped_early else "✅"
         final_label = "已停止" if stopped_early else "完成"
+        if stopped_early and len(detail_records) < total_jobs:
+            _save_benchmark_resume_state({
+                "params": params,
+                "dataset": dataset,
+                "loaded_files": loaded_files,
+                "skipped_files": skipped_files,
+                "retrieval_specs": retrieval_specs,
+                "segment_total": segment_total,
+                "total_jobs": total_jobs,
+                "bg_lo": bg_lo,
+                "bg_hi": bg_hi,
+                "single_cfg": single_cfg,
+                "rows": rows,
+                "detail_records": detail_records,
+                "next_index": len(detail_records),
+                "elapsed_seconds": time.monotonic() - bench_start,
+            })
+        else:
+            _clear_benchmark_resume_state()
+        _benchmark_running_event.clear()
         yield (
             f"{final_icon} {final_label}！已处理 {len(detail_records)} / {total_jobs} 个任务，"
-            f"导出完毕（总耗时 {run_settings['total_elapsed_seconds']}s）。",
+            f"导出完毕（总耗时 {run_settings['total_elapsed_seconds']}s）。"
+            f"{'点击「继续批量测试」可从下一条继续。' if stopped_early and len(detail_records) < total_jobs else ''}",
             _benchmark_rows_snapshot(rows),
             averages_md,
             str(json_path),
@@ -2292,6 +2579,7 @@ def batch_benchmark_stream(
             str(csv_path),
         )
     finally:
+        _benchmark_running_event.clear()
         try:
             loop.close()
         except Exception:
@@ -2784,10 +3072,10 @@ def create_ui():
 
                 with gr.Row():
                     bench_btn = gr.Button("▶️ 开始批量测试", variant="primary")
-                    bench_stop_btn = gr.Button("⏹️ 停止", variant="stop")
+                    bench_stop_resume_btn = gr.Button("⏹️ 停止 / ▶️ 继续", variant="secondary")
 
                 bench_status = gr.Markdown(
-                    value="点击「开始批量测试」启动；运行中可点「停止」让任务在当前段落跑完后中止。",
+                    value="点击「开始批量测试」启动；运行中可点同一个控制按钮停止，停止完成后再点同一个按钮继续。",
                 )
 
                 bench_averages = gr.Markdown(
@@ -2834,14 +3122,23 @@ def create_ui():
                         bench_json_file,
                         bench_md_file,
                         bench_csv_file,
+                        bench_stop_resume_btn,
                     ],
                 )
 
-                # 停止按钮：queue=False 让它绕过队列，立刻把停止标志位置上
-                bench_stop_btn.click(
-                    fn=request_benchmark_stop,
+                # 同一个控制按钮：运行中请求停止；停止导出后再点则从下一条继续
+                bench_stop_resume_btn.click(
+                    fn=benchmark_stop_or_resume_stream,
                     inputs=[],
-                    outputs=[bench_status],
+                    outputs=[
+                        bench_status,
+                        bench_table,
+                        bench_averages,
+                        bench_json_file,
+                        bench_md_file,
+                        bench_csv_file,
+                        bench_stop_resume_btn,
+                    ],
                     queue=False,
                 )
 
